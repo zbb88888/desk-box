@@ -28,6 +28,8 @@ CODESIGN_IDENTITY="Developer ID Application: ..." \
 
 没有有效签名 identity 时，`swift run dbx-poc launch` 会在 VZ 配置校验阶段被系统拒绝，这是预期的 fail-closed 行为。
 
+VZ 的对象 API（包括 `start`、`stop`、`canStop` 和 socket device mutation）必须在创建 `VZVirtualMachine` 时指定的 queue 上调用；违反该约束会触发系统断言而不是普通 Swift error。runtime 已将这些调用统一封装到 VM queue。若 entitlement 已正确而启动仍返回 `Internal Virtualization error`，应优先检查 guest kernel/initrd/root disk 的 VZ 兼容性及 macOS 系统日志，而不是绕过 queue 或关闭安全控制。
+
 ## Guest asset manifest
 
 可以使用 CLI 根据已有 Linux guest 文件自动生成 manifest 和 SHA-256：

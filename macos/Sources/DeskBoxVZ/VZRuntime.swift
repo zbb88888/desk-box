@@ -37,13 +37,16 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
-    private let queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
+    private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     /// All records are accessed on `queue`; no blocking lock is used from async code.
     private var records: [SandboxID: Record] = [:]
     private let audit: AuditSink?
     private let cow: CowDiskManager
 
     public init(cowRoot: URL, audit: AuditSink? = nil) throws {
+        self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
+        self.queue.setSpecific(key: queueKey, value: 1)
         self.cow = try CowDiskManager(root: cowRoot)
         self.audit = audit
     }
@@ -66,7 +69,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             _ = try GuestAssetValidator.validate(request.guestAssets)
             let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL, sandboxID: request.sandboxID)
             let configuration: VZVirtualMachineConfiguration
-            let serialConsole: VZSerialConsole
+            let serialConsole: VZSerialConsole?
             do {
                 let result = try self.makeConfiguration(request, diskURL: cowLease.cloneURL)
                 configuration = result.configuration
@@ -112,15 +115,18 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             guard record.boot.bootID == handle.bootID else {
                 throw SandboxFailure(.bootstrapProofMismatch, "boot identity 不匹配")
             }
-            guard !record.started else { return record.boot }
+            if record.started { return record.boot }
             do {
-                try await record.machine.start()
+                try await self.startMachine(record.machine)
                 record.started = true
-                    self.recordAudit(record, action: .start, decision: .allow())
+                self.recordAudit(record, action: .start, decision: .allow())
                 return record.boot
             } catch {
                 record.lifecycle.forceFail(reason: .platformCapabilityUnavailable)
-                let failure = SandboxFailure(.platformCapabilityUnavailable, "VZ VM 启动失败：\(error.localizedDescription)")
+                let failure = SandboxFailure(
+                    .platformCapabilityUnavailable,
+                    "VZ VM 启动失败：\(error.localizedDescription)"
+                )
                 self.recordAudit(record, action: .start, decision: .error(failure.reason, failure.message))
                 throw failure
             }
@@ -150,14 +156,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     public func stop(_ handle: SandboxHandle) async throws {
         try await onQueue {
             let record = try self.require(handle)
-            guard record.machine.canStop else {
+            guard self.machineCanStop(record.machine) else {
                 try? record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
                 return
             }
             if record.lifecycle.state != .stopping && record.lifecycle.state != .stopped {
                 try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
             }
-            try await record.machine.stop()
+            try await self.stopMachine(record.machine)
             if record.lifecycle.state != .stopped {
                 try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
             }
@@ -185,7 +191,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 if record.lifecycle.state != .stopping {
                     try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
                 }
-                    if record.machine.canStop { try await record.machine.stop() }
+                if self.machineCanStop(record.machine) { try await self.stopMachine(record.machine) }
                 record.controlSocket?.close()
                 record.controlSocket = nil
                 if record.lifecycle.state != .stopped {
@@ -229,7 +235,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     // MARK: - Configuration
 
-    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL) throws -> (configuration: VZVirtualMachineConfiguration, console: VZSerialConsole) {
+    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL) throws -> (configuration: VZVirtualMachineConfiguration, console: VZSerialConsole?) {
         let assets = request.guestAssets
         let bootLoader = VZLinuxBootLoader(kernelURL: assets.kernelURL)
         bootLoader.initialRamdiskURL = assets.initrdURL
@@ -237,22 +243,31 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
-        configuration.cpuCount = max(VZVirtualMachineConfiguration.minimumAllowedCPUCount, min(request.resources.cpuCount ?? 2, VZVirtualMachineConfiguration.maximumAllowedCPUCount))
-        configuration.memorySize = UInt64(max(Int(VZVirtualMachineConfiguration.minimumAllowedMemorySize), request.resources.memoryMiB ?? 2048) * 1024 * 1024)
+        let requestedCPUs = request.resources.cpuCount ?? 2
+        configuration.cpuCount = max(
+            VZVirtualMachineConfiguration.minimumAllowedCPUCount,
+            min(requestedCPUs, VZVirtualMachineConfiguration.maximumAllowedCPUCount)
+        )
+        let requestedMemory = UInt64(max(request.resources.memoryMiB ?? 2048, 1)) * 1024 * 1024
+        let minimumMemory = VZVirtualMachineConfiguration.minimumAllowedMemorySize
+        let maximumMemory = VZVirtualMachineConfiguration.maximumAllowedMemorySize
+        configuration.memorySize = min(max(requestedMemory, minimumMemory), maximumMemory)
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
 
         // Guest `console=hvc0` 输出只用于诊断，不用于 readiness/attestation。
-        let console = VZSerialConsole { data in
+        let console: VZSerialConsole?
+        let serialConsole = VZSerialConsole { data in
             FileHandle.standardError.write(data)
         }
         let serial = VZVirtioConsoleDeviceConfiguration()
         let consolePort = VZVirtioConsolePortConfiguration()
         consolePort.name = "org.deskbox.console"
         consolePort.isConsole = true
-        consolePort.attachment = console.attachment
+        consolePort.attachment = serialConsole.attachment
         serial.ports[0] = consolePort
         configuration.consoleDevices = [serial]
+        console = serialConsole
 
         // 管理通道设备存在，但没有普通网络设备；网络默认拒绝。
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
@@ -266,6 +281,34 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         try configuration.validate()
         return (configuration, console)
+    }
+
+    private func machineCanStop(_ machine: VZVirtualMachine) -> Bool {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return machine.canStop
+        }
+        return queue.sync { machine.canStop }
+    }
+
+    private func startMachine(_ machine: VZVirtualMachine) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                machine.start { result in
+                    continuation.resume(with: result)
+                }
+            }
+        }
+    }
+
+    private func stopMachine(_ machine: VZVirtualMachine) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            queue.async {
+                machine.stop { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume(returning: ()) }
+                }
+            }
+        }
     }
 
     private func installControlListener(_ record: Record) throws {
@@ -312,7 +355,16 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         )
         let listener = VZVirtioSocketListener()
         listener.delegate = delegate
-        socketDevice.setSocketListener(listener, forPort: record.request.controlChannelPort)
+        // VZ device mutations must execute on the queue passed to
+        // VZVirtualMachine. `Task` resumption is not guaranteed to remain on
+        // that DispatchQueue, so explicitly hop for the API call.
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            socketDevice.setSocketListener(listener, forPort: record.request.controlChannelPort)
+        } else {
+            queue.sync {
+                socketDevice.setSocketListener(listener, forPort: record.request.controlChannelPort)
+            }
+        }
         record.socketDelegate = delegate
     }
 

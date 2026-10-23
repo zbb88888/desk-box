@@ -6,7 +6,12 @@ set -euo pipefail
 # evidence.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IDENTITY="${CODESIGN_IDENTITY:-}"
-MANIFEST="${1:-$ROOT/guest/manifest.json}"
+MANIFEST_INPUT="${1:-$ROOT/guest/manifest.json}"
+if [[ -f "$MANIFEST_INPUT" ]]; then
+  MANIFEST="$(cd "$(dirname "$MANIFEST_INPUT")" && pwd)/$(basename "$MANIFEST_INPUT")"
+else
+  MANIFEST="$(cd "$ROOT/$(dirname "$MANIFEST_INPUT")" && pwd)/$(basename "$MANIFEST_INPUT")"
+fi
 COW_ROOT="${COW_ROOT:-$HOME/Library/Application Support/DeskBox/cows}"
 
 if [[ -z "$IDENTITY" ]]; then
