@@ -1,0 +1,7 @@
+Target dependency graph (3 targets)
+Target 'dbx-poc-product' in project 'DeskBoxMac'
+➜ Explicit dependency on target 'DeskBoxCore' in project 'DeskBoxMac'
+➜ Explicit dependency on target 'DeskBoxVZ' in project 'DeskBoxMac'
+Target 'DeskBoxVZ' in project 'DeskBoxMac'
+➜ Explicit dependency on target 'DeskBoxCore' in project 'DeskBoxMac'
+Target 'DeskBoxCore' in project 'DeskBoxMac' (no dependencies)

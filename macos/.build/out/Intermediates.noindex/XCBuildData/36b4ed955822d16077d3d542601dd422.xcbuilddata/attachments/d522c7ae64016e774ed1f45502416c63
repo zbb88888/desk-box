@@ -1,0 +1,4 @@
+module DeskBoxVZ {
+header "DeskBoxVZ-Swift.h"
+export *
+}

@@ -1,0 +1,49 @@
+{
+  "" : {
+    "diagnostics" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/DeskBoxVZ-primary.dia",
+    "emit-module-dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/DeskBoxVZ-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/DeskBoxVZ-primary-emit-module.dia",
+    "pch" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/DeskBoxVZ-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/DeskBoxVZ-primary.swiftdeps"
+  },
+  "/Users/ftwhmg/f/desk-box/macos/Sources/DeskBoxVZ/GuestAssetValidator.swift" : {
+    "const-values" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.swiftconstvalues",
+    "dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.d",
+    "diagnostics" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.dia",
+    "index-unit-output-path" : "/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.o",
+    "llvm-bc" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.bc",
+    "object" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.o",
+    "swift-dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator.swiftdeps",
+    "swiftmodule" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/GuestAssetValidator~partial.swiftmodule"
+  },
+  "/Users/ftwhmg/f/desk-box/macos/Sources/DeskBoxVZ/Utilities.swift" : {
+    "const-values" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.swiftconstvalues",
+    "dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.d",
+    "diagnostics" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.dia",
+    "index-unit-output-path" : "/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.o",
+    "llvm-bc" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.bc",
+    "object" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.o",
+    "swift-dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities.swiftdeps",
+    "swiftmodule" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/Utilities~partial.swiftmodule"
+  },
+  "/Users/ftwhmg/f/desk-box/macos/Sources/DeskBoxVZ/VZCapabilityProbe.swift" : {
+    "const-values" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.swiftconstvalues",
+    "dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.d",
+    "diagnostics" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.dia",
+    "index-unit-output-path" : "/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.o",
+    "llvm-bc" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.bc",
+    "object" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.o",
+    "swift-dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe.swiftdeps",
+    "swiftmodule" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZCapabilityProbe~partial.swiftmodule"
+  },
+  "/Users/ftwhmg/f/desk-box/macos/Sources/DeskBoxVZ/VZRuntime.swift" : {
+    "const-values" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.swiftconstvalues",
+    "dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.d",
+    "diagnostics" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.dia",
+    "index-unit-output-path" : "/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.o",
+    "llvm-bc" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.bc",
+    "object" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.o",
+    "swift-dependencies" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime.swiftdeps",
+    "swiftmodule" : "/Users/ftwhmg/f/desk-box/macos/.build/out/Intermediates.noindex/DeskBoxMac.build/Debug/DeskBoxVZ-t.build/Objects-normal/arm64/VZRuntime~partial.swiftmodule"
+  }
+}

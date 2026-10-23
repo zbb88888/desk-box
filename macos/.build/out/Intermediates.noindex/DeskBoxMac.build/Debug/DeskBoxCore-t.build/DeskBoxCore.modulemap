@@ -1,0 +1,4 @@
+module DeskBoxCore {
+header "DeskBoxCore-Swift.h"
+export *
+}

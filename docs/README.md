@@ -9,6 +9,7 @@
 3. [威胁模型与安全不变量](security/threat-model.md)：定义攻击者、受保护资产、安全不变量、控制措施和阻断发布的测试。
 4. [最佳实践论证](research/best-practice-assessment.md)：说明该架构为何符合桌面沙箱最佳实践、为何不照搬云端方案，以及仍需哪些证据。
 5. [ADR-0001](adr/0001-desktop-vm-sandbox-baseline.md)：简明记录已接受的架构决策。
+6. [ADR-0002](adr/0002-macos-phase1-contract-and-vz-slice.md)：macOS Phase 1 契约与 VZ 垂直切片实现状态。
 
 ## 实施级设计
 
