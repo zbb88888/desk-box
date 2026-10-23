@@ -52,6 +52,8 @@ public struct ReasonCode: Hashable, Sendable, Codable, CustomStringConvertible {
     public static let bootstrapProofMissing = ReasonCode("DBX-BOOT-PROOF-MISSING")
     public static let bootstrapProofMismatch = ReasonCode("DBX-BOOT-PROOF-MISMATCH")
     public static let bootstrapProofAccepted = ReasonCode("DBX-BOOT-PROOF-ACCEPTED")
+    public static let bootstrapHelloAccepted = ReasonCode("DBX-BOOT-HELLO-ACCEPTED")
+    public static let bootstrapTLSRequired = ReasonCode("DBX-BOOT-TLS-REQUIRED")
 
     // MARK: 平台
     public static let platformCapabilityUnavailable = ReasonCode("DBX-PLATFORM-CAPABILITY-UNAVAILABLE")

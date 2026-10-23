@@ -8,6 +8,12 @@ struct UnsafeSendableBox<T>: @unchecked Sendable {
     let value: T
 }
 
+public enum AssetDigest {
+    public static func sha256Hex(of url: URL) throws -> String {
+        try DigestVerifier.sha256Hex(of: url)
+    }
+}
+
 enum DigestVerifier {
     /// 流式 sha256；大 root disk 不整读入内存。
     static func sha256Hex(of url: URL) throws -> String {

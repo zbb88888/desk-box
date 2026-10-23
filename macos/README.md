@@ -42,7 +42,7 @@ Guest Linux 镜像构建链与 `execd` fork 为跨平台共享，不放本目录
 
 ## 可启动 POC
 
-`Sources/dbx-poc` 提供前台 `launch` 入口，包含无网卡 VZ VM、virtio socket control port 和 COW 生命周期；完整流程、manifest 格式、签名 entitlement 和当前限制见 [Resources/README.md](Resources/README.md)。
+`Sources/dbx-poc` 提供 `make-manifest` 和前台 `launch` 入口，包含无网卡 VZ VM、virtio socket control port 和 COW 生命周期；完整流程、manifest 格式、签名 entitlement 和当前限制见 [Resources/README.md](Resources/README.md)。
 
 ```bash
 cd macos

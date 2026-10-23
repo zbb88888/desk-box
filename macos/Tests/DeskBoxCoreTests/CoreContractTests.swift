@@ -13,6 +13,28 @@ final class CoreContractTests: XCTestCase {
         XCTAssertEqual(machine.state, .pending)
     }
 
+    func testBootstrapHelloBindsBeforeTLS() throws {
+        let sandbox = SandboxID.new()
+        let boot = BootContext(sandboxID: sandbox, protocolMajor: 1, guestManifestDigest: "digest")
+        let hello = BootstrapHello(context: boot)
+        XCTAssertEqual(hello.bindingDecision(against: boot).reasonCode, .bootstrapHelloAccepted)
+        let ack = BootstrapHelloAck(sessionID: .new())
+        XCTAssertTrue(ack.requiresTLS)
+        let roundTrip = try BootstrapCodec.decodeAck(try BootstrapCodec.encodeAck(ack))
+        XCTAssertEqual(roundTrip, ack)
+    }
+
+    func testBootstrapHelloRejectsWrongBoot() {
+        let sandbox = SandboxID.new()
+        let boot = BootContext(sandboxID: sandbox, protocolMajor: 1, guestManifestDigest: "digest")
+        var hello = BootstrapHello(context: boot)
+        hello = BootstrapHello(
+            sandboxID: sandbox, bootID: .new(), bootNonce: boot.bootNonce,
+            protocolMajor: 1, guestManifestDigest: "digest"
+        )
+        XCTAssertEqual(hello.bindingDecision(against: boot).reasonCode, .bootstrapProofMismatch)
+    }
+
     func testBootstrapProofIsBoundToBoot() throws {
         let sandbox = SandboxID.new()
         let boot = BootContext(sandboxID: sandbox, protocolMajor: ControlChannelProtocol.currentMajor, guestManifestDigest: "digest")

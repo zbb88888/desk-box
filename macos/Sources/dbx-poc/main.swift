@@ -16,6 +16,8 @@ struct DBXPOC {
                 let manifest = try loadManifest(at: URL(fileURLWithPath: args[1]))
                 let result = try GuestAssetValidator.validate(manifest.asManifest)
                 print("validated manifest \(result.manifestDigest)")
+            case "make-manifest":
+                try makeManifest(args: Array(args.dropFirst()))
             case "launch":
                 try await launch(args: Array(args.dropFirst()))
             case "help", "-h", "--help":
@@ -27,6 +29,38 @@ struct DBXPOC {
             fputs("dbx-poc: \(error)\n", stderr)
             Foundation.exit(2)
         }
+    }
+
+    private static func makeManifest(args: [String]) throws {
+        guard let kernelPath = try optionString("--kernel", in: args),
+              let rootDiskPath = try optionString("--root-disk", in: args),
+              let outputPath = try optionString("--output", in: args)
+        else {
+            throw CLIError.usage("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] --output <manifest.json>")
+        }
+        let kernel = URL(fileURLWithPath: kernelPath).standardizedFileURL
+        let rootDisk = URL(fileURLWithPath: rootDiskPath).standardizedFileURL
+        let initrd = try optionString("--initrd", in: args).map { URL(fileURLWithPath: $0).standardizedFileURL }
+        let files = [kernel] + (initrd.map { [$0] } ?? []) + [rootDisk]
+        for file in files where !FileManager.default.isReadableFile(atPath: file.path) {
+            throw CLIError.usage("asset is not readable: \(file.path)")
+        }
+        var digests: [String: String] = [:]
+        for file in files { digests[file.path] = try AssetDigest.sha256Hex(of: file) }
+        let manifest = ManifestFile(
+            kernelURL: kernel,
+            initrdURL: initrd,
+            rootDiskURL: rootDisk,
+            kernelCommandLine: "console=hvc0 root=/dev/vda rw init=/sbin/init",
+            guestAssetVersion: 1,
+            manifestDigest: "unsigned-local-manifest",
+            fileDigests: digests
+        )
+        let output = URL(fileURLWithPath: outputPath).standardizedFileURL
+        try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder.pretty.encode(manifest).write(to: output, options: .atomic)
+        print("wrote unsigned manifest \(output.path)")
+        print("manifest signing and downgrade protection are still required before release")
     }
 
     private static func launch(args: [String]) async throws {
@@ -48,41 +82,28 @@ struct DBXPOC {
         let runtime = try VZRuntime(cowRoot: cowRoot, audit: audit)
         let sandboxID = SandboxID.new()
         let workload = WorkloadSpec(
-            entrypoint: ["/bin/sh"],
-            args: [],
+            entrypoint: ["/bin/sh"], args: [],
             environment: ["PATH": "/usr/bin:/bin", "HOME": "/home/sandbox"],
-            workingDirectory: "/",
-            declaredPorts: [],
-            uid: 65_534,
-            gid: 65_534,
-            volumes: [],
-            resources: ResourceHints(cpuCount: cpus, memoryMiB: memoryMiB)
+            workingDirectory: "/", declaredPorts: [], uid: 65_534, gid: 65_534,
+            volumes: [], resources: ResourceHints(cpuCount: cpus, memoryMiB: memoryMiB)
         )
         let request = SandboxCreateRequest(
-            sandboxID: sandboxID,
-            workspaceID: .new(),
-            correlationID: UUID(),
-            workloadDigest: "sha256:local-poc",
-            workload: workload,
+            sandboxID: sandboxID, workspaceID: .new(), correlationID: UUID(),
+            workloadDigest: "sha256:local-poc", workload: workload,
             guestAssets: manifest.asManifest,
-            resources: ResourceHints(cpuCount: cpus, memoryMiB: memoryMiB),
-            networking: .none
+            resources: ResourceHints(cpuCount: cpus, memoryMiB: memoryMiB), networking: .none
         )
 
         let handle = try await runtime.create(request)
         do {
             let boot = try await runtime.start(handle)
             let output = LaunchOutput(
-                sandboxID: handle.sandboxID,
-                bootID: handle.bootID,
-                state: "pending-bootstrap",
-                boot: boot,
-                message: "VM 已启动；等待 guest bootstrap proof。输入 EOF 或 Ctrl-C 结束。"
+                sandboxID: handle.sandboxID, bootID: handle.bootID,
+                state: "pending-bootstrap", boot: boot,
+                message: "VM 已启动；等待 guest bootstrap proof。输入 EOF 结束。"
             )
             print(String(decoding: try JSONEncoder.pretty.encode(output), as: UTF8.self))
             fflush(stdout)
-            // 当前阶段没有 guest execd/控制通道客户端；保持宿主进程存活，
-            // 确保 VM 与 COW 的所有权不脱离 runtime。EOF 后安全回收。
             while readLine(strippingNewline: true) != nil {}
         } catch {
             try? await runtime.destroy(handle)
@@ -94,48 +115,44 @@ struct DBXPOC {
     }
 
     private static func loadManifest(at url: URL) throws -> ManifestFile {
-        let data = try Data(contentsOf: url)
-        var manifest = try JSONDecoder().decode(ManifestFile.self, from: data)
-        let base = url.deletingLastPathComponent()
-        manifest.resolveRelativeURLs(from: base)
+        var manifest = try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: url))
+        manifest.resolveRelativeURLs(from: url.deletingLastPathComponent())
         return manifest
     }
 
-    private static func optionURL(_ name: String, in args: [String]) throws -> URL? {
+    private static func optionString(_ name: String, in args: [String]) throws -> String? {
         guard let index = args.firstIndex(of: name) else { return nil }
         guard index + 1 < args.count else { throw CLIError.usage("missing value for \(name)") }
-        return URL(fileURLWithPath: args[index + 1]).standardizedFileURL
+        return args[index + 1]
+    }
+
+    private static func optionURL(_ name: String, in args: [String]) throws -> URL? {
+        try optionString(name, in: args).map { URL(fileURLWithPath: $0).standardizedFileURL }
     }
 
     private static func optionInt(_ name: String, in args: [String]) throws -> Int? {
-        guard let index = args.firstIndex(of: name) else { return nil }
-        guard index + 1 < args.count, let value = Int(args[index + 1]) else {
-            throw CLIError.usage("invalid value for \(name)")
-        }
-        return value
+        guard let value = try optionString(name, in: args) else { return nil }
+        guard let int = Int(value) else { throw CLIError.usage("invalid value for \(name)") }
+        return int
     }
 
     private static func printUsage() {
         print("dbx-poc capcheck")
+        print("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] --output <manifest.json>")
         print("dbx-poc validate-assets <manifest.json>")
         print("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N]")
-        print("")
-        print("launch keeps the VM in the foreground; EOF/Ctrl-C stops and destroys it.")
+        print("launch is foreground; EOF stops and destroys the VM")
     }
 }
 
 private enum CLIError: Error, CustomStringConvertible {
     case usage(String)
-    var description: String {
-        switch self { case .usage(let message): return message }
-    }
+    var description: String { if case .usage(let value) = self { return value }; return "usage error" }
 }
 
 private extension JSONEncoder {
     static var pretty: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return encoder
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; return encoder
     }
 }
 
@@ -149,28 +166,18 @@ private struct ManifestFile: Codable {
     var fileDigests: [String: String]
 
     var asManifest: GuestAssetManifest {
-        GuestAssetManifest(
-            kernelURL: kernelURL,
-            initrdURL: initrdURL,
-            rootDiskURL: rootDiskURL,
-            kernelCommandLine: kernelCommandLine,
-            guestAssetVersion: guestAssetVersion,
-            manifestDigest: manifestDigest,
-            fileDigests: fileDigests
-        )
+        GuestAssetManifest(kernelURL: kernelURL, initrdURL: initrdURL, rootDiskURL: rootDiskURL,
+                           kernelCommandLine: kernelCommandLine, guestAssetVersion: guestAssetVersion,
+                           manifestDigest: manifestDigest, fileDigests: fileDigests)
     }
 
     mutating func resolveRelativeURLs(from base: URL) {
         kernelURL = resolve(kernelURL, from: base)
         initrdURL = initrdURL.map { resolve($0, from: base) }
         rootDiskURL = resolve(rootDiskURL, from: base)
-
-        var normalizedDigests: [String: String] = [:]
-        for (path, digest) in fileDigests {
-            let url = resolve(URL(fileURLWithPath: path), from: base)
-            normalizedDigests[url.path] = digest
-        }
-        fileDigests = normalizedDigests
+        var normalized: [String: String] = [:]
+        for (path, digest) in fileDigests { normalized[resolve(URL(fileURLWithPath: path), from: base).path] = digest }
+        fileDigests = normalized
     }
 
     private func resolve(_ value: URL, from base: URL) -> URL {

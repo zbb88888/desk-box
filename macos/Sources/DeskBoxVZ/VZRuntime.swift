@@ -271,8 +271,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                             guard let self, let record else { return }
                             self.queue.async { [weak self, weak record] in
                                 guard let self, let record else { return }
-                                self.recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "收到控制 frame，但 TLS/bootstrap 尚未验证"))
-                                frames.forEach { _ = $0 }
+                                for frame in frames {
+                                    self.handleControlFrame(frame, record: record)
+                                }
                             }
                         },
                         onFailure: { [weak self, weak record] message in
@@ -296,6 +297,30 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         listener.delegate = delegate
         socketDevice.setSocketListener(listener, forPort: record.request.controlChannelPort)
         record.socketDelegate = delegate
+    }
+
+    private func handleControlFrame(_ frame: ControlFrame, record: Record) {
+        guard frame.kind == .hello else {
+            recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "TLS/bootstrap 完成前只接受 hello"))
+            return
+        }
+        do {
+            let hello = try BootstrapCodec.decodeHello(frame.payload)
+            let decision = hello.bindingDecision(against: record.boot)
+            guard decision.isAllowed else {
+                recordAudit(record, action: .channelEvent, decision: decision)
+                record.controlSocket?.close()
+                return
+            }
+            let ack = BootstrapHelloAck(sessionID: .new(), requiresTLS: true)
+            let payload = try BootstrapCodec.encodeAck(ack)
+            let response = try ControlFrame(kind: .helloAck, sequence: frame.sequence + 1, requestID: frame.requestID, payload: payload)
+            try record.controlSocket?.send(response)
+            recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "hello 绑定成功；仍需 TLS 1.3 双向认证后才能建立 session"))
+        } catch {
+            recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, error.localizedDescription))
+            record.controlSocket?.close()
+        }
     }
 
     private func record(for sandboxID: SandboxID) -> Record? {

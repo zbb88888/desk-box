@@ -21,6 +21,16 @@ codesign --display --entitlements :- macos/.build/release/dbx-poc
 
 ## Guest asset manifest
 
+可以使用 CLI 根据已有 Linux guest 文件自动生成 manifest 和 SHA-256：
+
+```bash
+swift run dbx-poc make-manifest \
+  --kernel ./guest/vmlinuz-arm64 \
+  --initrd ./guest/initrd.img \
+  --root-disk ./guest/root-disk.vhd \
+  --output ./guest/manifest.json
+```
+
 `dbx-poc launch` 接受 JSON manifest。路径可相对 manifest 文件；`fileDigests` 使用同样的路径并在读取时解析为绝对路径：
 
 ```json
@@ -57,7 +67,7 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 2. 创建 per-sandbox APFS COW clone；
 3. 创建不带普通网卡、带 virtio socket control port 的 VZ Linux VM；
 4. 启动 VM；
-5. 接收 guest control frame；未完成 TLS/bootstrap 的 frame 只记审计并拒绝，不改变生命周期；
+5. 接收 guest control frame；合法的 boot-bound hello 会返回 `requiresTLS=true`，未完成 TLS/bootstrap 的 frame 只记审计并拒绝，不改变生命周期；
 6. 输出 `sandboxID`、`bootID` 和 `BootContext`；
 7. 等待 EOF，然后 stop + destroy + 删除 COW。
 
