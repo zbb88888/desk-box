@@ -17,6 +17,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         let machine: VZVirtualMachine
         var lifecycle: LifecycleMachine
         var started = false
+        var delegate: VZRuntimeDelegate?
 
         init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine) {
             self.request = request
@@ -33,11 +34,17 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
     /// All records are accessed on `queue`; no blocking lock is used from async code.
     private var records: [SandboxID: Record] = [:]
+    private let audit: AuditSink?
 
-    public init() {}
+    public init(audit: AuditSink? = nil) {
+        self.audit = audit
+    }
 
     public func create(_ request: SandboxCreateRequest) async throws -> SandboxHandle {
-        try await onQueue {
+        try await onQueue { [weak self] in
+            guard let self else {
+                throw SandboxFailure(.lifecycleInvalidTransition, "VZ runtime 已释放")
+            }
             guard VZVirtualMachine.isSupported else {
                 throw SandboxFailure(.platformCapabilityUnavailable, "Virtualization.framework 不受当前 Mac 支持")
             }
@@ -57,7 +64,20 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 guestManifestDigest: request.guestAssets.manifestDigest
             )
             let record = Record(request: request, boot: boot, machine: machine)
+            let sandboxID = request.sandboxID
+            let delegate = VZRuntimeDelegate { [weak self] error in
+                guard let self else { return }
+                self.queue.async {
+                    guard let record = self.record(for: sandboxID), record.lifecycle.state != .stopped else { return }
+                    let reason = error == nil ? ReasonCode.lifecycleUnexpectedExit : ReasonCode.platformCapabilityUnavailable
+                    record.lifecycle.forceFail(reason: reason)
+                    self.recordAudit(record, action: .channelEvent, decision: .error(reason, error?.localizedDescription ?? "guest 意外停止"))
+                }
+            }
+            record.delegate = delegate
+            machine.delegate = delegate
             self.records[request.sandboxID] = record
+            self.recordAudit(record, action: .create, decision: .allow())
             return SandboxHandle(sandboxID: request.sandboxID, bootID: boot.bootID)
         }
     }
@@ -71,7 +91,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             guard !record.started else { return record.boot }
             // 首个切片必须明确有产品 COW 后才能运行。当前 VZ config 使用只读
             // base disk，尚未接入 overlay/NBD，因此这里 fail closed。
-            throw SandboxFailure(.platformCapabilityUnavailable, "macOS COW 尚未通过 POC；禁止以基础盘直接启动 sandbox")
+            let failure = SandboxFailure(.platformCapabilityUnavailable, "macOS COW 尚未通过 POC；禁止以基础盘直接启动 sandbox")
+            self.recordAudit(record, action: .start, decision: .error(failure.reason, failure.message))
+            throw failure
         }
     }
 
@@ -81,11 +103,17 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             guard record.boot.bootID == handle.bootID else {
                 throw SandboxFailure(.bootstrapProofMismatch, "boot identity 不匹配")
             }
+            guard record.started else {
+                let failure = SandboxFailure(.lifecycleInvalidTransition, "VM 尚未由 start 标记为已启动，不能确认 Running")
+                self.recordAudit(record, action: .confirmRunning, decision: .error(failure.reason, failure.message))
+                throw failure
+            }
             try record.lifecycle.transition(
                 to: .running,
                 reason: .lifecycleRunningConfirmed,
                 proof: proof
             )
+            self.recordAudit(record, action: .confirmRunning, decision: .allow())
         }
     }
 
@@ -104,6 +132,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
             }
             record.started = false
+            self.recordAudit(record, action: .stop, decision: .allow())
         }
     }
 
@@ -129,6 +158,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                     try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
                 }
             }
+            self.recordAudit(record, action: .destroy, decision: .allow())
             self.records.removeValue(forKey: handle.sandboxID)
         }
     }
@@ -187,6 +217,18 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     private func record(for sandboxID: SandboxID) -> Record? {
         records[sandboxID]
+    }
+
+    private func recordAudit(_ record: Record, action: AuditAction, decision: Decision) {
+        audit?.record(AuditEvent(
+            platform: .vz,
+            sandboxID: record.request.sandboxID,
+            bootID: record.boot.bootID,
+            workloadDigest: record.request.workloadDigest,
+            action: action,
+            decision: decision,
+            correlationID: record.request.correlationID
+        ))
     }
 
     private func require(_ handle: SandboxHandle) throws -> Record {

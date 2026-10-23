@@ -16,6 +16,17 @@ final class RuntimeContractTests: XCTestCase {
         XCTAssertFalse(SandboxState.failed.isTerminal)
     }
 
+    func testFailedStateCanOnlyConvergeThroughStopping() throws {
+        let sandbox = SandboxID.new()
+        let boot = BootContext(sandboxID: sandbox, protocolMajor: 1, guestManifestDigest: "expected")
+        var machine = LifecycleMachine(sandboxID: sandbox, boot: boot, correlationID: UUID())
+        machine.forceFail(reason: .lifecycleUnexpectedExit)
+        XCTAssertEqual(machine.state, .failed)
+        try machine.transition(to: .stopping, reason: .lifecycleStopRequested)
+        try machine.transition(to: .stopped, reason: .lifecycleStopped)
+        XCTAssertEqual(machine.state, .stopped)
+    }
+
     func testProofUsesCurrentManifestAndNonce() {
         let sandbox = SandboxID.new()
         let boot = BootContext(sandboxID: sandbox, protocolMajor: 1, guestManifestDigest: "expected")

@@ -15,7 +15,7 @@ public enum SandboxNetworkMode: String, Sendable, Codable {
 }
 
 /// 签名的 guest asset 清单（控制通道设计 §3：宿主启动前校验 digest）。
-public struct GuestAssetManifest: Sendable, Equatable {
+public struct GuestAssetManifest: Sendable, Equatable, Codable {
     public let kernelURL: URL
     public let initrdURL: URL?
     public let rootDiskURL: URL
@@ -46,7 +46,7 @@ public struct GuestAssetManifest: Sendable, Equatable {
     }
 }
 
-public struct SandboxCreateRequest: Sendable {
+public struct SandboxCreateRequest: Sendable, Codable {
     public var sandboxID: SandboxID
     public var workspaceID: WorkspaceID
     public var correlationID: UUID

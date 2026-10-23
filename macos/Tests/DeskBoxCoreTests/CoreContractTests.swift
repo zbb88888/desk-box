@@ -52,6 +52,24 @@ final class CoreContractTests: XCTestCase {
         XCTAssertTrue(result.decisions.contains { $0.decision.reasonCode == .specVolumeDropped })
     }
 
+    func testControlFrameRoundTripsAndGuardsSequence() throws {
+        let requestID = UUID()
+        let frame = try ControlFrame(kind: .request, sequence: 1, requestID: requestID, payload: Data("hello".utf8))
+        let decoded = try ControlFrame.decode(frame.encoded())
+        XCTAssertEqual(decoded, frame)
+
+        var guardState = ControlSequenceGuard()
+        try guardState.accept(decoded)
+        XCTAssertThrowsError(try guardState.accept(decoded))
+    }
+
+    func testControlFrameRejectsTrailingBytes() throws {
+        let frame = try ControlFrame(kind: .event, sequence: 1, payload: Data([1, 2]))
+        var encoded = frame.encoded()
+        encoded.append(0xff)
+        XCTAssertThrowsError(try ControlFrame.decode(encoded))
+    }
+
     func testGrantAmbiguityFailsClosed() throws {
         let principal = Principal(userID: .new(), workspaceID: .new(), sandboxID: .new(), agentID: .new())
         let now = Date()
