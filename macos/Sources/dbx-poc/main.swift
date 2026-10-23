@@ -104,7 +104,14 @@ struct DBXPOC {
             )
             print(String(decoding: try JSONEncoder.pretty.encode(output), as: UTF8.self))
             fflush(stdout)
-            while readLine(strippingNewline: true) != nil {}
+            let lifetime = ProcessLifetime()
+            let reason = await lifetime.wait()
+            switch reason {
+            case .stdinEOF:
+                print("shutdown requested by stdin EOF")
+            case .signal(let signal):
+                print("shutdown requested by signal \(signal)")
+            }
         } catch {
             try? await runtime.destroy(handle)
             throw error

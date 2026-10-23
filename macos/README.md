@@ -52,7 +52,7 @@ swift run dbx-poc validate-assets ./guest/manifest.json
 swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Application Support/DeskBox/cows"
 ```
 
-启动 POC 必须使用已签名的 `com.apple.security.virtualization` entitlement，并在真实 Apple Silicon Mac 上执行。没有 guest bootstrap proof 时，输出只能是 `pending-bootstrap`，不能宣称产品状态为 `Running`。
+启动 POC 必须使用已签名的 `com.apple.security.virtualization` entitlement，并在真实 Apple Silicon Mac 上执行。正常 EOF、SIGINT、SIGTERM 都会尝试统一 stop/destroy 清理；SIGKILL、宿主崩溃和系统重启仍需孤儿资源回收 POC。没有 guest bootstrap proof 时，输出只能是 `pending-bootstrap`，不能宣称产品状态为 `Running`。
 
 ## 验收门槛
 
