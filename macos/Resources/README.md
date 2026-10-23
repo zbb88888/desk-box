@@ -55,9 +55,10 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 
 1. 校验 guest asset；
 2. 创建 per-sandbox APFS COW clone；
-3. 创建不带普通网卡的 VZ Linux VM；
+3. 创建不带普通网卡、带 virtio socket control port 的 VZ Linux VM；
 4. 启动 VM；
-5. 输出 `sandboxID`、`bootID` 和 `BootContext`；
-6. 等待 EOF，然后 stop + destroy + 删除 COW。
+5. 接收 guest control frame；未完成 TLS/bootstrap 的 frame 只记审计并拒绝，不改变生命周期；
+6. 输出 `sandboxID`、`bootID` 和 `BootContext`；
+7. 等待 EOF，然后 stop + destroy + 删除 COW。
 
 当前没有 guest `execd` bootstrap 客户端，因此输出状态是 `pending-bootstrap`，不能当作产品 `Running`。通过 Ctrl-C 结束时，终止信号是否经过正常 Swift 清理路径必须在真实 POC 中验证；优先使用 stdin EOF 做确定性清理测试。

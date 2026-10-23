@@ -63,6 +63,21 @@ final class CoreContractTests: XCTestCase {
         XCTAssertThrowsError(try guardState.accept(decoded))
     }
 
+    func testIncrementalControlDecoderHandlesPartialFrames() throws {
+        let frame = try ControlFrame(kind: .readiness, sequence: 1, payload: Data("ready".utf8))
+        let encoded = frame.encoded()
+        var decoder = ControlFrameDecoder()
+        XCTAssertTrue(try decoder.append(Data(encoded.prefix(7))).isEmpty)
+        XCTAssertEqual(try decoder.append(Data(encoded.dropFirst(7))), [frame])
+        XCTAssertEqual(decoder.bufferedBytes, 0)
+    }
+
+    func testIncrementalControlDecoderRejectsOversizedPayload() throws {
+        let frame = try ControlFrame(kind: .event, sequence: 1, payload: Data(repeating: 1, count: 16))
+        var decoder = ControlFrameDecoder(maximumPayload: 8)
+        XCTAssertThrowsError(try decoder.append(frame.encoded()))
+    }
+
     func testControlFrameRejectsTrailingBytes() throws {
         let frame = try ControlFrame(kind: .event, sequence: 1, payload: Data([1, 2]))
         var encoded = frame.encoded()

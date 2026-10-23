@@ -1,5 +1,5 @@
 import Foundation
-import Virtualization
+@preconcurrency import Virtualization
 import DeskBoxCore
 
 /// macOS VZ 垂直切片。
@@ -11,13 +11,15 @@ import DeskBoxCore
 public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     public let platform: SandboxPlatform = .vz
 
-    private final class Record {
+    private final class Record: @unchecked Sendable {
         let request: SandboxCreateRequest
         let boot: BootContext
         let machine: VZVirtualMachine
         var lifecycle: LifecycleMachine
         var started = false
         var delegate: VZRuntimeDelegate?
+        var socketDelegate: VZControlSocketDelegate?
+        var controlSocket: VZControlSocket?
         let cowLease: CowDiskManager.Lease
 
         init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine, cowLease: CowDiskManager.Lease) {
@@ -87,6 +89,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             record.delegate = delegate
             machine.delegate = delegate
+            do {
+                try self.installControlListener(record)
+            } catch {
+                try? self.cow.removeClone(cowLease)
+                throw error
+            }
             self.records[request.sandboxID] = record
             self.recordAudit(record, action: .create, decision: .allow())
             return SandboxHandle(sandboxID: request.sandboxID, bootID: boot.bootID)
@@ -149,6 +157,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
             }
             record.started = false
+            record.controlSocket?.close()
+            record.controlSocket = nil
             self.recordAudit(record, action: .stop, decision: .allow())
         }
     }
@@ -170,7 +180,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 if record.lifecycle.state != .stopping {
                     try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
                 }
-                if record.machine.canStop { try await record.machine.stop() }
+                    if record.machine.canStop { try await record.machine.stop() }
+                record.controlSocket?.close()
+                record.controlSocket = nil
                 if record.lifecycle.state != .stopped {
                     try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
                 }
@@ -237,6 +249,53 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         try configuration.validate()
         return configuration
+    }
+
+    private func installControlListener(_ record: Record) throws {
+        guard let socketDevice = record.machine.socketDevices.first as? VZVirtioSocketDevice else {
+            throw SandboxFailure(.platformCapabilityUnavailable, "VZ virtio socket device 未创建")
+        }
+        let delegate = VZControlSocketDelegate(
+            onConnection: { [weak self, weak record] connection in
+                guard let self, let record else { connection.close(); return }
+                let boxedConnection = UnsafeSendableBox(value: connection)
+                self.queue.async { [weak self, weak record] in
+                    guard let self, let record else {
+                        boxedConnection.value.close()
+                        return
+                    }
+                    let socket = VZControlSocket(
+                        connection: boxedConnection.value,
+                        queue: self.queue,
+                        onFrames: { [weak self, weak record] frames in
+                            guard let self, let record else { return }
+                            self.queue.async { [weak self, weak record] in
+                                guard let self, let record else { return }
+                                self.recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "收到控制 frame，但 TLS/bootstrap 尚未验证"))
+                                frames.forEach { _ = $0 }
+                            }
+                        },
+                        onFailure: { [weak self, weak record] message in
+                            guard let self, let record else { return }
+                            self.queue.async { [weak self, weak record] in
+                                guard let self, let record else { return }
+                                self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, message))
+                            }
+                        }
+                    )
+                    record.controlSocket?.close()
+                    record.controlSocket = socket
+                }
+            },
+            onReject: { [weak self, weak record] message in
+                guard let self, let record else { return }
+                self.recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMismatch, message))
+            }
+        )
+        let listener = VZVirtioSocketListener()
+        listener.delegate = delegate
+        socketDevice.setSocketListener(listener, forPort: record.request.controlChannelPort)
+        record.socketDelegate = delegate
     }
 
     private func record(for sandboxID: SandboxID) -> Record? {

@@ -78,6 +78,48 @@ public struct ControlFrame: Sendable, Equatable {
         }
         return try ControlFrame(kind: kind, sequence: sequence, requestID: requestID, payload: reader.readData(count: payloadLength))
     }
+
+    /// Reads the big-endian payload length without accepting an incomplete frame.
+    public static func payloadLength(in data: Data) -> Int? {
+        guard data.count >= headerSize else { return nil }
+        let offset = headerSize - 4
+        return Int(UInt32(data[offset]) << 24 | UInt32(data[offset + 1]) << 16
+            | UInt32(data[offset + 2]) << 8 | UInt32(data[offset + 3]))
+    }
+}
+
+/// Incremental decoder for stream transports. It bounds the buffer and emits
+/// complete frames only; malformed data fails closed.
+public struct ControlFrameDecoder: Sendable {
+    private var buffer = Data()
+    public let maximumPayload: Int
+
+    public init(maximumPayload: Int = ControlFrame.defaultMaximumPayload) {
+        self.maximumPayload = maximumPayload
+    }
+
+    public mutating func append(_ data: Data) throws -> [ControlFrame] {
+        guard buffer.count + data.count <= ControlFrame.headerSize + maximumPayload else {
+            throw SandboxFailure(.bootstrapProofMismatch, "控制通道缓冲区超过上限")
+        }
+        buffer.append(data)
+        var frames: [ControlFrame] = []
+        while buffer.count >= ControlFrame.headerSize {
+            guard let payloadLength = ControlFrame.payloadLength(in: buffer) else { break }
+            guard payloadLength <= maximumPayload else {
+                throw SandboxFailure(.bootstrapProofMismatch, "控制消息 payload 超过限制")
+            }
+            let frameLength = ControlFrame.headerSize + payloadLength
+            guard buffer.count >= frameLength else { break }
+            let frameData = buffer.prefix(frameLength)
+            let frame = try ControlFrame.decode(Data(frameData), maximumPayload: maximumPayload)
+            frames.append(frame)
+            buffer.removeFirst(frameLength)
+        }
+        return frames
+    }
+
+    public var bufferedBytes: Int { buffer.count }
 }
 
 /// 单向 session 的 replay/order 检查。sequence 从 1 开始且严格递增。
