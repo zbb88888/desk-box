@@ -189,6 +189,8 @@ Dockerfile 在独立、短生命周期 Builder VM 中由 BuildKit 执行：
 
 路径校验优先使用 descriptor-relative 或等价 race-safe API，不能只做字符串前缀判断。宿主 home、SSH、云凭据和 Docker 配置目录不隐式导入。
 
+快照、冲突、Git metadata 和导出恢复语义见[工作区导入、同步与导出设计](../design/workspace-sync.md)。
+
 ### 6.8 Credential 与 Network Broker
 
 真实凭据按请求从 Keychain 或 Credential Manager 读取。若 CLI 必须看到环境变量才能启动，guest 只能得到空值或假值；宿主代理在最终目标完成解析和授权后才注入真实 header。
@@ -203,6 +205,8 @@ Dockerfile 在独立、短生命周期 Builder VM 中由 BuildKit 执行：
 - 不记录 secret-bearing header、body 或 token。
 
 审计只记录 grant ID、目标、决策、原因、时间、字节数和 correlation ID。
+
+Broker-only 网络拓扑、HTTPS 限制和各类客户端的凭据注入方式见[网络与凭据 Broker 设计](../design/network-credential-broker.md)。
 
 ### 6.9 MCP Gateway
 
@@ -248,6 +252,8 @@ Containerd socket 不离开 guest，只允许可信 guest control process 访问
 
 Execd 流量通过 VZ Socket 或 Hyper-V Socket transport adapter。一次性 bootstrap challenge 绑定 VM identity、sandbox ID、boot nonce、协议版本和预期 guest asset digest；session token 短期、可轮换，不能跨 VM 使用。
 
+握手、临时身份、消息重放防护和启动完整性边界见[控制通道与启动完整性设计](../design/control-channel-security.md)。
+
 ## 8. 生命周期
 
 ### 8.1 创建与运行
@@ -277,6 +283,8 @@ Destroy 顺序固定为：撤销 grant、关闭控制通道、终止 VM、移除
 - Guest asset 与宿主应用升级都必须支持签名验证、失败回滚和 downgrade protection。
 
 ## 10. 分阶段实施
+
+平台最低版本和 VZ/Hyper-V 能力在实现前按[平台能力与最低版本矩阵](../design/platform-capability-matrix.md)完成 POC 并冻结。
 
 ### Phase 1：安全契约与接口冻结
 
@@ -313,3 +321,5 @@ Destroy 顺序固定为：撤销 grant、关闭控制通道、终止 VM、移除
 - 在未显式切换产品模式时从 VM 静默降级到 WSL2、容器或宿主进程。
 
 只有这些安全门槛通过后才设定性能目标，不为冷启动或密度放宽安全属性。
+
+每项门槛对应的责任组件、自动化测试和证据要求见[安全验证追踪矩阵](../security/security-verification-matrix.md)。
