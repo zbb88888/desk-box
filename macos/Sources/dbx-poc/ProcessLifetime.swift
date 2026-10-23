@@ -15,6 +15,11 @@ final class ProcessLifetime: @unchecked Sendable {
     private var stdinSource: DispatchSourceRead?
     private var continuation: CheckedContinuation<ExitReason, Never>?
     private var finished = false
+    private let onInput: @Sendable (Data) -> Void
+
+    init(onInput: @escaping @Sendable (Data) -> Void = { _ in }) {
+        self.onInput = onInput
+    }
 
     func wait() async -> ExitReason {
         await withCheckedContinuation { continuation in
@@ -44,10 +49,11 @@ final class ProcessLifetime: @unchecked Sendable {
         let source = DispatchSource.makeReadSource(fileDescriptor: FileHandle.standardInput.fileDescriptor, queue: queue)
         source.setEventHandler { [weak self] in
             guard let self else { return }
-            var byte: UInt8 = 0
-            let count = read(FileHandle.standardInput.fileDescriptor, &byte, 1)
+            var bytes = [UInt8](repeating: 0, count: 4096)
+            let count = read(FileHandle.standardInput.fileDescriptor, &bytes, bytes.count)
             if count == 0 { self.finish(.stdinEOF) }
             else if count < 0 { self.finish(.stdinEOF) }
+            else { self.onInput(Data(bytes.prefix(count))) }
         }
         source.setCancelHandler {}
         stdinSource = source

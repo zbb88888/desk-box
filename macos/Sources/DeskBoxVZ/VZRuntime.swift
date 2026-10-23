@@ -244,6 +244,18 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         return status.endpoints.first { $0.name == name }
     }
 
+    /// Diagnostic-only serial input. It is intentionally not part of the
+    /// trusted control plane and must never be used for authorization.
+    public func sendConsoleInput(_ handle: SandboxHandle, data: Data) async throws {
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.started, let console = record.serialConsole else {
+                throw SandboxFailure(.platformCapabilityUnavailable, "guest serial console 不可用")
+            }
+            try console.hostWriteHandle.write(contentsOf: data)
+        }
+    }
+
     // MARK: - Configuration
 
     private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL, boot: BootContext) throws -> (configuration: VZVirtualMachineConfiguration, console: VZSerialConsole?) {

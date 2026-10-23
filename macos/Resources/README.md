@@ -82,6 +82,6 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 4. 启动 VM，并把 guest `console=hvc0` 输出转发到宿主 stderr；console 仅用于诊断；
 5. 接收 guest control frame；合法的 boot-bound hello 会返回 `requiresTLS=true`，未完成 TLS/bootstrap 的 frame 只记审计并拒绝，不改变生命周期；
 6. 输出 `sandboxID`、`bootID` 和 `BootContext`；
-7. 等待 stdin EOF、SIGINT 或 SIGTERM，然后统一执行 stop + destroy + 删除 COW。
+7. 前台 POC 将宿主 stdin 字节转发到 guest serial console（仅诊断/交互，不是可信控制面）；收到 stdin EOF、SIGINT 或 SIGTERM 后统一执行 stop + destroy + 删除 COW。
 
-当前没有 guest `execd` bootstrap 客户端，因此输出状态是 `pending-bootstrap`，不能当作产品 `Running`。guest kernel 的 `console=hvc0` 启动日志只能证明 guest 有输出，不能证明 readiness、身份或 attestation。信号清理路径仍需在真实实体机上验证，尤其是进程被 SIGKILL 或宿主崩溃时的孤儿资源回收。
+当前没有 guest `execd` bootstrap 客户端，因此输出状态是 `pending-bootstrap`，不能当作产品 `Running`。guest kernel 的 `console=hvc0` 启动日志只能证明 guest 有输出，不能证明 readiness、身份或 attestation。serial console 输入同样不具备授权语义，产品命令执行必须走认证的 execd/control channel。信号清理路径仍需在真实实体机上验证，尤其是进程被 SIGKILL 或宿主崩溃时的孤儿资源回收。

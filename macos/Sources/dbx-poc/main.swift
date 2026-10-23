@@ -110,7 +110,11 @@ struct DBXPOC {
             )
             print(String(decoding: try JSONEncoder.pretty.encode(output), as: UTF8.self))
             fflush(stdout)
-            let lifetime = ProcessLifetime()
+            let lifetime = ProcessLifetime { data in
+                Task {
+                    try? await runtime.sendConsoleInput(handle, data: data)
+                }
+            }
             let reason = await lifetime.wait()
             switch reason {
             case .stdinEOF:
