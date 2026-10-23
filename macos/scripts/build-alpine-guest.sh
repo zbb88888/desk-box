@@ -68,14 +68,28 @@ EOF
     chmod 0755 /tmp/rootfs/sbin/init
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw
     mke2fs -q -t ext4 -F -d /tmp/rootfs /out/root-disk.raw
+
+    rm -rf /tmp/initrd
+    mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
+    cp /tmp/rootfs/bin/busybox /tmp/initrd/bin/busybox
+    ln -s busybox /tmp/initrd/bin/mount
+    ln -s busybox /tmp/initrd/bin/switch_root
+    cat > /tmp/initrd/init <<EOF
+#!/bin/busybox sh
+mount -t devtmpfs dev /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+until mount -t ext4 -o rw /dev/vda /newroot; do sleep 1; done
+exec /bin/switch_root /newroot /sbin/init
+EOF
+    chmod 0755 /tmp/initrd/init
+    (cd /tmp/initrd && find . -print | cpio -o -H newc 2>/dev/null | gzip -9 > /out/initrd-deskbox.img)
   '
 
-# Alpine's initramfs uses its own init. The root disk contains a diagnostic
-# filesystem; root=/dev/vda is retained in the manifest for explicitness.
 cd "$(dirname "$0")/.."
 swift run dbx-poc make-manifest \
   --kernel "$OUT_DIR/vmlinuz-virt" \
-  --initrd "$OUT_DIR/initramfs-virt" \
+  --initrd "$OUT_DIR/initrd-deskbox.img" \
   --root-disk "$OUT_DIR/root-disk.raw" \
   --output "$OUT_DIR/manifest.json"
 

@@ -51,7 +51,7 @@ struct DBXPOC {
             kernelURL: kernel,
             initrdURL: initrd,
             rootDiskURL: rootDisk,
-            kernelCommandLine: "console=hvc0 root=/dev/vda rw init=/sbin/init",
+            kernelCommandLine: "console=hvc0 root=/dev/vda rw init=/init",
             guestAssetVersion: 1,
             manifestDigest: "unsigned-local-manifest",
             fileDigests: digests
