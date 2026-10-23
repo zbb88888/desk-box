@@ -19,6 +19,15 @@ codesign --display --entitlements :- macos/.build/release/dbx-poc
 
 不要把 ad-hoc 签名或未验证 entitlement 当作发布证据。最终使用的签名、Team ID、notarization 和系统版本必须写入平台能力矩阵 §4 的 POC 证据。
 
+可使用脚本执行 release 构建、签名、entitlement 验证和启动：
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: ..." \
+  ./macos/scripts/sign-and-run.sh ./macos/guest/manifest.json
+```
+
+没有有效签名 identity 时，`swift run dbx-poc launch` 会在 VZ 配置校验阶段被系统拒绝，这是预期的 fail-closed 行为。
+
 ## Guest asset manifest
 
 可以使用 CLI 根据已有 Linux guest 文件自动生成 manifest 和 SHA-256：
