@@ -2,3 +2,6 @@
 macos/.build/
 macos/.swiftpm/
 *.xcuserstate
+
+# Local guest assets (large/generated, never commit)
+macos/guest/
