@@ -59,6 +59,8 @@ OCI 镜像 / Agent / 依赖
 
 VM 是首版唯一强安全边界。namespace、cgroup、seccomp、`runc`、`execd` 和 MCP 都只是兼容层或纵深防御，不提升产品保障等级。
 
+Host 与 Guest 使用同一套身份、资源、操作、授权、决策、原因码和审计语义：Host 决策是权限上限，Guest 只能进一步收紧，不能放宽。macOS 与 Windows 通过不同平台机制实现相同契约。完整分层、Guest 内控制和跨边界一致性见[Host 与 Guest 双层统一安全体系](../design/two-layer-security-model.md)。
+
 ## 5. 核心内部契约
 
 ### 5.1 `SandboxRuntime`
@@ -86,7 +88,7 @@ VM 是首版唯一强安全边界。namespace、cgroup、seccomp、`runc`、`exe
 - 声明式服务端口；
 - CPU、内存、磁盘和进程数提示。
 
-必须拒绝：host namespace、host device、任意 bind mount、额外 capability、privileged、seccomp/AppArmor 覆盖、daemon socket 和 provider-specific 逃生字段。
+必须拒绝：host namespace、host device、任意 bind mount、额外 capability、privileged、seccomp/LSM 覆盖、BPF/perf/module 管理权限、daemon socket 和 provider-specific 逃生字段。
 
 ### 5.3 `CredentialGrant`
 
@@ -230,6 +232,8 @@ Guest image 只包含 kernel、init、必要 virtio/VMBus driver、`containerd`�
 `containerd` 在 guest 内管理 content、snapshot 和 task 生命周期；`runc` 使用 Linux namespace、cgroup、capability drop、`no_new_privs` 与固定 seccomp policy 创建进程。
 
 Containerd socket 不离开 guest，只允许可信 guest control process 访问；workload container 不获得该 socket。同一 VM 内的所有容器必须属于同一凭据授权域，因为它们共享 guest kernel。
+
+Guest 基线同时启用经验证的 SELinux 或 AppArmor profile、只读基础 rootfs、受控 mount、非 root workload 和默认拒绝网络。eBPF 仅作为可信 Guest 基础设施的可选策略或可观测性机制；workload 禁止 unprivileged BPF，不获得 `CAP_BPF`、`CAP_PERFMON`、`CAP_SYS_ADMIN` 或 `CAP_SYS_MODULE`，且不能访问 `bpffs`。具体规则见[Host 与 Guest 双层统一安全体系](../design/two-layer-security-model.md)。
 
 ### 7.3 OpenSandbox `execd` 小型 Fork
 

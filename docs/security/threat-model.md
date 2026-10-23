@@ -48,6 +48,8 @@
 
 OCI workload 不可信。Guest kernel 是宿主边界的一部分，但不能接触长期凭据。Guest 内 container isolation 只提供纵深防御。
 
+Host 权威策略、VM 强边界、Guest 纵深防御及跨边界协议共同构成安全闭环；任一层都不能单独继承整体保障声明。两层统一语义和执行责任见[Host 与 Guest 双层统一安全体系](../design/two-layer-security-model.md)。
+
 ## 4. 十项安全不变量
 
 ### 不变量 1：强隔离任务始终位于独立 VM 边界
@@ -82,9 +84,9 @@ Guest 默认无任意出口。DNS、redirect、proxy、IPv4/IPv6、private/link-
 
 ### 不变量 6：OCI metadata 不能授予额外权限
 
-Image config 与 Dockerfile 只能影响白名单 `WorkloadSpec`。Privileged、host namespace、host device、任意 mount、额外 capability、daemon socket 和安全策略覆盖必须被拒绝。
+Image config 与 Dockerfile 只能影响白名单 `WorkloadSpec`。Privileged、host namespace、host device、任意 mount、额外 capability、daemon socket、BPF 加载权限和安全策略覆盖必须被拒绝。
 
-证据：恶意 config corpus、schema/property test、拒绝原因审计。
+证据：恶意 config corpus、schema/property test、BPF syscall/`bpffs`/capability 越权测试和拒绝原因审计。
 
 ### 不变量 7：宿主与 guest 控制通道必须绑定具体 VM 身份
 

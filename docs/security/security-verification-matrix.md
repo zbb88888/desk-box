@@ -23,7 +23,7 @@
 | INV-03 | 长期真实凭据不进入 sandbox | Credential Broker、日志、snapshot | Canary secret 扫描环境、文件、内存转储、COW、日志、snapshot | 扫描报告与人工取证记录 | 身份安全负责人 | 未实现 |
 | INV-04 | 所有外部访问经过宿主策略 | Network Broker、Platform Adapter | 互联网/私网/loopback/link-local/metadata、DNS rebinding、redirect、DoH/QUIC 绕过 | 网络 corpus 结果、packet capture 摘要 | 网络安全负责人 | 未实现 |
 | INV-05 | 宿主文件仅来自显式工作区授权 | Workspace Sync | 路径、链接、ADS、大小写、Unicode、TOCTOU、并发替换 | 两平台文件系统 corpus 结果 | 数据面负责人 | 未实现 |
-| INV-06 | OCI metadata 不能扩权 | OCI Service、WorkloadSpec Compiler | 恶意 config/layer、privileged/device/mount/capability 拒绝、解压炸弹 | Parser fuzz 与拒绝审计 | OCI 负责人 | 未实现 |
+| INV-06 | OCI metadata 不能扩权 | OCI Service、WorkloadSpec Compiler、Guest Policy | 恶意 config/layer、privileged/device/mount/capability/BPF 拒绝、解压炸弹 | Parser fuzz、BPF 越权测试与拒绝审计 | OCI 负责人 | 未实现 |
 | INV-07 | 控制通道绑定具体 VM 身份 | Controller、`execd`、VZ Socket/HVSock Adapter | 串线、证书篡改、旧 nonce/token/snapshot、版本降级 | 协议测试和独立密码学评审 | 控制通道负责人 | 未实现 |
 | INV-08 | 资源和生命周期由宿主强制 | Controller、Platform Adapter、guest cgroup | CPU/内存/磁盘/PID/日志耗尽、卡死关机、崩溃恢复 | 压力测试与孤儿资源清单 | Runtime 负责人 | 未实现 |
 | INV-09 | 构建域与运行域隔离 | Builder Service、Artifact Import | Build secret canary、cache 跨构建、runtime 磁盘读取、产物篡改 | Builder 销毁和 artifact provenance | 构建供应链负责人 | 未实现 |
@@ -79,6 +79,7 @@
 
 ## 7. 文档到证据的追踪
 
+- Host、VM 边界、Guest 或跨边界责任变化：更新[双层统一安全体系](../design/two-layer-security-model.md)并标记受影响不变量。
 - 架构组件或边界变化：更新总体架构并标记受影响不变量。
 - 安全目标变化：先更新威胁模型，再更新本矩阵。
 - 技术替换或保障等级变化：新增 ADR。
