@@ -58,6 +58,8 @@ public struct ReasonCode: Hashable, Sendable, Codable, CustomStringConvertible {
     public static let platformSuspendDisabled = ReasonCode("DBX-PLATFORM-SUSPEND-DISABLED")
     public static let platformAssetDigestMismatch = ReasonCode("DBX-PLATFORM-ASSET-DIGEST-MISMATCH")
     public static let platformNetworkDeniedByDefault = ReasonCode("DBX-PLATFORM-NETWORK-DENIED-BY-DEFAULT")
+    public static let platformCowUnavailable = ReasonCode("DBX-PLATFORM-COW-UNAVAILABLE")
+    public static let platformCowCleanupFailed = ReasonCode("DBX-PLATFORM-COW-CLEANUP-FAILED")
 }
 
 /// 统一决策模型（docs/design/two-layer-security-model.md §3-4）。

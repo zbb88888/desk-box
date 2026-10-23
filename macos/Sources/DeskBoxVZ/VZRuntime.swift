@@ -18,11 +18,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var lifecycle: LifecycleMachine
         var started = false
         var delegate: VZRuntimeDelegate?
+        let cowLease: CowDiskManager.Lease
 
-        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine) {
+        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine, cowLease: CowDiskManager.Lease) {
             self.request = request
             self.boot = boot
             self.machine = machine
+            self.cowLease = cowLease
             self.lifecycle = LifecycleMachine(
                 sandboxID: request.sandboxID,
                 boot: boot,
@@ -35,8 +37,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     /// All records are accessed on `queue`; no blocking lock is used from async code.
     private var records: [SandboxID: Record] = [:]
     private let audit: AuditSink?
+    private let cow: CowDiskManager
 
-    public init(audit: AuditSink? = nil) {
+    public init(cowRoot: URL, audit: AuditSink? = nil) throws {
+        self.cow = try CowDiskManager(root: cowRoot)
         self.audit = audit
     }
 
@@ -56,14 +60,21 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
 
             _ = try GuestAssetValidator.validate(request.guestAssets)
-            let configuration = try self.makeConfiguration(request)
+            let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL, sandboxID: request.sandboxID)
+            let configuration: VZVirtualMachineConfiguration
+            do {
+                configuration = try self.makeConfiguration(request, diskURL: cowLease.cloneURL)
+            } catch {
+                try? self.cow.removeClone(cowLease)
+                throw error
+            }
             let machine = VZVirtualMachine(configuration: configuration, queue: self.queue)
             let boot = BootContext(
                 sandboxID: request.sandboxID,
                 protocolMajor: ControlChannelProtocol.currentMajor,
                 guestManifestDigest: request.guestAssets.manifestDigest
             )
-            let record = Record(request: request, boot: boot, machine: machine)
+            let record = Record(request: request, boot: boot, machine: machine, cowLease: cowLease)
             let sandboxID = request.sandboxID
             let delegate = VZRuntimeDelegate { [weak self] error in
                 guard let self else { return }
@@ -89,11 +100,17 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw SandboxFailure(.bootstrapProofMismatch, "boot identity 不匹配")
             }
             guard !record.started else { return record.boot }
-            // 首个切片必须明确有产品 COW 后才能运行。当前 VZ config 使用只读
-            // base disk，尚未接入 overlay/NBD，因此这里 fail closed。
-            let failure = SandboxFailure(.platformCapabilityUnavailable, "macOS COW 尚未通过 POC；禁止以基础盘直接启动 sandbox")
-            self.recordAudit(record, action: .start, decision: .error(failure.reason, failure.message))
-            throw failure
+            do {
+                try await record.machine.start()
+                record.started = true
+                self.recordAudit(record, action: .start, decision: .allow())
+                return record.boot
+            } catch {
+                record.lifecycle.forceFail(reason: .platformCapabilityUnavailable)
+                let failure = SandboxFailure(.platformCapabilityUnavailable, "VZ VM 启动失败：\(error.localizedDescription)")
+                self.recordAudit(record, action: .start, decision: .error(failure.reason, failure.message))
+                throw failure
+            }
         }
     }
 
@@ -158,6 +175,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                     try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
                 }
             }
+            do {
+                try self.cow.removeClone(record.cowLease)
+            } catch {
+                record.lifecycle.forceFail(reason: .platformCowCleanupFailed)
+                self.recordAudit(record, action: .destroy, decision: .error(.platformCowCleanupFailed, error.localizedDescription))
+                throw error
+            }
             self.recordAudit(record, action: .destroy, decision: .allow())
             self.records.removeValue(forKey: handle.sandboxID)
         }
@@ -188,7 +212,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     // MARK: - Configuration
 
-    private func makeConfiguration(_ request: SandboxCreateRequest) throws -> VZVirtualMachineConfiguration {
+    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL) throws -> VZVirtualMachineConfiguration {
         let assets = request.guestAssets
         let bootLoader = VZLinuxBootLoader(kernelURL: assets.kernelURL)
         bootLoader.initialRamdiskURL = assets.initrdURL
@@ -205,8 +229,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
         let attachment = try VZDiskImageStorageDeviceAttachment(
-            url: assets.rootDiskURL,
-            readOnly: true
+            url: diskURL,
+            readOnly: false
         )
         let block = VZVirtioBlockDeviceConfiguration(attachment: attachment)
         configuration.storageDevices = [block]

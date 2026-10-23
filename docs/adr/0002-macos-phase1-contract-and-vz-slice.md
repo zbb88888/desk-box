@@ -12,7 +12,7 @@ ADR-0001 要求先冻结跨平台生命周期、安全语义和验证契约，�
 在 `macos/` 建立 Swift Package：
 
 - `DeskBoxCore`：跨平台契约语义，包括身份、reason code、decision、审计、boot proof、生命周期状态机、`WorkloadSpec` 编译器、`CredentialGrant` 解析器和 `SandboxRuntime` 接口。
-- `DeskBoxVZ`：`Virtualization.framework` 能力探针、guest asset digest 校验和 VZ configuration/runtime 骨架。
+- `DeskBoxVZ`：`Virtualization.framework` 能力探针、guest asset digest 校验、APFS `clonefile` per-sandbox COW 磁盘和 VZ configuration/runtime。
 - `dbx-poc`：`capcheck` 和 `validate-assets` 命令，用于平台 POC 前置检查。
 - `Tests/DeskBoxCoreTests`：契约级单测。
 - `Tests/ConformanceTests`：未来由 VZ 与 Hyper-V adapter 共享的 contract suite 起点。
@@ -23,22 +23,23 @@ ADR-0001 要求先冻结跨平台生命周期、安全语义和验证契约，�
 2. OCI config 只编译为白名单 `WorkloadSpec`；root、危险环境变量和未授权 volume 不得扩权。
 3. grant 在目标、主体、期限和注入形态不明确时 fail closed；多条不等价 grant 同时匹配时拒绝。
 4. VZ 首个切片不提供网络卡，默认没有普通 guest 出口。
-5. VZ 尚未完成产品 COW POC 前，`start` 明确拒绝以只读基础盘直接运行 sandbox；这不是可用运行时，而是安全骨架。
-6. suspend/resume 在真实 POC 完成前明确关闭。
+5. VZ 使用产品自建 APFS `clonefile` 作为 per-sandbox COW 候选实现；它不是 VZ 原生 snapshot，必须通过真实 APFS/磁盘压力和恢复 POC 后才能作为发布能力。
+6. COW 创建、VZ 启动或 COW 清理任一失败都 fail closed，不得回退到基础盘或报告已销毁。
+7. suspend/resume 在真实 POC 完成前明确关闭。
 
 ## 未完成与发布阻断项
 
 以下不是本 ADR 的已验证能力：
 
 - `com.apple.security.virtualization` entitlement、发布签名和 notarization；
-- macOS COW（VZ 无原生差分盘，需产品方案）；
+- macOS COW 的 APFS/clonefile 方案尚未通过真实磁盘、空间耗尽、崩溃恢复和删除 POC；
 - VZ Socket 上的 TLS 1.3 双向握手和 execd bootstrap；
 - Workspace Sync、Keychain/Credential Broker、guest image/containerd/execd；
 - Host CPU/内存/磁盘/生命周期强制；
 - suspend/resume、snapshot、崩溃恢复、孤儿资源回收；
 - 真实 kernel/VM escape、恶意 OCI corpus、网络绕过和秘密取证测试。
 
-因此当前代码只能称为“Phase 1 契约 + VZ 配置骨架”，不能称为已验证安全或可发布沙箱。
+因此当前代码只能称为“Phase 1 契约 + VZ COW 候选实现”，不能称为已验证安全或可发布沙箱。
 
 ## 验证
 

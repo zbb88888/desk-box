@@ -134,7 +134,7 @@ Controller 是宿主策略执行点：
 
 macOS 后端使用 `Virtualization.framework` 启动 Linux arm64 VM。VZ 不验证 Linux boot asset 签名，宿主必须在启动前按 manifest 校验 kernel、initrd 和 root disk 的 digest/signature，并配置：
 
-- 只读基础盘与每 sandbox 独立 COW；VZ 无原生差分盘机制，COW 是产品自建组件（guest 侧 overlay 或宿主块设备代理），实现路径以 POC 结论冻结；
+- 只读基础盘与每 sandbox 独立 COW；VZ 无原生差分盘机制，当前候选是产品宿主侧 APFS `clonefile`，不是 VZ snapshot；实现路径必须经过真实 APFS、空间耗尽、崩溃恢复和 cleanup 失败 POC 后冻结；
 - virtio block、entropy、balloon 和 network；
 - 仅宿主可达的 VZ Socket 控制通道；
 - 启动时固定的内存上限与 vCPU 上限；VZ 无公开 CPU 时间硬配额 API，CPU 强制行为以 POC 实测冻结，不能用宿主调度优先级伪装成硬限额；

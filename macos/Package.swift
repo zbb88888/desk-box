@@ -21,7 +21,7 @@ let package = Package(
             name: "dbx-poc",
             dependencies: ["DeskBoxCore", "DeskBoxVZ"]
         ),
-        .testTarget(name: "DeskBoxCoreTests", dependencies: ["DeskBoxCore"]),
+        .testTarget(name: "DeskBoxCoreTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),
         .testTarget(name: "ConformanceTests", dependencies: ["DeskBoxCore"]),
     ]
 )

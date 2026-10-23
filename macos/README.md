@@ -32,12 +32,13 @@ Guest Linux 镜像构建链与 `execd` fork 为跨平台共享，不放本目录
 
 1. 用发布签名与目标 entitlement 启动最小 arm64 Linux guest。
 2. 验证 VZ Socket 只连接对应 VM，覆盖并发 VM 串线测试（→ 控制通道设计 §3–5）。
-3. 验证基础盘只读、每 sandbox 可写 overlay 独立且可确定性删除。注意 VZ 无原生差分盘，COW 是 macOS 独有自研点（guest 侧 overlay 或宿主块设备代理），结论需回写架构 §6.3。
+3. 验证基础盘只读、每 sandbox 可写 COW clone 独立且可确定性删除。当前候选实现是宿主 APFS `clonefile`；它不是 VZ 原生 snapshot，必须在真实 APFS、空间耗尽、崩溃恢复和删除失败场景验证，结论需回写架构 §6.3。
 4. 验证无网卡与受控网卡两种模式下均无绕过 Broker 的出口（→ Broker 设计 §9 POC 1）。
 5. 测量 vCPU 与固定内存上限在宿主压力下的强制行为。VZ 无公开 CPU 时间硬配额 API，本项结论决定不变量 8 在 macOS 侧的可承诺表述。
-6. 验证 app crash、强杀、系统重启后的 VM/COW/endpoint 枚举与回收。
-7. 验证 suspend/resume API、最低系统版本、snapshot 中会话材料失效；失败则首版禁用该功能。
-8. 验证系统升级与应用回滚不加载低于安全最低版本的 guest asset。
+6. 验证 `CowDiskManager` 在 APFS 上的 clone、写时复制独立性、空间耗尽、同 sandbox 重复创建、并发创建和 cleanup 失败行为。
+7. 验证 app crash、强杀、系统重启后的 VM/COW/endpoint 枚举与回收。
+8. 验证 suspend/resume API、最低系统版本、snapshot 中会话材料失效；失败则首版禁用该功能。
+9. 验证系统升级与应用回滚不加载低于安全最低版本的 guest asset。
 
 ## 验收门槛
 
