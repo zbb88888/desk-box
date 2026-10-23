@@ -1,81 +1,69 @@
-# Desktop VM Sandbox Architecture
+# 桌面 VM 安全沙箱架构
 
-Status: Proposed baseline
-Date: 2026-10-23
+状态：首版实现基线
+日期：2026-10-23
 
-## 1. Executive decision
+## 1. 最终架构决策
 
-Desk Box uses OCI images as the workload format and a dedicated Linux virtual machine as the security boundary.
+Desk Box 采用 **Kata-like、桌面原生、VM-backed** 架构：
 
-- macOS on Apple Silicon uses Apple `Virtualization.framework`.
-- Windows 11 Pro/Enterprise uses a Hyper-V Generation 2 Linux VM.
-- The default isolation unit is one VM per workspace and credential authorization domain.
-- High-assurance mode uses one VM per agent.
-- The guest uses `containerd` and `runc` for OCI compatibility. They are not treated as the host security boundary.
-- A pinned, minimal fork of OpenSandbox `execd` provides command, PTY, file, session, and metrics APIs.
-- Long-lived credentials remain in macOS Keychain or Windows Credential Manager. A trusted host broker injects credentials only into approved outbound requests.
-- Docker Desktop, Kubernetes, WSL2, and a host Docker daemon are not product dependencies.
+- OCI 镜像是唯一外部工作负载格式，但不是安全边界。
+- Apple Silicon macOS 使用 Apple `Virtualization.framework` 启动独立 Linux arm64 VM。
+- Windows 11 Pro/Enterprise 使用 Hyper-V Generation 2 启动独立 Linux amd64 VM。
+- 默认隔离单位是一台 VM 对应一个工作区和凭据授权域；高保障模式是一台 VM 对应一个 Agent。
+- 来宾内使用 `containerd + runc` 提供 OCI 兼容，它们只负责来宾内进程组织。
+- 固定上游版本的小型 OpenSandbox `execd` fork 提供命令、PTY、文件、会话和指标 API。
+- 长期凭据只保存在 macOS Keychain 或 Windows Credential Manager，由可信宿主 Broker 在通过策略校验的最终上游请求中注入。
+- 产品不依赖 Docker Desktop、Kubernetes、WSL2、宿主 Docker daemon 或宿主 `docker.sock`。
 
-This is a Kata-like architecture, not a port of Kata Containers. It preserves the useful split between host controller, VM, guest agent, and OCI workload while using the native desktop hypervisor on each platform.
+这是对 Kata 分层思想的桌面实现，不是移植 Kata Containers。安全声明来自独立 guest kernel 与宿主强制策略，而不是“容器”“沙箱”等名称。
 
-## 2. Goals
+## 2. 目标
 
-1. Run Claude Code, Codex, dsh, MCP servers, build scripts, browsers, and ordinary development tools when the workload may be malicious.
-2. Prevent the workload from reading host files, long-lived credentials, other workspaces, or host service sockets.
-3. Support OCI images and Dockerfiles without exposing a Docker daemon API.
-4. Present user-oriented permissions instead of Kubernetes, networking, or container-runtime configuration.
-5. Keep macOS and Windows behavior consistent behind a common lifecycle and execution contract.
-6. Make every security claim testable and fail closed when a required control is unavailable.
+1. 在工作负载可能恶意的前提下运行 Claude Code、Codex、dsh、MCP、构建脚本、浏览器和普通开发工具。
+2. 阻止工作负载读取宿主秘密、未授权文件、其他工作区或宿主服务 socket。
+3. 支持 OCI 镜像与 Dockerfile，但不开放 Docker daemon API。
+4. 向最终用户提供“允许访问仓库”“允许调用模型服务”等意图级授权，而不是技术化基础设施配置。
+5. 在 macOS 和 Windows 后端之上提供一致的生命周期、执行和审计语义。
+6. 让每项安全声明都有可执行验收，并在控制不可用或状态不明确时 fail closed。
 
-## 3. Non-goals for the first release
+## 3. 首版非目标
 
-- Protecting against a compromised host administrator, hypervisor zero-day, firmware attack, or hardware side channel.
-- Windows Home, Intel Mac, or Linux host productization.
-- Docker Compose, Kubernetes, privileged workloads, arbitrary devices, or host bind mounts.
-- Full Docker API or `docker.sock` compatibility.
-- Jupyter or a hosted code-interpreter platform.
-- Transparent support for every Linux image architecture through emulation.
-- gVisor or Wasmer in the default execution path.
+- 抵御宿主管理员失陷、hypervisor 0-day、固件攻击和硬件侧信道。
+- 支持 Windows Home、Intel Mac 或 Linux host 产品化。
+- 支持 Docker Compose、Kubernetes、privileged workload、任意设备和宿主 bind mount。
+- 兼容完整 Docker API 或 `docker.sock`。
+- 提供 Jupyter 或托管 Code Interpreter 平台。
+- 自动模拟任意镜像架构。
+- 在默认执行链引入 gVisor 或 Wasmer。
 
-## 4. Trust boundaries
+## 4. 信任边界
 
 ```text
-Untrusted                                             Trusted
+不可信域                                             可信宿主域
 
-OCI image / agent / dependency
+OCI 镜像 / Agent / 依赖
         |
         v
 +---------------- Sandbox VM ----------------+        +---------------- Host ----------------+
-| independent Linux guest kernel             |        | Desktop UI / CLI                     |
+| 独立 Linux guest kernel                    |        | Desktop UI / CLI                     |
 |                                             |        |                                      |
 | execd fork <-> containerd <-> runc          |<------>| Sandbox Controller                   |
 |                       |                     | socket | OCI Image Service                    |
 |                       v                     |        | Workspace Sync                       |
 |                  OCI workload              |        | Credential + Network Broker          |
 |                                             |        | Keychain / Credential Manager        |
-| private COW disk, default-deny network      |        | Audit log                            |
+| 私有 COW、默认拒绝网络                      |        | Audit Log                             |
 +---------------------------------------------+        +--------------------------------------+
 ```
 
-The VM boundary supplies the product's strong isolation claim. Namespaces, cgroups, seccomp, `runc`, `execd`, and MCP are defense-in-depth or compatibility components and do not upgrade the security level.
+VM 是首版唯一强安全边界。namespace、cgroup、seccomp、`runc`、`execd` 和 MCP 都只是兼容层或纵深防御，不提升产品保障等级。
 
-## 5. Host components
+## 5. 核心内部契约
 
-### 5.1 Desktop UI and CLI
+### 5.1 `SandboxRuntime`
 
-The UI exposes intent-level actions:
-
-- Allow this task to read or modify a selected workspace.
-- Allow access to a selected repository.
-- Allow calls to a named model or API service.
-- Allow internet access for this task.
-- Keep or discard the sandbox after completion.
-
-It does not require users to configure images, entrypoints, sidecars, RuntimeClass, CIDRs, or credentials manually. Advanced image selection remains available behind a separate developer surface.
-
-### 5.2 Sandbox Controller
-
-The controller owns a versioned `SandboxRuntime` interface:
+平台无关生命周期接口至少包含：
 
 - `create`
 - `start`
@@ -86,189 +74,242 @@ The controller owns a versioned `SandboxRuntime` interface:
 - `inspect`
 - `resolveEndpoint`
 
-It enforces CPU, memory, disk, runtime duration, process, and endpoint limits before invoking a platform adapter. Provider-specific settings never pass directly from an untrusted API request into VZ or Hyper-V.
+状态固定为 `Pending`、`Running`、`Suspending`、`Suspended`、`Resuming`、`Stopping`、`Stopped` 和 `Failed`。每次转换记录稳定 reason code、时间戳和 correlation ID。
 
-Sandbox state is explicit: `Pending`, `Running`, `Suspending`, `Suspended`, `Resuming`, `Stopping`, `Stopped`, and `Failed`. Every transition records a stable reason code and timestamp.
+### 5.2 `WorkloadSpec`
 
-### 5.3 Platform adapters
+宿主 OCI Service 把不可信 OCI config 编译为白名单式 `WorkloadSpec`。首版仅允许：
 
-#### macOS adapter
+- entrypoint 与参数；
+- 受控环境变量；
+- 工作目录；
+- 声明式服务端口；
+- CPU、内存、磁盘和进程数提示。
 
-The macOS adapter uses `Virtualization.framework` to start a signed Linux arm64 kernel, initrd, and root disk. It provides:
+必须拒绝：host namespace、host device、任意 bind mount、额外 capability、privileged、seccomp/AppArmor 覆盖、daemon socket 和 provider-specific 逃生字段。
 
-- read-only base disk plus per-sandbox copy-on-write storage;
-- virtio block, entropy, memory balloon, and network devices;
-- VZ socket for the private control channel;
-- host-enforced CPU and memory configuration;
-- serial diagnostics unavailable to the workload;
-- suspend/resume only after state and secret handling pass validation.
+### 5.3 `CredentialGrant`
 
-Host directories are copied or synchronized into the private guest disk. `virtiofs` is not the default workspace data path because a live host mount expands the authority available to a compromised guest.
+凭据能力绑定以下维度：
 
-#### Windows adapter
+- 用户、工作区、sandbox 和 Agent 身份；
+- scheme、host、有效端口、method 与 path；
+- bearer、API header 等注入形态；
+- 签发时间、过期时间、可选次数和速率限制。
 
-The Windows adapter directly manages a Hyper-V Generation 2 Linux VM through supported Hyper-V management interfaces. It provides:
+Grant 只引用逻辑凭据，不承载真实值。
 
-- signed Generation 2 boot assets and Secure Boot where the selected Linux template supports it;
-- read-only base VHDX plus a per-sandbox differencing VHDX;
-- Hyper-V Socket for the private control channel;
-- checkpoints only under the product's secret and lifecycle policy;
-- host-enforced processor, memory, disk, and lifetime limits.
+## 6. 宿主组件
 
-This design does not depend on HCS LCOW v2. LCOW client availability and direct Hyper-V VM management are separate questions; Windows 11 Pro/Enterprise can provide the latter.
+### 6.1 Desktop UI 与 CLI
 
-### 5.4 OCI Image Service
+默认交互只展示用户意图：
 
-The host image service performs:
+- 允许本次任务读取或修改选定工作区；
+- 允许访问指定仓库；
+- 允许调用指定模型或 API 服务；
+- 允许本次任务联网；
+- 任务结束后保留或销毁环境。
 
-1. Registry resolution and authentication.
-2. Manifest-list selection for `linux/arm64` or `linux/amd64`.
-3. Digest pinning and optional signature/provenance policy.
-4. Content-addressed blob caching.
-5. Size, file-count, path, symlink, hard-link, device-node, and decompression-ratio checks.
-6. Translation from OCI config into a restricted internal `WorkloadSpec`.
-7. Garbage collection that understands active COW and snapshot references.
+普通用户不需要理解 image entrypoint、sidecar、RuntimeClass、CIDR 或 credential 注入细节。高级镜像选择属于独立开发者入口。
 
-`WorkloadSpec` is allowlist based. It carries entrypoint, arguments, controlled environment, working directory, declared service ports, and resource hints. It cannot request host namespaces, host devices, arbitrary mounts, additional capabilities, policy replacement, or runtime sockets.
+### 6.2 Sandbox Controller
 
-### 5.5 Builder Service
+Controller 是宿主策略执行点：
 
-Dockerfiles are built by BuildKit inside a short-lived builder VM with its own disk, network policy, and identity.
+1. 校验请求与用户授权。
+2. 生成受限 `WorkloadSpec`。
+3. 选择 VZ 或 Hyper-V adapter。
+4. 强制 CPU、内存、磁盘、时长、进程、日志和 endpoint 配额。
+5. 协调 VM、guest agent、工作区、Broker 与审计生命周期。
+6. 在异常退出或宿主重启后回收孤儿 VM、COW、snapshot 和 grant。
 
-- The builder cannot access runtime VM disks, host workspaces unless explicitly imported, or production broker credentials.
-- Build secrets are explicit, short lived, and scoped to one build operation.
-- The host imports only the resulting OCI artifacts by digest.
-- Build cache is content addressed and treated as untrusted input when reused.
-- Builder destruction removes its COW disk and transient capabilities.
+不可信 API 字段不得直接透传到 hypervisor。
 
-### 5.6 Workspace Sync
+### 6.3 macOS Adapter
 
-Workspace access is explicit and path scoped. The default flow imports selected files into a private guest volume and exports approved changes after policy checks.
+macOS 后端使用 `Virtualization.framework` 启动签名的 Linux arm64 kernel、initrd 和 root disk，并配置：
 
-Path handling uses descriptor-relative operations where available and defends against traversal, symlink replacement, hard-link aliasing, case-folding differences, alternate data streams, and time-of-check/time-of-use races. Host home directories, SSH configuration, cloud credential directories, and Docker configuration are never imported implicitly.
+- 只读基础盘与每 sandbox 独立 COW；
+- virtio block、entropy、balloon 和 network；
+- 仅宿主可达的 VZ Socket 控制通道；
+- 宿主强制 CPU 与内存限额；
+- 工作负载不可读的串口诊断；
+- 经过生命周期与秘密检查的 suspend/resume。
 
-### 5.7 Credential and Network Broker
+工作区默认复制或增量同步到 guest 私有盘，不把 `virtiofs` 宿主直挂作为默认数据面。
 
-Long-lived secrets are fetched on demand from Keychain or Credential Manager. A `CredentialGrant` binds a secret use to:
+### 6.4 Windows Adapter
 
-- workspace and sandbox identity;
-- agent identity;
-- scheme, host, port, method, and path;
-- injection type, such as bearer or named API header;
-- issuance and expiry time;
-- optional request count or rate limit.
+Windows 后端直接管理 Hyper-V Generation 2 Linux VM，并配置：
 
-The guest receives an empty or fake value if a tool requires an environment variable to start. The trusted host proxy inserts the real credential only after resolving and validating the final destination.
+- 受支持时启用 Secure Boot 的签名启动资产；
+- 只读基础 VHDX 与每 sandbox 差分 VHDX；
+- 仅宿主可达的 Hyper-V Socket；
+- 受产品策略约束的 checkpoint；
+- 宿主强制 CPU、内存、磁盘和生命周期限额。
 
-Outbound traffic is default deny. The broker blocks loopback, private, link-local, multicast, and cloud metadata destinations; revalidates every redirect; pins authorization to the resolved request rather than only the original hostname; and rejects a request when DNS, TLS, proxy, or policy state is ambiguous. DoH and ECH require an explicit product policy because they can prevent destination inspection.
+Windows 11 上缺少成熟的 HCS LCOW v2 客户端路径，不等于 Hyper-V Gen2 不可用。首版直接管理 Hyper-V VM，不依赖 LCOW。
 
-The broker never logs secret-bearing headers or bodies. Audit records store the grant identifier, destination, decision, timing, and byte counts.
+### 6.5 OCI Image Service
 
-### 5.8 MCP Gateway
+OCI 服务执行：
 
-The trusted host MCP gateway maps a small set of tools to desktop capabilities. It does not expose raw hypervisor, image, mount, or network configuration.
+1. Registry 解析与认证。
+2. 为 `linux/arm64` 或 `linux/amd64` 选择 manifest。
+3. Digest pinning 与可选签名、provenance 策略。
+4. 内容寻址 blob cache。
+5. 解包前后的总大小、文件数、路径、symlink、hard link、device node 和压缩比检查。
+6. OCI config 到 `WorkloadSpec` 的策略编译。
+7. 感知活动 COW 与 snapshot 引用的垃圾回收。
 
-- MCP servers requiring long-lived credentials run on the host side of the broker.
-- Pure computation MCP servers may run as guest OCI workloads.
-- Each tool invocation is bound to the current sandbox and user grant.
-- A guest cannot register new host capabilities without an explicit user action.
+镜像 metadata 永远是输入，不是权限来源。架构不匹配时明确失败；模拟必须作为单独兼容模式显式开启。
 
-## 6. Guest components
+### 6.6 Builder Service
 
-### 6.1 Minimal Linux image
+Dockerfile 在独立、短生命周期 Builder VM 中由 BuildKit 执行：
 
-The guest image contains only the kernel, init, required virtio/VMBus drivers, `containerd`, `runc`, the forked `execd`, networking bootstrap, update verification, and diagnostics required by the host controller. There is no SSH server and no general management account.
+- Builder 拥有独立磁盘、网络策略和身份。
+- 默认看不到宿主文件、runtime VM 磁盘和生产 Broker 凭据。
+- Build secret 必须显式、短期并绑定单次构建。
+- 宿主只按 digest 导入构建产生的 OCI artifact。
+- Build cache 复用时仍按不可信输入处理。
+- 构建完成后销毁 COW 和临时能力。
 
-Guest assets are versioned and signed. Host and guest negotiate a protocol version before workload startup. Unsupported or downgraded versions fail closed.
+### 6.7 Workspace Sync
 
-### 6.2 containerd and runc
+工作区从用户显式选择的根目录导入到 guest 私有盘，导出修改是独立能力。实现必须防御：
 
-`containerd` manages content, snapshots, and task lifecycle inside the guest. `runc` creates workload processes with Linux namespaces, cgroups, capability dropping, `no_new_privs`, and a fixed seccomp policy.
+- `..` 和绝对路径穿越；
+- symlink 替换与 hard-link 别名；
+- 大小写折叠差异；
+- Windows alternate data stream；
+- TOCTOU race；
+- 删除和覆盖宿主未授权内容。
 
-The containerd socket remains inside the guest and is reachable only by the trusted guest control process. Workload containers do not receive it. Containers sharing one VM must belong to the same credential authorization domain because they share the guest kernel.
+路径校验优先使用 descriptor-relative 或等价 race-safe API，不能只做字符串前缀判断。宿主 home、SSH、云凭据和 Docker 配置目录不隐式导入。
 
-### 6.3 Execd fork
+### 6.8 Credential 与 Network Broker
 
-The initial fork keeps:
+真实凭据按请求从 Keychain 或 Credential Manager 读取。若 CLI 必须看到环境变量才能启动，guest 只能得到空值或假值；宿主代理在最终目标完成解析和授权后才注入真实 header。
 
-- direct argv and explicit shell command execution;
-- foreground SSE and background execution with bounded log retention;
-- PTY creation, resize, attach, and disconnect handling;
-- scoped file upload, download, metadata, move, and removal;
-- signals, sessions, process status, and CPU/memory metrics;
-- init behavior, signal forwarding, and orphan reaping.
+出口网络默认拒绝。Broker 必须：
 
-The initial fork removes or disables:
+- 阻断 loopback、private、link-local、multicast、unspecified 和 metadata 地址；
+- 对每次 redirect 重新授权；
+- 同时约束 hostname 和解析后的目标；
+- 在 DNS、TLS、proxy 或策略状态不确定时拒绝；
+- 对 DoH/ECH 制定显式策略，避免其绕过目标检查；
+- 不记录 secret-bearing header、body 或 token。
 
-- Jupyter and code-interpreter contexts;
-- arbitrary reverse proxying to all guest ports;
-- unused isolated-session modes;
-- unrestricted whole-filesystem access;
-- unauthenticated business endpoints.
+审计只记录 grant ID、目标、决策、原因、时间、字节数和 correlation ID。
 
-The host transports execd traffic over VZ Socket or Hyper-V Socket. Bootstrap uses a one-time challenge tied to the VM identity, sandbox ID, boot nonce, protocol version, and expected guest asset digest. Session tokens are short lived, rotatable, and unusable across VMs.
+### 6.9 MCP Gateway
 
-## 7. Lifecycle flows
+可信宿主 MCP Gateway 把少量工具映射到固定 capability，不暴露原始 hypervisor、mount、image 或网络配置：
 
-### 7.1 Create and run
+- 需要长期凭据的 MCP 默认运行在宿主侧。
+- 纯计算 MCP 可以作为 guest OCI workload。
+- 每次工具调用绑定当前 sandbox 和用户 grant。
+- Guest 不能在没有显式用户操作时注册新的宿主能力。
 
-1. UI resolves user intent into a `SandboxRequest` and capabilities.
-2. Controller validates limits and selects the platform adapter.
-3. OCI Service resolves and validates the requested image.
-4. Adapter creates COW storage and starts the VM.
-5. Host and guest complete authenticated bootstrap.
-6. Guest containerd starts the restricted `WorkloadSpec` through runc.
-7. Execd reports readiness; only then does the controller publish `Running`.
+## 7. 来宾组件
 
-### 7.2 Suspend and resume
+### 7.1 最小 Linux Guest
 
-Before suspend, the controller revokes active network grants and ensures no long-lived secret exists in guest memory by construction. Platform snapshots are encrypted and bound to the sandbox identity and guest asset version. Resume creates new short-lived channel credentials and revalidates all grants; it never restores an expired capability.
+Guest image 只包含 kernel、init、必要 virtio/VMBus driver、`containerd`、`runc`、裁剪后的 `execd`、网络 bootstrap、更新校验和诊断组件。默认没有 SSH server 和通用管理账户。
 
-### 7.3 Destroy
+所有 guest asset 都版本化并签名。宿主在 workload 启动前校验预期 digest 并完成协议协商；不支持或降级版本必须失败关闭。
 
-Destroy revokes grants first, stops control channels, terminates the VM, removes COW and snapshot references, and records completion only after cleanup succeeds. Failure remains visible as `Failed` or `Stopping`; it is not reported as destroyed optimistically.
+### 7.2 `containerd + runc`
 
-## 8. Versioning and upstream policy
+`containerd` 在 guest 内管理 content、snapshot 和 task 生命周期；`runc` 使用 Linux namespace、cgroup、capability drop、`no_new_privs` 与固定 seccomp policy 创建进程。
 
-- The desktop lifecycle contract is owned and versioned by Desk Box.
-- OpenSandbox specifications are semantic references, not dynamically consumed contracts.
-- The execd fork is pinned to an audited upstream release.
-- Upgrades require license review, dependency and SBOM comparison, patch rebase, API diff, and security regression tests.
-- No component follows an upstream `main` branch in production.
+Containerd socket 不离开 guest，只允许可信 guest control process 访问；workload container 不获得该 socket。同一 VM 内的所有容器必须属于同一凭据授权域，因为它们共享 guest kernel。
 
-## 9. Delivery phases
+### 7.3 OpenSandbox `execd` 小型 Fork
 
-### Phase 1: contracts and threat model
+首版保留：
 
-Freeze `SandboxRuntime`, `WorkloadSpec`, lifecycle resources, `CredentialGrant`, audit events, state transitions, and security rejection cases.
+- direct argv 与显式 shell 执行；
+- foreground SSE 与有界保留的 background log；
+- PTY 创建、resize、attach 和断线处理；
+- 受限目录内的文件上传、下载、metadata、移动和删除；
+- signal、session、process status 与 CPU/内存指标；
+- init、signal forwarding 与 orphan reaping。
 
-### Phase 2: macOS vertical slice
+首版删除或关闭：
 
-Implement OCI pull, one VZ VM, authenticated socket transport, execd command execution, private workspace import, and deterministic destroy. No general network access.
+- Jupyter 和 Code Interpreter context；
+- 到任意 guest port 的通用 reverse proxy；
+- 未使用的 isolated-session 模式；
+- 无限制全文件系统访问；
+- 未认证业务 endpoint。
 
-### Phase 3: broker and Dockerfile builds
+Execd 流量通过 VZ Socket 或 Hyper-V Socket transport adapter。一次性 bootstrap challenge 绑定 VM identity、sandbox ID、boot nonce、协议版本和预期 guest asset digest；session token 短期、可轮换，不能跨 VM 使用。
 
-Add the host network/credential broker and an isolated BuildKit builder VM. Validate Claude Code, Codex, Git, and package-manager workflows with canary credentials.
+## 8. 生命周期
 
-### Phase 4: Windows parity
+### 8.1 创建与运行
 
-Implement Hyper-V Gen2, differencing VHDX, Hyper-V Socket, equivalent lifecycle behavior, and the same guest image/contract where architecture permits.
+1. UI 把用户意图解析为 `SandboxRequest` 和 capability。
+2. Controller 校验策略、配额和平台可用性。
+3. OCI Service 解析、验证镜像并生成 `WorkloadSpec`。
+4. Platform adapter 创建 COW 并启动 VM。
+5. 宿主与 guest 完成带身份绑定的 bootstrap。
+6. Guest containerd 通过 runc 启动 workload。
+7. Execd 报告经过认证的 readiness 后，Controller 才发布 `Running`。
 
-### Phase 5: hardening and UX
+### 8.2 Suspend 与 Resume
 
-Complete suspend/resume, crash recovery, update rollback, capability prompts, auditing, concurrency limits, and adversarial testing.
+Suspend 前撤销活动网络 grant。由于长期凭据从不进入 guest，snapshot 不应含长期 secret。Snapshot 必须加密并绑定 sandbox identity 与 guest asset 版本。Resume 时重新签发短期 channel credential并重新验证 grant，不恢复已过期 capability。
 
-## 10. Release gates
+### 8.3 Destroy
 
-A release is blocked if any test can:
+Destroy 顺序固定为：撤销 grant、关闭控制通道、终止 VM、移除 COW 和 snapshot 引用、记录完成。清理失败时保持 `Stopping` 或 `Failed`，不得乐观报告已销毁。
 
-- read a host secret or non-imported host file;
-- access another workspace or sandbox control channel;
-- reach a Docker/containerd socket outside its allowed guest scope;
-- reach an unauthorized internet, private, loopback, link-local, or metadata destination;
-- reuse a capability across sandbox identity, reboot, expiry, or revocation;
-- escape safe OCI extraction through path, link, device, or resource abuse;
-- recover destroyed COW, token, build secret, or snapshot data;
-- cause the broker or guest transport to fail open.
+## 9. 版本与上游策略
 
-Performance targets are set only after these gates pass. Security properties are not relaxed to meet startup or density goals.
+- Desk Box 自有并版本化 desktop lifecycle contract。
+- OpenSandbox spec 只是语义参考，不动态成为产品契约。
+- Execd fork 固定到已审计的上游 release，生产环境不跟随 `main`。
+- 上游升级必须通过 license、NOTICE、SBOM、依赖漏洞、patch rebase、API diff 和安全回归。
+- Guest asset 与宿主应用升级都必须支持签名验证、失败回滚和 downgrade protection。
+
+## 10. 分阶段实施
+
+### Phase 1：安全契约与接口冻结
+
+定义 `SandboxRuntime`、`WorkloadSpec`、lifecycle state、`CredentialGrant`、audit event 和拒绝原因；建立跨平台 conformance test 骨架。
+
+### Phase 2：macOS 垂直切片
+
+完成 OCI pull、安全解包、单台 VZ VM、认证 socket、execd command、私有工作区导入和确定性销毁；暂不开放通用网络。
+
+### Phase 3：Broker 与 Dockerfile
+
+实现宿主网络/凭据 Broker 和隔离 BuildKit Builder VM；使用 canary credential 验证 Claude Code、Codex、Git 和包管理器。
+
+### Phase 4：Windows 对齐
+
+实现 Hyper-V Gen2、差分 VHDX、Hyper-V Socket 和等价生命周期；在架构允许时复用同一 guest image 构建链和 contract。
+
+### Phase 5：加固与 UX
+
+完成 suspend/resume、崩溃恢复、更新回滚、capability prompt、审计、并发配额和对抗测试。
+
+## 11. 发布门槛
+
+以下任一测试成功即阻断发布：
+
+- 读取宿主 secret 或未导入的宿主文件；
+- 访问其他工作区或 sandbox 控制通道；
+- 访问权限范围外的 Docker/containerd socket；
+- 访问未授权互联网、私网、loopback、link-local 或 metadata；
+- 跨 sandbox identity、重启、过期或撤销重放 capability；
+- 通过路径、链接、设备或资源滥用逃逸 OCI 解包；
+- 恢复已销毁的 COW、token、build secret 或 snapshot；
+- 让 Broker、guest transport 或清理流程 fail open；
+- 在未显式切换产品模式时从 VM 静默降级到 WSL2、容器或宿主进程。
+
+只有这些安全门槛通过后才设定性能目标，不为冷启动或密度放宽安全属性。

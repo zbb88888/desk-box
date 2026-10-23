@@ -1,214 +1,173 @@
-# Threat Model and Security Invariants
+# 威胁模型与安全不变量
 
-Status: Required release contract
-Date: 2026-10-23
+状态：首版安全契约
+日期：2026-10-23
 
-## 1. Protected assets
+## 1. 范围
 
-Desk Box protects:
+本文定义 Desk Box 在首版中必须兑现的安全属性、信任边界、主要攻击路径和发布阻断条件。它约束实现与测试，不宣称当前代码已经通过验证。
 
-- macOS Keychain and Windows Credential Manager entries;
-- host files outside explicitly imported workspace paths;
-- other workspaces and sandbox disks;
-- SSH, Git, cloud, registry, model-provider, and MCP credentials;
-- host services, sockets, local applications, loopback endpoints, and metadata services;
-- product update keys, guest image signing keys, audit integrity, and policy configuration;
-- user identity and capability grants;
-- availability of the host within configured resource limits.
+受保护资产包括：
 
-## 2. Adversaries
+- 宿主长期凭据、会话和 credential store；
+- 未经用户授权的宿主文件、目录、设备和服务；
+- 其他工作区、sandbox、Agent 与用户数据；
+- 宿主 hypervisor、Controller、Broker 和更新链；
+- OCI artifact、guest asset、审计记录和 capability 完整性；
+- 用户对工作区、网络和凭据授权的真实意图。
 
-The following are untrusted and may cooperate:
+## 2. 对手模型
 
-- the agent running in the sandbox;
-- OCI images and their entrypoints;
-- source repositories, generated code, tests, and build scripts;
-- package-manager dependencies and post-install scripts;
-- MCP servers and tool responses;
-- browser content, prompt injection, and downloaded artifacts;
-- Dockerfiles and BuildKit frontend/build steps;
-- a previously compromised or stale sandbox disk or snapshot.
+假设以下对象可能恶意或已失陷：
 
-The adversary may obtain root inside the guest and may deliberately exercise kernel, runtime, parser, protocol, resource-exhaustion, and confused-deputy paths.
+- OCI 镜像、Dockerfile、构建脚本和安装脚本；
+- Claude Code、Codex、dsh、MCP server、插件和依赖；
+- 仓库源码、模型生成代码、prompt 内容和下载文件；
+- guest 内 workload 进程，以及成功逃逸 `runc` 容器后的 guest root；
+- Registry 返回的数据和网络响应；
+- 已获取旧 token、旧 snapshot 或被撤销 capability 的攻击者。
 
-## 3. Out-of-scope adversaries
+首版不承诺抵御：
 
-The first release does not claim protection against:
+- 宿主管理员或宿主内核已失陷；
+- 未修复的 hypervisor、固件或硬件漏洞；
+- 微架构侧信道；
+- 用户明确授权后服务端对数据的合法接收；
+- 用户主动把秘密写入工作区或命令输入。
 
-- a compromised host administrator or the user intentionally disabling controls;
-- a hypervisor, host kernel, firmware, or hardware zero-day;
-- physical attacks against an unlocked machine;
-- hardware side channels between host workloads;
-- malicious code signed by the Desk Box release authority.
+这些排除项必须在产品文档中清楚展示，不能隐藏在“安全沙箱”营销语言之后。
 
-Out of scope does not mean ignored: supported OS versions, signed updates, minimum hardware requirements, and incident response reduce these risks, but they are not sandbox guarantees.
+## 3. 信任假设
 
-## 4. Security invariants
+可信计算基包括：
 
-### I-1: Independent kernel boundary
+- macOS/Windows、Virtualization.framework/Hyper-V 与平台 credential store；
+- Desk Box UI、Controller、平台 adapter、OCI Service、Workspace Sync 和 Broker；
+- 签名的 guest kernel、init、`containerd`、`runc` 和 `execd` fork；
+- 更新签名、release metadata 和策略配置。
 
-Every strong-mode sandbox runs in a dedicated VM assigned to one workspace and credential authorization domain. Distinct domains never rely only on containers sharing one guest kernel.
+OCI workload 不可信。Guest kernel 是宿主边界的一部分，但不能接触长期凭据。Guest 内 container isolation 只提供纵深防御。
 
-Evidence:
+## 4. 十项安全不变量
 
-- platform VM inventory and identity tests;
-- cross-VM memory, disk, socket, and endpoint denial tests;
-- configuration tests proving no fallback to WSL2 or host processes.
+### 不变量 1：强隔离任务始终位于独立 VM 边界
 
-### I-2: No ambient host filesystem authority
+强隔离模式只能使用 VZ 或 Hyper-V Gen2 VM，不能静默降级到宿主进程、共享宿主容器、WSL2 distribution 或其他较弱模式。
 
-The guest cannot browse or mount host files. Only explicitly selected workspace content crosses through Workspace Sync. Host home, credential, SSH, cloud, and Docker directories are excluded by policy.
+证据：平台 conformance test、运行时 attestation、状态与审计记录、降级故障注入。
 
-Evidence:
+### 不变量 2：不同凭据授权域不共享 guest kernel
 
-- malicious path, symlink, hard-link, alternate stream, case-folding, and race tests;
-- host canary files placed inside and outside approved roots;
-- verification that default VM configuration contains no shared host filesystem.
+默认一台 VM 对应一个工作区和凭据授权域；高保障任务一台 VM 对应一个 Agent。共享 VM 内不得放置互不信任的授权域。
 
-### I-3: No host daemon or device authority
+证据：调度约束、身份绑定测试、并发跨域攻击测试。
 
-The guest and workload cannot access host Docker/containerd sockets, hypervisor control APIs, arbitrary devices, or management endpoints. Guest containerd is private to trusted guest control processes.
+### 不变量 3：长期真实凭据永不进入 sandbox
 
-Evidence:
+Key、token、cookie、SSH private key 和云凭据只保存在宿主 credential store 与 Broker 内存。Guest 环境变量、文件、日志、snapshot 和 core dump 不含真实长期凭据。
 
-- socket and device enumeration from guest root;
-- blocked attempts to create privileged containers or extra mounts;
-- host firewall and endpoint inventory tests.
+证据：canary secret 扫描、snapshot/COW/日志取证、Broker 内存生命周期测试。
 
-### I-4: Long-lived credentials never enter the guest
+### 不变量 4：所有外部访问必须经过宿主强制策略
 
-Long-lived secrets remain in Keychain or Credential Manager. They are absent from guest environment variables, command arguments, files, process memory under normal operation, logs, snapshots, and crash dumps.
+Guest 默认无任意出口。DNS、redirect、proxy、IPv4/IPv6、private/link-local/loopback/metadata、DoH/ECH 等路径必须被 Broker 明确允许或拒绝；策略不确定时拒绝。
 
-Evidence:
+证据：网络矩阵、DNS rebinding、redirect、地址编码、代理和 Broker 故障测试。
 
-- unique canary credentials and scans of all guest storage and diagnostic artifacts;
-- request capture proving insertion occurs in the host proxy;
-- suspend/resume, crash, retry, and broker-restart tests.
+### 不变量 5：宿主文件访问只能来自显式工作区授权
 
-### I-5: Capabilities are narrow, short-lived, and identity-bound
+工作区必须复制或安全同步到 guest 私有盘。禁止默认直挂宿主 home、credential 目录、Docker config、SSH 目录、socket 或设备。导入与导出分别授权。
 
-Every privileged operation is authorized for a specific user, workspace, sandbox, agent, action, and expiry. A grant cannot be replayed across VM identity, boot nonce, protocol version, restart, or revocation.
+证据：路径穿越、symlink/hard-link、大小写、ADS、TOCTOU 和并发替换测试。
 
-Evidence:
+### 不变量 6：OCI metadata 不能授予额外权限
 
-- cross-sandbox and stale-token replay suites;
-- clock-skew and concurrent-use tests;
-- audit correlation from grant creation through use and revocation.
+Image config 与 Dockerfile 只能影响白名单 `WorkloadSpec`。Privileged、host namespace、host device、任意 mount、额外 capability、daemon socket 和安全策略覆盖必须被拒绝。
 
-### I-6: Network is default deny
+证据：恶意 config corpus、schema/property test、拒绝原因审计。
 
-A sandbox without explicit network grants cannot reach the internet, host, local network, loopback services, link-local services, or cloud metadata. Redirects and re-resolution never widen an existing grant.
+### 不变量 7：宿主与 guest 控制通道必须绑定具体 VM 身份
 
-Evidence:
+VZ Socket/HVSock 连接需验证 sandbox ID、VM identity、boot nonce、协议版本和 guest asset digest。Session token 短期、可轮换，不能跨 VM、重启或过期后重放。
 
-- IPv4/IPv6, DNS rebinding, direct-IP, alternate-port, redirect, proxy, DoH, ECH, and metadata test matrices;
-- broker and resolver failure injection;
-- proof that a failed policy component blocks rather than forwards.
+证据：重放、串线、伪造 guest、版本降级和恢复旧 snapshot 测试。
 
-### I-7: OCI input has no policy authority
+### 不变量 8：资源和生命周期由宿主强制
 
-Image configuration cannot request host namespaces, privileged execution, devices, arbitrary mounts, additional capabilities, daemon sockets, or replacement security profiles. Unsafe filesystem layers are rejected before use.
+CPU、内存、磁盘、进程数、日志、执行时长和并发数必须由宿主与 guest 双层限制。Workload 不能阻止 revoke、stop 或 destroy；清理失败不能报告成功。
 
-Evidence:
+证据：资源耗尽、fork bomb、日志洪泛、卡死关机、宿主崩溃恢复测试。
 
-- adversarial manifests and configs;
-- path traversal, absolute path, symlink, hard-link, device-node, sparse-file, decompression-bomb, and quota tests;
-- comparison of resulting `WorkloadSpec` against an allowlist.
-
-### I-8: Resource limits are enforced outside the workload
-
-CPU, memory, disk, VM count, process count, runtime duration, log volume, and network volume have host-enforced ceilings. Guest root cannot raise them.
-
-Evidence:
-
-- CPU, memory, fork, disk, log, and network exhaustion tests;
-- host responsiveness and cleanup assertions;
-- policy mutation attempts from guest root.
-
-### I-9: Lifecycle and cleanup are fail closed
-
-A sandbox is not marked ready before authenticated guest readiness. It is not marked destroyed before capabilities are revoked and storage cleanup completes. Ambiguous state remains visible and cannot silently regain authority.
-
-Evidence:
-
-- process kill and host reboot at every lifecycle transition;
-- disk-full, permission, and timeout fault injection;
-- orphaned VM, COW, snapshot, and token reconciliation tests.
-
-### I-10: Guest and update provenance is verifiable
-
-Kernel, initrd, base disk, execd, runtime components, and product updates are versioned, signed, and measured against expected digests before authority is granted.
-
-Evidence:
-
-- tampered asset and rollback tests;
-- signature, digest, SBOM, and patch inventory validation;
-- update interruption and recovery tests.
-
-## 5. Principal attack paths and controls
-
-| Attack path | Primary controls | Residual risk |
-| --- | --- | --- |
-| Container escape | Dedicated outer VM; minimal guest; fixed runtime policy | Guest compromise; hypervisor attack remains possible |
-| Malicious workspace reads host files | Copy/sync data plane; no default host mount; race-safe paths | Explicitly authorized files are visible |
-| Prompt injection steals API key | Host credential broker; exact request binding; no guest secret | Authorized upstream receives the credential as intended |
-| SSRF reaches host or metadata | Default deny; destination classification; redirect revalidation | New protocol forms require continuous testing |
-| Image layer escapes extraction | Descriptor-relative extraction; limits; device rejection | Parser/runtime defects remain possible |
-| Stolen control token crosses sandboxes | VM identity, boot nonce, short TTL, rotation | Host controller compromise is out of scope |
-| Malicious Dockerfile compromises host | Separate builder VM; explicit imports and secrets | Build output itself remains untrusted |
-| Snapshot recovers expired authority | Revoke before suspend; no guest long-lived secret; fresh resume tokens | Guest application state may contain user-provided sensitive data |
-| Guest DoS affects host | Host VM quotas and concurrency limits | Hypervisor and storage contention require capacity planning |
-| Compromised upstream dependency | Pinning, SBOM, signature/provenance checks, security regressions | Supply-chain review cannot eliminate all malicious updates |
-
-## 6. Credential-broker rules
-
-1. A grant identifies one logical credential without exposing its value.
-2. Matching uses normalized scheme, host, effective port, method, and path.
-3. Wildcards are narrow and explicit; public-suffix-wide grants are prohibited.
-4. Every redirect is treated as a new authorization decision.
-5. Resolution rejects loopback, private, link-local, multicast, unspecified, and metadata destinations unless a separate product feature explicitly owns them.
-6. HTTP authentication is disabled by default; production credential injection requires authenticated TLS to an approved upstream.
-7. Proxy or policy uncertainty denies the request.
-8. Secret-bearing data is redacted before logs, metrics, traces, and errors.
-9. Revocation affects new requests immediately and closes reusable connections when required.
-10. The broker reads the current value from the OS credential store at use time and does not persist a shadow copy.
-
-## 7. Workspace-sync rules
-
-1. Access starts from an explicit user-selected root.
-2. Paths are normalized for the host platform and checked using filesystem identity, not string prefix alone.
-3. Traversal and links are resolved without escaping the selected root.
-4. Export is a separate capability from import.
-5. Deletes, executable-bit changes, and large/binary outputs can require stronger confirmation policies.
-6. Sync logs identify paths and outcomes but never file contents by default.
-7. Conflict handling never overwrites host data silently.
-
-## 8. Logging and privacy
-
-Audit events include actor, sandbox, workspace, capability, operation, destination or normalized path, decision, reason code, timestamp, and correlation ID.
-
-Logs must not include:
-
-- secret values or authorization headers;
-- raw environment blocks;
-- full request bodies by default;
-- arbitrary file contents;
-- session tokens, bootstrap challenges, or encryption keys.
-
-Debug modes cannot disable redaction or network policy. Sensitive diagnostics require an explicit user export flow.
-
-## 9. Release-blocking security tests
-
-A release fails if any test demonstrates:
-
-- host or cross-workspace data disclosure;
-- long-lived secret material in guest artifacts;
-- unauthorized host, private, metadata, or internet connectivity;
-- successful token replay across VM, boot, expiry, or revocation;
-- host daemon/device access;
-- unsafe OCI extraction;
-- resource-limit bypass that makes the host unusable;
-- optimistic cleanup reporting while authority or recoverable data remains;
-- fallback from VM mode to a weaker boundary without an explicit product mode change.
-
-These tests run on both Apple Silicon macOS and Windows 11 Pro/Enterprise. Passing on one platform cannot waive failure on the other.
+### 不变量 9：构建与运行域隔离
+
+Dockerfile 只在短生命周期 Builder VM 中执行。Builder 不读取 runtime VM 磁盘、宿主工作区以外文件或生产 Broker 凭据；只返回按 digest 标识的 OCI artifact。
+
+证据：build secret canary、cache 污染、跨构建读取和 artifact 验证测试。
+
+### 不变量 10：更新、持久化与销毁不复活旧权限
+
+Guest asset、应用和策略更新必须验证签名并防降级。Suspend/resume、snapshot、COW、cache 和 crash recovery 不得恢复过期 grant、旧 token、build secret 或已销毁数据。
+
+证据：升级/回滚故障注入、旧 snapshot 恢复、卸载后磁盘扫描和孤儿资源回收测试。
+
+## 5. 主要攻击路径与控制
+
+| 攻击路径 | 首要控制 | 纵深控制 | 失败行为 |
+| --- | --- | --- | --- |
+| Workload 利用 Linux kernel/container runtime | 外层独立 VM | seccomp、capability drop、cgroup | 仍限制在 VM；终止并记录 |
+| Workload 利用 hypervisor/device model | 最小设备面、及时更新 | 一授权域一 VM、无宿主 secret | 阻断 release；撤销所有 grant |
+| 恶意 OCI layer 路径穿越或解压炸弹 | 宿主安全解包与配额 | 独立 cache、digest 校验 | 拒绝镜像 |
+| 读取宿主文件或 socket | 私有工作区复制、无任意 mount | race-safe 路径 API | 拒绝操作 |
+| 凭据从环境、文件、日志泄露 | 宿主 Broker 最终注入 | 短期 grant、日志脱敏 | 不发送请求并告警 |
+| SSRF 到宿主、局域网或 metadata | 默认拒绝 Broker | DNS/redirect/IP 再校验 | fail closed |
+| Guest 冒充或跨 VM 控制通道串线 | 身份绑定 bootstrap | 短期 session token | 关闭通道和 VM |
+| MCP 工具越权 | 宿主 capability gateway | 每次调用绑定 sandbox/grant | 拒绝并审计 |
+| Builder 污染 runtime | 独立 Builder VM | artifact digest 与 provenance | 丢弃产物和 builder |
+| Snapshot 重放旧权限 | Resume 重新授权 | 加密、身份与版本绑定 | 拒绝恢复 |
+| 资源耗尽影响宿主 | 宿主 VM 配额 | guest cgroup、日志上限 | 强制终止 |
+| 更新供应链投毒 | 签名、digest、SBOM | rollback/downgrade policy | 保持旧可信版本 |
+
+## 6. 凭据规则
+
+1. 用户授权对象是“允许此任务调用某服务”，不是“把 token 交给 VM”。
+2. `CredentialGrant` 必须同时绑定用户、工作区、sandbox、Agent、scheme、host、端口、method、path 与期限。
+3. 真实凭据只在请求发送前读取，在宿主内按 provider 规则注入。
+4. Redirect 到新目标时重新授权，不能继承原请求决定。
+5. Hostname 与解析后地址都必须通过策略，防 DNS rebinding。
+6. 相同请求匹配多个互不等价 grant 时拒绝，不能随意选一个。
+7. Guest 只得到空值、假值或逻辑 credential handle，不得到真实长期值。
+8. 审计不得记录认证 header、secret-bearing query/body 或 token 派生值。
+9. Grant 撤销、过期、Broker 重启和 suspend 后默认失效，恢复需重新验证。
+
+## 7. 工作区规则
+
+- 用户必须显式选择导入根目录。
+- 导入目标是 guest 私有文件系统；默认不使用宿主 live mount。
+- 导出修改需单独确认目标和变更集。
+- 路径授权以打开后的对象身份和根目录约束为准，不能只依赖字符串 canonicalization。
+- Symlink、hard link、junction、reparse point、ADS、case collision 和特殊文件必须拒绝或标准化为普通安全对象。
+- `.git` 是否导入由产品策略明确决定；宿主 Git credential helper 和 socket 不随之导入。
+- 销毁时删除 guest COW、临时同步区和未确认导出数据。
+
+## 8. 可观测性与隐私
+
+安全事件至少包含：sandbox ID、workload digest、grant ID、操作类型、策略结果、稳定 reason code、时间和 correlation ID。日志默认有界并设置保留期。
+
+以下内容禁止进入普通遥测：命令 stdin、完整文件内容、prompt、模型响应、Authorization/Cookie header、token、私钥和 credential-bearing URL。诊断包需要用户显式同意并再次脱敏。
+
+## 9. 发布阻断条件
+
+以下任一情况成立，不得宣称或发布强隔离模式：
+
+- 任一十项不变量缺少自动化验收或验收失败；
+- 控制失效时存在 fail open 路径；
+- 长期凭据可在 guest 文件、环境、日志、COW 或 snapshot 中恢复；
+- Workload 可接触宿主 daemon socket、未授权文件、其他工作区或其他 sandbox；
+- 未授权私网、loopback、link-local、metadata 或互联网可达；
+- Token 或 capability 可跨 VM、重启、用户、工作区、撤销或过期后重放；
+- Builder 与 runtime 共享可写状态或生产凭据；
+- Guest/host 更新不能验证签名、阻止降级或安全回滚；
+- 清理失败仍对用户报告资源已销毁；
+- 产品静默切换到较弱 isolation backend。
+
+设计审查通过只说明方案合理，不等于实现已安全。只有实现、对抗测试、供应链证据和独立安全评估全部满足门槛后，才能提升安全声明。

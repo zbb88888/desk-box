@@ -1,298 +1,285 @@
-# Technology Selection and Trade-off Analysis
+# 技术选型、横向对标与取舍
 
-Status: Accepted for initial implementation
-Date: 2026-10-23
+状态：首版选型已确定
+日期：2026-10-23
 
-## 1. Evaluation method
+## 1. 评估方法
 
-Candidates are evaluated against the actual product requirements rather than their project labels.
+候选项目按 Desk Box 的真实需求评估，而不是按项目名称中的“Sandbox”“Container”判断。
 
-Criteria, in priority order:
+优先级从高到低为：
 
-1. Isolation strength against a malicious agent, image, dependency, or MCP server.
-2. Native availability on Apple Silicon macOS and Windows 11 Pro/Enterprise.
-3. Ability to keep long-lived host credentials outside the sandbox.
-4. OCI and Dockerfile compatibility.
-5. User experience suitable for a desktop product.
-6. Auditable failure behavior and narrow privileged interfaces.
-7. Maintenance, licensing, supply-chain, and upstream stability cost.
-8. Startup time and resource density, after security gates pass.
+1. 面对恶意 Agent、镜像、依赖和 MCP 时的隔离强度。
+2. Apple Silicon macOS 与 Windows 11 Pro/Enterprise 的原生可用性。
+3. 长期凭据能否始终留在宿主。
+4. OCI 镜像与 Dockerfile 兼容性。
+5. 最终用户是否需要理解底层基础设施。
+6. 特权接口是否足够窄、失败是否可审计且 fail closed。
+7. 许可证、供应链、升级与长期维护成本。
+8. 在安全门槛通过后的启动速度和资源密度。
 
-A project can be adopted for one layer without being adopted as the product foundation. Image format, orchestration, guest API, process isolation, and VM isolation are separate decisions.
+镜像格式、构建器、VM、安全容器、guest agent、控制面和凭据代理属于不同层。采用某个项目的一层能力，不代表整体采用该项目。
 
-## 2. Decision summary
+## 2. 结论矩阵
 
-| Project or technology | Underlying engine | Decision | Product role |
+| 项目或技术 | 底层引擎/实现 | 决策 | 在 Desk Box 中的角色 |
 | --- | --- | --- | --- |
-| Apple Virtualization.framework | Apple hardware virtualization and virtio devices | Adopt | macOS VM boundary |
-| Hyper-V Generation 2 | Type-1 hypervisor, VMBus, VHDX, HVSock | Adopt | Windows VM boundary |
-| OCI Image Spec | Manifest, config, and filesystem layers | Adopt | Workload package format |
-| BuildKit | LLB graph, workers, snapshots, cache | Adopt in builder VM | Dockerfile builder |
-| containerd | Content, snapshots, images, tasks | Adopt in guest | OCI lifecycle |
-| runc | libcontainer, namespaces, cgroups, seccomp | Adopt in guest | OCI process execution |
-| OpenSandbox execd | Go execution daemon with HTTP/SSE/WebSocket APIs | Adopt as pinned fork | Guest command/file/PTY API |
-| OpenSandbox lifecycle/SDK/MCP | OpenAPI, FastAPI, generated and handwritten clients | Reference and adapt | Contract semantics |
-| OpenSandbox egress/Credential Vault | DNS+nftables sidecar, TLS MITM, in-memory vault | Reference only | Policy semantics |
-| Kata Containers | shim v2, virtcontainers, hypervisor, guest kernel, kata-agent | Architecture reference | Layering model |
-| Docker Desktop | Shared Linux VM plus Docker/containerd stack | Reference only | Desktop feasibility evidence |
-| E2B | Cloud orchestration, Firecracker, envd, snapshots | Reference only | Agent-workspace behavior |
-| Firecracker | Linux KVM microVM VMM | Reference only | Minimal VM design |
-| gVisor | runsc, Sentry user-space kernel, systrap, Gofer | Future optional profile | Guest secondary isolation |
-| Wasmer/WASI | Wasm runtime and capability-oriented host calls | Future optional profile | Wasm-only plugins |
-| WSL2 | Shared utility VM Linux kernel | Reject as strong mode | Possible low-assurance compatibility |
-| QEMU | Software device model with HVF/WHPX acceleration | Diagnostic fallback | Portability comparison |
+| Apple `Virtualization.framework` | Apple 硬件虚拟化、virtio 设备、VZ Socket | **采用** | macOS 强隔离边界 |
+| Hyper-V Generation 2 | Type-1 hypervisor、VMBus、VHDX、HVSock | **采用** | Windows 强隔离边界 |
+| OCI Image Spec | Manifest、config、filesystem layer | **采用** | 唯一工作负载包格式 |
+| BuildKit | LLB DAG、worker、snapshot、cache | **采用，置于 Builder VM** | Dockerfile 构建器 |
+| containerd | Content、image、snapshot、task | **采用，置于 guest** | OCI 生命周期 |
+| runc | libcontainer、namespace、cgroup、seccomp | **采用，置于 guest** | OCI 进程执行 |
+| OpenSandbox `execd` | Go daemon、HTTP/SSE/WebSocket、PTY/files/session | **固定版本小型 fork** | Guest Agent |
+| OpenSandbox lifecycle/SDK/MCP | OpenAPI、FastAPI、生成客户端与流式适配 | **参考并裁剪语义** | Desktop contract 参考 |
+| OpenSandbox egress/Credential Vault | DNS+nftables、透明 TLS MITM、内存 vault | **只参考策略语义** | Broker binding 参考 |
+| Kata Containers | shim v2、virtcontainers、VMM、guest kernel、kata-agent | **只参考架构** | VM-backed 分层模板 |
+| Docker Desktop | 共享 Linux VM、containerd/runc、Docker API | **只参考** | 桌面 OCI 可行性证据 |
+| E2B | 云控制面、Firecracker、envd、snapshot/storage | **只参考** | Agent 工作区体验对标 |
+| Firecracker | Linux/KVM microVM、精简 virtio 设备模型 | **只参考** | 最小 VM 设计对标 |
+| gVisor | runsc、Sentry 用户态内核、systrap、Gofer | **未来可选** | Guest 内二级隔离 |
+| Wasmer/WASI | Wasm runtime、显式 capability host call | **未来可选** | Wasm-only 插件 |
+| WSL2 | 多发行版共享 utility VM kernel | **舍弃强隔离模式** | 最多作为低保障兼容模式 |
+| QEMU | 通用设备模型、HVF/WHPX 加速 | **诊断后备** | 原生 API 能力对照 |
 
-## 3. Adopted foundations
+## 3. 确定采用的基础组件
 
-### 3.1 Apple Virtualization.framework
+### 3.1 Apple `Virtualization.framework`
 
-`Virtualization.framework` configures and runs hardware-assisted virtual machines through platform APIs. Linux guests use virtio devices for storage, entropy, memory management, networking, and host/guest sockets.
+底层实现：Apple 提供的系统虚拟化框架通过硬件虚拟化运行 VM，为 Linux guest 提供 virtio block、network、entropy、balloon 和 socket 等设备。
 
-Why selected:
+选择原因：
 
-- It is the supported Apple-native virtualization API on Apple Silicon.
-- Its device surface is narrower and operationally simpler than shipping a general QEMU stack.
-- Application signing, entitlements, lifecycle, and updates align with a desktop application.
-- It supports an independent guest kernel, satisfying the primary isolation requirement.
+- Apple Silicon 上受支持的原生虚拟化 API。
+- 相比自带 QEMU，设备面和分发维护面更小。
+- 与 macOS 应用签名、entitlement、生命周期和诊断集成更自然。
+- 独立 guest kernel 满足强隔离基线。
 
-Costs and limits:
+限制：
 
-- macOS implementation is platform-specific.
-- It does not supply an OCI runtime, image service, guest agent, or credential broker.
-- Cross-architecture execution should not be silently emulated; native arm64 images are the baseline.
+- 它不提供 OCI runtime、镜像服务、guest agent 或凭据 Broker。
+- macOS adapter 仍需自研。
+- 首版以原生 arm64 镜像为基线，不静默模拟 amd64。
 
 ### 3.2 Hyper-V Generation 2
 
-Hyper-V is Windows' type-1 hypervisor. Generation 2 VMs use UEFI, VMBus devices, VHDX storage, checkpoints, and Hyper-V Socket communication.
+底层实现：Hyper-V 是 Windows Type-1 hypervisor；Generation 2 VM 使用 UEFI、VMBus 合成设备、VHDX、checkpoint 和 Hyper-V Socket。
 
-Why selected:
+选择原因：
 
-- Windows 11 Pro/Enterprise provides the required virtualization capability.
-- Direct VM management gives each authorization domain a distinct guest kernel and disk.
-- Differencing VHDX and checkpoints map naturally to disposable sandbox storage.
-- Hyper-V Socket provides a private host/guest control path.
+- Windows 11 Pro/Enterprise 原生提供所需能力。
+- 每个授权域可以拥有独立 guest kernel、VM identity 和差分磁盘。
+- 差分 VHDX 与 checkpoint 适合一次性沙箱和受控恢复。
+- Hyper-V Socket 可建立不经过通用网络的宿主/来宾通道。
 
-Important distinction:
-
-The limited Windows client story for newer HCS LCOW v2 integration does not make Hyper-V Gen2 unavailable. Desk Box manages Hyper-V VMs directly and does not depend on LCOW for the first release.
-
-Costs and limits:
-
-- Requires Pro/Enterprise and enabled virtualization features.
-- Platform management code differs from macOS.
-- Snapshot and update behavior must be validated independently from VZ.
+关键区分：Windows 11 上 HCS LCOW v2 缺少成熟客户端支持，不等于 Hyper-V Gen2 不可用。首版直接管理 Hyper-V VM，不走 LCOW。
 
 ### 3.3 OCI Image Spec
 
-OCI images describe a manifest, configuration, and filesystem layers. They do not define a security boundary.
+底层实现：OCI image 定义 manifest、config 和 filesystem layer，并用 digest 构成内容寻址对象；它不执行进程，也不提供隔离。
 
-Why selected:
+选择原因：
 
-- Broad compatibility with Dockerfiles, registries, and existing developer tooling.
-- Content-addressed digests and multi-platform indexes support verification and caching.
-- Runtime-neutral packaging allows Desk Box to own its security policy.
+- 与 Dockerfile、Registry 和现有开发生态兼容。
+- Digest 和 multi-platform index 有利于验证、缓存和 arm64/amd64 选择。
+- 格式与 runtime 解耦，产品可以自行施加安全策略。
 
-Desk Box rejects image requests for privileged execution, host namespaces, host devices, arbitrary mounts, runtime sockets, and policy replacement. Image metadata is input, not authority.
+镜像请求的 privileged、host namespace、host device、任意 mount、runtime socket 和安全策略覆盖全部拒绝。镜像 metadata 是输入，不是权限。
 
-### 3.4 BuildKit in an isolated builder VM
+### 3.4 隔离 Builder VM 内的 BuildKit
 
-BuildKit converts Dockerfiles and frontends into an LLB build graph executed by workers with snapshot and cache management.
+底层实现：BuildKit 把 Dockerfile/frontend 编译为 LLB 构建 DAG，由 worker 配合 snapshotter、cache 和并行执行完成构建。
 
-Why selected:
+选择原因：
 
-- Best compatibility with modern Dockerfile behavior and build caching.
-- A dedicated builder VM contains malicious `RUN` steps and build tools.
-- The resulting boundary is understandable: only OCI artifacts cross back to the host.
+- 现代 Dockerfile 兼容和缓存能力成熟。
+- `RUN`、安装脚本和 frontend 都是不可信代码，放入独立 VM 后边界清晰。
+- 只有按 digest 标识的 OCI artifact 返回宿主。
 
-Why not run BuildKit on the host:
+不在宿主运行的原因：host worker、共享 cache 和 daemon socket 会扩大可信计算基，并可能让 build secret 或状态跨项目泄露。
 
-- Dockerfile build steps execute arbitrary code.
-- Host-side workers and sockets create an unnecessarily large trusted surface.
-- Build secrets, caches, and workspaces could otherwise cross authorization domains.
+### 3.5 Guest 内 `containerd + runc`
 
-### 3.5 containerd and runc inside the guest
+底层实现：
 
-Containerd manages image content, snapshots, and tasks. Runc/libcontainer realizes OCI process specifications using Linux namespaces, cgroups, capability controls, and seccomp.
+- `containerd` 管理 content、image、snapshot、task 和进程生命周期。
+- `runc/libcontainer` 使用 namespace、cgroup、capability 和 seccomp 按 OCI runtime spec 创建 Linux 进程。
 
-Why selected:
+选择原因：
 
-- Mature OCI compatibility and a clear replacement path if the implementation is later reduced.
-- They run behind the VM boundary, so a container escape remains inside the sandbox VM.
-- Existing images and developer tools behave as expected.
+- OCI 兼容成熟，现有镜像和工具可直接工作。
+- 即使发生 container escape，攻击者首先仍被限制在外层 VM 中。
+- 初期降低自研 OCI executor 的复杂度，后续可依据攻击面再裁剪。
 
-Why guest-only:
+只放 guest 的原因：宿主 container daemon 是高价值特权 API；`runc` 容器共享 kernel，不能隔离不同凭据域；containerd socket 不允许暴露给 workload。
 
-- A host container daemon would become a high-value privileged API.
-- Runc containers share a kernel and cannot separate distinct credential authorization domains by themselves.
-- The containerd socket remains inaccessible to workload containers and the host UI.
+### 3.6 OpenSandbox `execd` 小型 Fork
 
-### 3.6 OpenSandbox execd fork
+底层实现：Go 编写的数据面 daemon，通过 HTTP、SSE 和 WebSocket 提供 direct argv、shell、background log、PTY、file、session、signal 和 metrics。
 
-Execd is a Go daemon implementing command execution, background logs, PTY, files, sessions, and metrics through HTTP, SSE, and WebSocket interfaces.
+选择它而不是 E2B `envd` 或立即从零自研的原因：
 
-Why selected over E2B envd or immediate greenfield development:
+- 功能面最接近桌面 Agent 需求。
+- 命令、PTY、文件、进程监管和指标形成较完整契约。
+- Apache-2.0 允许维护产品 fork。
+- 容易通过私有 transport adapter 放在 VZ Socket/HVSock 后面，不必引入云控制面。
 
-- Its capability surface most closely matches the required desktop-agent workflows.
-- Direct argv and shell execution, PTY, file operations, process supervision, and metrics are already coherent.
-- Apache-2.0 permits a maintained product fork.
-- Its protocol is easier to place behind a private transport adapter than adopting an entire cloud control plane.
+采用边界：
 
-Required fork boundaries:
+- 固定到已审计 release，禁止生产跟随 `main`。
+- 删除 Jupyter、通用 reverse proxy 和未使用高权限 API。
+- 文件 API 限制到产品管理目录。
+- 增加身份绑定 bootstrap 与短期 per-VM token。
+- 保存上游来源、NOTICE、patch series、SBOM 和可重复构建记录。
 
-- Pin an audited upstream release; never track `main` in production.
-- Remove Jupyter, generic reverse proxy, and unused high-authority APIs.
-- Scope filesystem operations to product-managed roots.
-- Require authenticated bootstrap and short-lived per-VM tokens.
-- Maintain an upstream provenance file, patch series, SBOM, and reproducible build.
-
-## 4. Projects used as references
+## 4. 只参考、不整体采用的项目
 
 ### 4.1 Kata Containers
 
-Kata's typical path is containerd shim v2 to `virtcontainers`, a VMM, an independent Linux guest, and `kata-agent` over vsock. It demonstrates the correct separation between container-manager semantics and a VM security boundary.
+底层链路通常为：`containerd -> shim v2 -> virtcontainers -> VMM -> 独立 guest kernel -> kata-agent/vsock -> OCI workload`。
 
-What is retained:
+借鉴内容：
 
-- One VM as the sandbox boundary.
-- Host controller versus guest agent separation.
-- OCI workloads inside an independent guest kernel.
-- Private host/guest RPC and explicit lifecycle state.
+- 一台 VM 作为一个 sandbox 边界。
+- 宿主 controller 与 guest agent 分层。
+- 在独立 guest kernel 内运行 OCI workload。
+- 私有 RPC、明确 lifecycle 和可替换 hypervisor 抽象。
 
-Why the runtime is not adopted:
+不采用 runtime 的原因：
 
-- Its main production environment is Linux/KVM and Kubernetes/containerd.
-- It does not provide supported VZ and desktop Hyper-V backends.
-- Porting hypervisor, storage, networking, and lifecycle assumptions would create a large permanent fork.
-- Desk Box needs desktop UX and host credential brokering rather than CRI integration.
+- 主生产路径面向 Linux/KVM、containerd 和 Kubernetes。
+- 没有受支持的 VZ 与桌面 Hyper-V backend。
+- 移植会长期 fork hypervisor、网络、存储、agent 和生命周期路径。
+- Desk Box 需要桌面 UX 和宿主凭据 Broker，而不是 CRI 集成。
 
-### 4.2 OpenSandbox control plane, SDKs, and MCP
+结论：采用 Kata-like 思想，舍弃 Kata runtime 本体。
 
-OpenSandbox provides a FastAPI lifecycle server, Docker and Kubernetes runtime services, an external FastSandbox path, OpenAPI specifications, SDKs, CLI, MCP, execd, and egress components.
+### 4.2 OpenSandbox 控制面、SDK 与 MCP
 
-What is retained:
+底层实现：FastAPI lifecycle server 把请求委托给 Docker runtime、Kubernetes workload provider 或外部 FastSandbox；公开 OpenAPI spec，SDK 由生成代码加手写流式适配组成；MCP 暴露 lifecycle、command 和 file 工具。
 
-- Lifecycle resource semantics and structured status.
-- The split between control plane and in-sandbox execution plane.
-- OpenAPI-driven client generation plus handwritten streaming adapters.
-- MCP tools as a thin capability surface.
-- Credential binding semantics: exact host/method/path matching, write-only responses, ambiguity rejection, and fail-closed handling.
+借鉴内容：
 
-Why the full platform is not adopted:
+- Lifecycle resource 与结构化状态语义。
+- 控制面和 sandbox 数据面分离。
+- OpenAPI 生成普通请求，手写 SSE/WebSocket 适配。
+- MCP 只做窄工具入口。
+- Credential binding 的 host/method/path 精确匹配、write-only readback、歧义拒绝和 fail closed。
 
-- The local runtime controls a Docker daemon; the cluster runtime assumes Kubernetes resources.
-- FastSandbox is an external Kubernetes/Firecracker platform, not a VZ or desktop Hyper-V backend.
-- The lifecycle specification is still evolving and includes cluster/provider concepts that should not become desktop API commitments.
-- The Python server, databases, CRDs, ingress, and operators add privileges and deployment complexity without solving native desktop VM lifecycle.
+不整体采用的原因：
 
-### 4.3 Docker Desktop
+- 本地 backend 直接控制 Docker daemon。
+- 集群 backend 依赖 Kubernetes CRD、controller、ingress 和 RuntimeClass。
+- FastSandbox 是外部 Kubernetes/Firecracker 平台，不是 VZ/Hyper-V backend。
+- Lifecycle spec 仍在演进且包含大量集群/provider 字段，不应成为桌面公开承诺。
+- Python server、数据库和集群组件增加权限与部署复杂度，却不解决桌面 VM 生命周期。
 
-Docker Desktop commonly runs Linux containers in a shared Linux VM and exposes a broad Docker API.
+结论：采用 `execd` 小型 fork，参考协议/SDK/MCP，舍弃完整 server 与 runtime。
 
-What it proves:
+### 4.3 OpenSandbox Egress / Credential Vault
 
-- A desktop product can package Linux virtualization, image management, networking, and container execution.
-- OCI developer workflows can be usable on macOS and Windows.
+底层实现：egress sidecar 与 workload 共享 network namespace，持有 `NET_ADMIN`，通过 DNS filtering 和 nftables 执行网络策略；Credential Vault 使用透明 TLS MITM、注入 CA 和 sidecar 内存中的 secret，把真实认证信息注入匹配请求。
 
-Why it is not a dependency:
+借鉴内容：
 
-- A shared VM is not an isolation boundary between credential domains.
-- A Docker daemon API and socket expose far more authority than Desk Box requires.
-- Product licensing, updates, VM topology, and security policy would be outside Desk Box control.
-- Docker Desktop availability cannot be assumed for end users.
+- Default deny。
+- Host/method/path 精确 binding。
+- Write-only secret response。
+- 匹配歧义拒绝、路径混淆保护、失败关闭。
 
-### 4.4 E2B
+舍弃实现的原因：
 
-E2B combines a cloud control plane, Firecracker microVMs, environment daemon, storage/snapshot infrastructure, and SDK-facing sandbox APIs.
+- 真实 secret 会进入 sidecar 进程和其信任域。
+- 依赖 Linux nftables、`NET_ADMIN`、透明 MITM 与 guest CA。
+- Restart、pause/resume 和 sidecar 可用性使秘密生命周期复杂。
+- 桌面产品的更强不变量要求长期 secret 始终只在宿主 credential store。
 
-What is retained:
+结论：只复用授权语义，由宿主 Broker 重写实现。
 
-- Agent-friendly execution and file workflows.
-- Fast disposable environment expectations.
-- Snapshot and warm-start scenarios to benchmark.
-- `envd` as a behavior and compatibility comparison.
+### 4.4 Docker Desktop
 
-Why E2B/envd is not the primary implementation:
+底层实现：通常以一台共享 Linux VM 承载 containerd/runc、镜像、网络和 Docker daemon，再把广权限 Docker API 暴露给宿主工具。
 
-- Its strongest value is tied to a Linux/KVM cloud architecture.
-- Firecracker and cloud orchestration do not map to VZ or Hyper-V.
-- Adopting the complete path would require recreating or embedding infrastructure not needed on one desktop.
-- Execd currently matches the selected contract and OpenAPI ecosystem more closely.
+借鉴内容：它证明了“桌面 Linux VM + OCI 容器”可以拥有成熟 UX。
 
-### 4.5 Firecracker
+不作为依赖的原因：
 
-Firecracker is a Linux/KVM VMM with a deliberately small device model for high-density microVMs.
+- 共享 VM 不能隔离不同凭据授权域。
+- Docker API/socket 权限远超 Desk Box 所需。
+- 许可证、安装、升级、VM 拓扑和安全策略不受产品控制。
+- 不能假设终端用户已安装 Docker Desktop。
 
-What is retained:
+### 4.5 E2B
 
-- Minimal device surface.
-- Disposable root disks and template-based startup.
-- Strict separation of host services from guest workloads.
+底层实现：围绕 Linux/KVM Firecracker microVM 构建云控制面、`envd`、网络、存储、template、snapshot 和 SDK。
 
-Why it is not adopted:
+借鉴内容：
 
-- It requires Linux/KVM and does not provide VZ or Hyper-V backends.
-- Running a Linux VMM host layer on desktop would duplicate the native hypervisor and complicate distribution.
+- Agent 友好的命令与文件体验。
+- 一次性环境、template 和 warm start 目标。
+- `envd` 的执行行为与 API 作为对照测试。
 
-## 5. Deferred and rejected options
+不采用平台和 `envd` 主线的原因：
 
-### 5.1 gVisor: deferred secondary isolation
+- 核心价值绑定 Linux/KVM 云基础设施。
+- Firecracker 与云调度不映射到 VZ/Hyper-V。
+- 在单机桌面引入或重建云存储、调度和恢复链成本过高。
+- 当前 `execd` 功能面与选定 contract 更一致。
 
-GVisor's `runsc` presents OCI runtime behavior while its Sentry user-space kernel implements many Linux syscalls. Systrap relies on Linux process and seccomp mechanisms; Gofer mediates filesystem access.
+### 4.6 Firecracker
 
-Potential future use: selected native Linux tasks inside an existing Desk Box VM.
+底层实现：基于 Linux KVM 的 microVM VMM，使用精简 virtio 设备模型降低云节点攻击面并提高密度。
 
-Why deferred:
+借鉴内容：最小设备面、一次性 rootfs、template 启动和宿主/guest 服务隔离。
 
-- It does not replace the cross-platform outer VM.
-- Syscall and filesystem compatibility require workload-specific testing.
-- It adds another runtime, update stream, and diagnostic layer.
-- The first release gains more security value by completing the host broker and VM isolation tests.
+不采用原因：只支持 Linux/KVM，没有 VZ 或 Hyper-V backend；在桌面再套 Linux VMM host 会重复原生 hypervisor 并增加分发复杂度。
 
-### 5.2 Wasmer/WASI: deferred Wasm profile
+## 5. 延期或明确舍弃
 
-Wasmer runs WebAssembly modules; WASI exposes selected host capabilities rather than a general Linux process environment.
+### 5.1 gVisor：未来二级隔离
 
-Potential future use: reviewed and recompiled Wasm-only plugins or MCP tools.
+底层实现：`runsc` 提供 OCI runtime 接口，Sentry 用户态内核实现大量 Linux syscall，systrap 依赖 Linux process/seccomp，Gofer 代理文件系统。
 
-Why deferred:
+未来可用于同一 Desk Box VM 内的特定原生不可信子任务，但首版延期，因为：
 
-- It cannot run arbitrary OCI Linux applications such as Claude Code or native toolchains.
-- It introduces a separate packaging and compatibility model.
-- Its capability model is valuable only after the core plugin product surface is defined.
+- 不能替代跨平台外层 VM。
+- Syscall 与文件兼容性需要按工作负载验证。
+- 增加一套 runtime、升级链和诊断层。
+- 首版优先完成 VM、Broker 和跨平台安全验收，收益更高。
 
-### 5.3 WSL2: rejected as strong isolation
+### 5.2 Wasmer/WASI：未来 Wasm Profile
 
-WSL distributions share the WSL utility VM kernel, and the local user can enter and alter the environment. It does not provide one independently controlled guest kernel per authorization domain.
+底层实现：Wasmer 编译或解释 WebAssembly；WASI 通过显式 capability 向模块开放文件、网络等 host call。
 
-It may later support a clearly labelled lower-assurance Windows Home mode, but it cannot inherit the `VM-backed Sandbox` claim.
+未来适用于审核过且可重新编译的 Wasm-only 插件或 MCP，但不能运行 Claude Code、原生编译器等通用 OCI Linux 工作负载，因此不是主 runtime。
 
-### 5.4 QEMU: diagnostic fallback
+### 5.3 WSL2：舍弃强隔离模式
 
-QEMU can use HVF on macOS and WHPX on Windows, giving a more uniform VMM interface.
+底层实现：多个 WSL distribution 共享 WSL utility VM 的 Linux kernel，本地用户可以直接进入并改变环境。
 
-Why it is not the default:
+它不满足“一授权域一独立 guest kernel”和“产品独占控制面”。未来可作为 Windows Home 的明确低保障兼容模式，但不得继承 `VM-backed Sandbox` 安全声明。
 
-- Larger device-model attack and maintenance surface.
-- Additional packaging, signing, update, and license obligations.
-- Weaker integration with native desktop lifecycle and diagnostics.
+### 5.4 QEMU：仅诊断后备
 
-It is reconsidered only if a required and security-relevant VZ or Hyper-V capability is proven unavailable.
+底层实现：通用软件设备模型，在 macOS 使用 HVF、Windows 使用 WHPX 获得硬件加速。
 
-## 6. Decision consequences
+不作为默认后端的原因：设备模型攻击面、打包、签名、升级和许可证义务高于平台原生框架，与桌面生命周期集成也更弱。只有 POC 证明 VZ/Hyper-V 缺少必要且安全相关能力时才复评。
 
-Benefits:
+## 6. 选择结果的后果
 
-- The security claim is based on a concrete, independently testable guest-kernel boundary.
-- OCI compatibility does not require a host Docker daemon.
-- Host credentials remain outside the untrusted VM.
-- macOS and Windows share contracts and guest behavior while using supported native hypervisors.
-- Upstream projects are reused at narrow, auditable interfaces.
+收益：
 
-Costs:
+- 安全声明建立在独立 guest kernel 与宿主策略上，可直接测试。
+- 获得 OCI/Dockerfile 兼容而不暴露宿主 Docker daemon。
+- 长期凭据留在不可信 VM 之外。
+- 两个平台共享 contract 与 guest 行为，同时使用受支持的原生 hypervisor。
+- 上游项目只通过窄接口进入产品，可信计算基更可控。
 
-- Two host platform adapters must be implemented and maintained.
-- Desk Box owns image verification, workspace synchronization, broker policy, and secure bootstrap.
-- The execd fork requires an upstream patch and vulnerability-management process.
-- VM density is lower than a shared-container-only design.
+成本：
 
-These costs are accepted because they directly implement the primary security and user-experience requirements rather than optimizing a cloud deployment model that the product does not have.
+- 需要维护 VZ 与 Hyper-V 两套 adapter 和一致性测试。
+- 需要自研安全 OCI 解包、Workspace Sync、Broker、bootstrap 和清理协调。
+- Execd fork 需要持续跟踪漏洞、依赖和上游安全修复。
+- 每授权域 VM 的资源密度低于共享容器方案。
+
+这些成本直接服务“安全优先、用户友好其次”的产品目标，因此接受；不为复用云端栈而改变桌面威胁模型。

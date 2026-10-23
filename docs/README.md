@@ -1,19 +1,19 @@
-# Desk Box Design Documents
+# Desk Box 设计文档
 
-These documents define the initial architecture baseline for Desk Box.
+本目录记录 Desk Box 的首版架构基线、技术选型、安全契约和决策依据。
 
-## Start here
+## 阅读顺序
 
-1. [Desktop VM sandbox architecture](architecture/desktop-vm-sandbox.md) describes the implementation topology, trust boundaries, host and guest components, lifecycle, and delivery phases.
-2. [Technology selection](research/technology-selection.md) compares the reviewed projects, explains their underlying engines, and records what is adopted, referenced, deferred, or rejected.
-3. [Threat model](security/threat-model.md) defines adversaries, protected assets, security invariants, controls, and release-blocking tests.
-4. [Best-practice assessment](research/best-practice-assessment.md) explains why the architecture fits established practices, where it intentionally differs from cloud designs, and what evidence is still required.
-5. [ADR-0001](adr/0001-desktop-vm-sandbox-baseline.md) is the concise accepted decision record.
+1. [桌面 VM 沙箱架构](architecture/desktop-vm-sandbox.md)：描述实现拓扑、信任边界、宿主与来宾组件、生命周期和交付阶段。
+2. [技术选型与取舍](research/technology-selection.md)：横向比较参考项目，解释其底层引擎以及采用、借鉴、延期或舍弃的原因。
+3. [威胁模型与安全不变量](security/threat-model.md)：定义攻击者、受保护资产、安全不变量、控制措施和阻断发布的测试。
+4. [最佳实践论证](research/best-practice-assessment.md)：说明该架构为何符合桌面沙箱最佳实践、为何不照搬云端方案，以及仍需哪些证据。
+5. [ADR-0001](adr/0001-desktop-vm-sandbox-baseline.md)：简明记录已接受的架构决策。
 
-## Decision in one paragraph
+## 一句话决策
 
-Desk Box uses OCI images as the workload format and dedicated Linux VMs as the strong isolation boundary: Apple `Virtualization.framework` on Apple Silicon macOS and Hyper-V Generation 2 on Windows 11 Pro/Enterprise. The guest runs `containerd`, `runc`, and a pinned minimal OpenSandbox `execd` fork. A trusted host broker owns lifecycle, workspace synchronization, outbound policy, and long-lived credentials. Docker Desktop, Kubernetes, WSL2, and a host Docker daemon are not required.
+Desk Box 使用 OCI 镜像作为工作负载格式，以独立 Linux VM 作为强隔离边界：Apple Silicon macOS 使用 Apple `Virtualization.framework`，Windows 11 Pro/Enterprise 使用 Hyper-V Generation 2。来宾内运行 `containerd`、`runc` 和固定版本的小型 OpenSandbox `execd` fork；可信宿主 Broker 负责生命周期、工作区同步、出口策略和长期凭据。产品不依赖 Docker Desktop、Kubernetes、WSL2 或宿主 Docker daemon。
 
-## Document status
+## 文档状态
 
-The architecture and ADR are accepted as the implementation baseline. Security properties remain claims to validate until the cross-platform release gates in the threat model pass.
+架构方案和 ADR 已作为实现基线接受。安全属性在威胁模型定义的跨平台发布门槛全部通过前，只能称为“按设计满足”，不能称为“已验证安全”。
