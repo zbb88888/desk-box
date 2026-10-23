@@ -27,6 +27,7 @@ Guest Linux 镜像构建链与 `execd` fork 为跨平台共享，不放本目录
 - 最新稳定 Xcode 与命令行工具。
 - 发布构建需要 `com.apple.security.virtualization` entitlement、有效签名与 notarization；entitlement 或能力缺失时必须明确失败，不得降级（平台矩阵 §2）。
 - 语言与工程结构在 Phase 1 `SandboxRuntime` 接口冻结时决定；在此之前本目录不预建代码骨架。
+- guest 资产可通过 `dbx-poc make-manifest` 生成 digest manifest；仍需用户提供已验证的 Linux arm64 kernel、initrd 和 root disk。
 
 ## POC 顺序（对应平台矩阵 §4，全部在真机执行）
 

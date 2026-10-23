@@ -20,13 +20,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var delegate: VZRuntimeDelegate?
         var socketDelegate: VZControlSocketDelegate?
         var controlSocket: VZControlSocket?
+        let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
 
-        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine, cowLease: CowDiskManager.Lease) {
+        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine, cowLease: CowDiskManager.Lease, serialConsole: VZSerialConsole?) {
             self.request = request
             self.boot = boot
             self.machine = machine
             self.cowLease = cowLease
+            self.serialConsole = serialConsole
             self.lifecycle = LifecycleMachine(
                 sandboxID: request.sandboxID,
                 boot: boot,
@@ -64,8 +66,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             _ = try GuestAssetValidator.validate(request.guestAssets)
             let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL, sandboxID: request.sandboxID)
             let configuration: VZVirtualMachineConfiguration
+            let serialConsole: VZSerialConsole
             do {
-                configuration = try self.makeConfiguration(request, diskURL: cowLease.cloneURL)
+                let result = try self.makeConfiguration(request, diskURL: cowLease.cloneURL)
+                configuration = result.configuration
+                serialConsole = result.console
             } catch {
                 try? self.cow.removeClone(cowLease)
                 throw error
@@ -76,7 +81,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 protocolMajor: ControlChannelProtocol.currentMajor,
                 guestManifestDigest: request.guestAssets.manifestDigest
             )
-            let record = Record(request: request, boot: boot, machine: machine, cowLease: cowLease)
+            let record = Record(request: request, boot: boot, machine: machine, cowLease: cowLease, serialConsole: serialConsole)
             let sandboxID = request.sandboxID
             let delegate = VZRuntimeDelegate { [weak self] error in
                 guard let self else { return }
@@ -111,7 +116,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             do {
                 try await record.machine.start()
                 record.started = true
-                self.recordAudit(record, action: .start, decision: .allow())
+                    self.recordAudit(record, action: .start, decision: .allow())
                 return record.boot
             } catch {
                 record.lifecycle.forceFail(reason: .platformCapabilityUnavailable)
@@ -224,7 +229,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     // MARK: - Configuration
 
-    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL) throws -> VZVirtualMachineConfiguration {
+    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL) throws -> (configuration: VZVirtualMachineConfiguration, console: VZSerialConsole) {
         let assets = request.guestAssets
         let bootLoader = VZLinuxBootLoader(kernelURL: assets.kernelURL)
         bootLoader.initialRamdiskURL = assets.initrdURL
@@ -237,6 +242,18 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
 
+        // Guest `console=hvc0` 输出只用于诊断，不用于 readiness/attestation。
+        let console = VZSerialConsole { data in
+            FileHandle.standardError.write(data)
+        }
+        let serial = VZVirtioConsoleDeviceConfiguration()
+        let consolePort = VZVirtioConsolePortConfiguration()
+        consolePort.name = "org.deskbox.console"
+        consolePort.isConsole = true
+        consolePort.attachment = console.attachment
+        serial.ports[0] = consolePort
+        configuration.consoleDevices = [serial]
+
         // 管理通道设备存在，但没有普通网络设备；网络默认拒绝。
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
 
@@ -248,7 +265,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         configuration.storageDevices = [block]
 
         try configuration.validate()
-        return configuration
+        return (configuration, console)
     }
 
     private func installControlListener(_ record: Record) throws {
