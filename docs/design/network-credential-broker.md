@@ -38,6 +38,8 @@ Host Broker -> Policy -> DNS -> TLS -> approved upstream
 
 Guest 防火墙是纵深防御，不是唯一执行点。平台 adapter 必须证明 guest 没有绕过 Broker 的直连网卡、NAT、桥接或宿主代理路径。若某平台不能强制该属性，强隔离模式不得启用网络。
 
+Guest 内的 DNS 应答路径必须显式归属：客户端自行发起 `getaddrinfo` 时，查询只允许到达 forwarder 内置的受限 DNS responder（由 Broker 策略应答或返回映射地址），否则直接失败；guest 不存在绕过 forwarder 的 DNS 出口。Responder 的具体实现在 POC 中冻结。
+
 ## 3. 出口决策流程
 
 每个请求按固定顺序处理：
@@ -60,6 +62,8 @@ DNS pinning 只在一次授权连接内有效；连接池复用必须保持相�
 - **长期凭据**：API key、refresh token、SSH private key、长期 cookie；不得进入 guest。
 - **短期派生凭据**：范围受限、短时有效、可撤销的 access token；只有具体产品场景经过安全评审后才可进入 guest，默认仍不进入。
 - **逻辑句柄**：guest 可见的 provider/grant 标识，不包含可用于认证的材料。
+
+Windows 平台约束：Credential Manager 通用凭据 blob 上限为 2560 字节（`CRED_MAX_CREDENTIAL_BLOB_SIZE`），无法容纳 RSA-4096 等较大 PEM 私钥；这类秘密改用 DPAPI 加密文件等等价机制存储，并纳入 Windows POC 验证。
 
 `CredentialGrant` 至少绑定：用户、工作区、sandbox、Agent、provider、scheme、host、端口、method、path、注入方式、签发与过期时间、次数和速率限制。
 

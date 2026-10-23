@@ -13,4 +13,10 @@ Desk Box 使用 OCI 镜像作为工作负载格式，以独立 Linux 虚拟机�
 - [最佳实践论证](docs/research/best-practice-assessment.md)
 - [ADR-0001：桌面 VM 沙箱基线](docs/adr/0001-desktop-vm-sandbox-baseline.md)
 
+## 开发落地
+
+- [macOS 端开发指导](macos/README.md)
+- [Windows 端开发指导](windows/README.md)
+- [开源参考仓库](references/README.md)：clone 开源仓库到 `references/` 对照源码阅读，不入库。
+
 实现以已接受的架构决策为准。只有通过威胁模型定义的跨平台发布门槛后，相关安全声明才视为已验证。

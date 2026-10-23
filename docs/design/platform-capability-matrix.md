@@ -30,7 +30,7 @@
 | 启动资产完整性 | 应用签名、manifest/digest、只读基础盘 | manifest/digest、Secure Boot 模板兼容性 | 阻止启动 |
 | 私有宿主/来宾通道 | VZ Socket endpoint 与 VM 实例绑定 | HVSock service/VM ID 绑定 | 阻止启动 |
 | 每 sandbox COW | 基础盘只读、独立可写 overlay 的实现与回收 | differencing VHDX 父链、合并与回收 | 不复用基础盘写层 |
-| CPU/内存限制 | VZ 配置与宿主压力行为 | Hyper-V VM 配置与动态内存策略 | 拒绝超配或终止 |
+| CPU/内存限制 | vCPU 与固定内存上限的强制效果实测；VZ 无公开 CPU 时间硬配额 API，需验证宿主调度兜底是否满足不变量 8 | Hyper-V reserve/limit/weight 与动态内存策略 | 拒绝超配或终止 |
 | 磁盘与日志配额 | COW 最大值、宿主空间保留 | VHDX 上限、宿主空间保留 | fail closed |
 | 无直连网络 | VM 网卡缺省状态、Broker-only 数据路径 | vSwitch/NAT/Firewall 缺省状态 | 禁用网络或强隔离模式 |
 | Suspend/resume | API 可用性、内存状态与会话失效 | save/checkpoint 类型及会话失效 | 首版关闭该功能 |
@@ -59,8 +59,9 @@
 4. 验证基础 VHDX、differencing VHDX 父链、配额与异常删除恢复。
 5. 验证 vSwitch/NAT/Windows Firewall 不产生绕过 Broker 的出口。
 6. 明确普通用户、提升进程和 Windows service 的最小权限边界。
-7. 验证 checkpoint/save/restore 的实际语义和旧 session 失效；不满足则首版关闭。
-8. 验证服务崩溃、系统重启、休眠和更新后的 VM/VHDX 清理。
+7. 验证 Credential Manager 2560 字节 blob 约束下各类长期凭据（含 RSA 私钥）的存储方案，如 DPAPI 加密文件。
+8. 验证 checkpoint/save/restore 的实际语义和旧 session 失效；不满足则首版关闭。
+9. 验证服务崩溃、系统重启、休眠和更新后的 VM/VHDX 清理。
 
 ## 6. 版本冻结产物
 

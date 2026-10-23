@@ -88,7 +88,9 @@ Host 与 Guest 使用同一套身份、资源、操作、授权、决策、原�
 - 声明式服务端口；
 - CPU、内存、磁盘和进程数提示。
 
-必须拒绝：host namespace、host device、任意 bind mount、额外 capability、privileged、seccomp/LSM 覆盖、BPF/perf/module 管理权限、daemon socket 和 provider-specific 逃生字段。
+镜像 `User` 只作为提示处理：默认重写为固定非 root UID；确实需要 guest root 的镜像必须显式拒绝或按产品策略映射到受限 UID，不能由镜像自行决定。镜像 `Volumes` 默认忽略，仅在映射到受控 workspace/volume 描述时保留，不作为隐式数据面授权。
+
+必须拒绝：host namespace、host device、任意 bind mount、额外 capability、privileged、seccomp/LSM 覆盖、BPF/perf/module 管理权限、daemon socket 和 provider-specific 逃生字段。必须明确：OCI image config 本身不含这些字段，它们可能来自运行时输入或 Docker 兼容 API，同样按白名单拒绝。
 
 ### 5.3 `CredentialGrant`
 
@@ -130,16 +132,16 @@ Controller 是宿主策略执行点：
 
 ### 6.3 macOS Adapter
 
-macOS 后端使用 `Virtualization.framework` 启动签名的 Linux arm64 kernel、initrd 和 root disk，并配置：
+macOS 后端使用 `Virtualization.framework` 启动 Linux arm64 VM。VZ 不验证 Linux boot asset 签名，宿主必须在启动前按 manifest 校验 kernel、initrd 和 root disk 的 digest/signature，并配置：
 
-- 只读基础盘与每 sandbox 独立 COW；
+- 只读基础盘与每 sandbox 独立 COW；VZ 无原生差分盘机制，COW 是产品自建组件（guest 侧 overlay 或宿主块设备代理），实现路径以 POC 结论冻结；
 - virtio block、entropy、balloon 和 network；
 - 仅宿主可达的 VZ Socket 控制通道；
-- 宿主强制 CPU 与内存限额；
+- 启动时固定的内存上限与 vCPU 上限；VZ 无公开 CPU 时间硬配额 API，CPU 强制行为以 POC 实测冻结，不能用宿主调度优先级伪装成硬限额；
 - 工作负载不可读的串口诊断；
 - 经过生命周期与秘密检查的 suspend/resume。
 
-工作区默认复制或增量同步到 guest 私有盘，不把 `virtiofs` 宿主直挂作为默认数据面。
+工作区默认快照式导入、确认（暂存）式导出到 guest 私有盘，不做双向实时同步，不把 `virtiofs` 宿主直挂作为默认数据面。
 
 ### 6.4 Windows Adapter
 
@@ -149,7 +151,7 @@ Windows 后端直接管理 Hyper-V Generation 2 Linux VM，并配置：
 - 只读基础 VHDX 与每 sandbox 差分 VHDX；
 - 仅宿主可达的 Hyper-V Socket；
 - 受产品策略约束的 checkpoint；
-- 宿主强制 CPU、内存、磁盘和生命周期限额。
+- 宿主强制内存、磁盘和生命周期限额；CPU 使用 Hyper-V 原生 reserve/limit/weight 实施，并以 POC 实测冻结。
 
 Windows 11 上缺少成熟的 HCS LCOW v2 客户端路径，不等于 Hyper-V Gen2 不可用。首版直接管理 Hyper-V VM，不依赖 LCOW。
 
@@ -161,7 +163,7 @@ OCI 服务执行：
 2. 为 `linux/arm64` 或 `linux/amd64` 选择 manifest。
 3. Digest pinning 与可选签名、provenance 策略。
 4. 内容寻址 blob cache。
-5. 解包前后的总大小、文件数、路径、symlink、hard link、device node 和压缩比检查。
+5. 解包前后的总大小、文件数、路径、symlink、hard link、device node、setuid/setgid bit、whiteout（`.wh.`）应用安全和压缩比检查。
 6. OCI config 到 `WorkloadSpec` 的策略编译。
 7. 感知活动 COW 与 snapshot 引用的垃圾回收。
 

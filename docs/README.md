@@ -19,6 +19,12 @@
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。
 
+## 开发落地
+
+- [macOS 端开发指导](../macos/README.md)：VZ adapter 范围、前置条件与 POC 顺序。
+- [Windows 端开发指导](../windows/README.md)：Hyper-V Gen2 adapter 范围、前置条件与 POC 顺序。
+- [开源参考仓库](../references/README.md)：设计文档引用的开源项目本地 clone 到 `references/`，只读对照，不入库。
+
 ## 一句话决策
 
 Desk Box 使用 OCI 镜像作为工作负载格式，以独立 Linux VM 作为强隔离边界：Apple Silicon macOS 使用 Apple `Virtualization.framework`，Windows 11 Pro/Enterprise 使用 Hyper-V Generation 2。来宾内运行 `containerd`、`runc` 和固定版本的小型 OpenSandbox `execd` fork；可信宿主 Broker 负责生命周期、工作区同步、出口策略和长期凭据。产品不依赖 Docker Desktop、Kubernetes、WSL2 或宿主 Docker daemon。

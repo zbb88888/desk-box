@@ -114,7 +114,7 @@ Guest 通过窄协议请求能力，不获得原始宿主文件描述符、crede
 | VM 强边界 | `Virtualization.framework` | Hyper-V Generation 2 |
 | 私有控制通道 | VZ Socket | Hyper-V Socket |
 | 私有写层 | VZ block/COW 方案 | Differencing VHDX |
-| 宿主凭据 | Keychain | Credential Manager |
+| 宿主凭据 | Keychain | Credential Manager；超大私钥以 DPAPI 加密文件等价机制存储 |
 | 网络强制 | macOS 网络机制与 Broker | vSwitch/Firewall 与 Broker |
 | 文件对象约束 | APFS 与 macOS 文件 API | NTFS、ADS、reparse point 与 Windows API |
 | 安装权限 | 签名、notarization、entitlement/helper | Authenticode、service/helper privilege |

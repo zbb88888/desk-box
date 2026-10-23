@@ -21,7 +21,7 @@ Desk Box 需要在 Apple Silicon macOS 和 Windows 11 Pro/Enterprise 上运行�
 - Guest 内使用 `containerd + runc` 执行 OCI workload；
 - 固定上游版本的小型 OpenSandbox `execd` fork 提供命令、PTY、文件、会话与指标；
 - 宿主 Controller 自有 lifecycle contract、策略和审计；
-- 工作区默认复制或增量同步到 guest 私有盘；
+- 工作区默认快照式导入、确认式导出到 guest 私有盘，不做双向实时同步；
 - 长期凭据只保存在 macOS Keychain 或 Windows Credential Manager，由宿主 Broker 在已授权最终请求中注入；
 - 网络默认拒绝，MCP 只暴露窄 capability；
 - 产品不依赖 Docker Desktop、Kubernetes、WSL2、宿主 Docker daemon 或 `docker.sock`。
