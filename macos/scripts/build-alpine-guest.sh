@@ -15,6 +15,7 @@ KERNEL_URL="https://deb.debian.org/debian/dists/bookworm/main/installer-arm64/cu
 MINIROOT_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
 
 mkdir -p "$OUT_DIR"
+cp "$(dirname "$0")/guest-bootstrap.c" "$OUT_DIR/guest-bootstrap.c"
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v docker >/dev/null || { echo "docker is required to build the ext4 image" >&2; exit 1; }
 
@@ -38,28 +39,33 @@ docker run --rm \
   -v "$OUT_DIR:/out" \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
-    apk add --no-cache e2fsprogs curl >/dev/null
+    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers >/dev/null
+    gcc -static -O2 -Wall -Wextra -o /tmp/deskbox-bootstrap /out/guest-bootstrap.c
     rm -rf /tmp/rootfs
     mkdir -p /tmp/rootfs
     curl --fail --location --retry 3 "$MINIROOT_URL" | tar -xz -C /tmp/rootfs
     mkdir -p /tmp/rootfs/root /tmp/rootfs/workspace /tmp/rootfs/run
+    install -m 0755 /tmp/deskbox-bootstrap /tmp/rootfs/sbin/deskbox-bootstrap
     cat > /tmp/rootfs/etc/motd <<EOF
 Desk Box Alpine guest POC
 Network is intentionally disabled by the host VZ configuration.
 EOF
     # Make initramfs hand off to the root filesystem and keep a diagnostic shell
     # available on the serial console. No network service is enabled.
-    cat > /tmp/rootfs/sbin/deskbox-init <<EOF
+    if [ -e /tmp/rootfs/sbin/init ]; then mv /tmp/rootfs/sbin/init /tmp/rootfs/sbin/init.real; fi
+    cat > /tmp/rootfs/sbin/init <<EOF
 #!/bin/sh
 export PATH=/sbin:/usr/sbin:/bin:/usr/bin
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /run /workspace
+/sbin/deskbox-bootstrap >/dev/null 2>&1 || true
 printf "Desk Box guest init ready\\n"
+if [ -x /sbin/init.real ]; then exec /sbin/init.real; fi
 exec /bin/sh
 EOF
-    chmod 0755 /tmp/rootfs/sbin/deskbox-init
+    chmod 0755 /tmp/rootfs/sbin/init
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw
     mke2fs -q -t ext4 -F -d /tmp/rootfs /out/root-disk.raw
   '

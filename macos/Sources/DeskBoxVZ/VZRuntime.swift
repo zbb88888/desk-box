@@ -77,10 +77,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
             _ = try GuestAssetValidator.validate(request.guestAssets)
             let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL, sandboxID: request.sandboxID)
+            let boot = BootContext(
+                sandboxID: request.sandboxID,
+                protocolMajor: ControlChannelProtocol.currentMajor,
+                guestManifestDigest: request.guestAssets.manifestDigest
+            )
             let configuration: VZVirtualMachineConfiguration
             let serialConsole: VZSerialConsole?
             do {
-                let result = try self.makeConfiguration(request, diskURL: cowLease.cloneURL)
+                let result = try self.makeConfiguration(request, diskURL: cowLease.cloneURL, boot: boot)
                 configuration = result.configuration
                 serialConsole = result.console
             } catch {
@@ -88,11 +93,6 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw error
             }
             let machine = VZVirtualMachine(configuration: configuration, queue: self.queue)
-            let boot = BootContext(
-                sandboxID: request.sandboxID,
-                protocolMajor: ControlChannelProtocol.currentMajor,
-                guestManifestDigest: request.guestAssets.manifestDigest
-            )
             let record = Record(request: request, boot: boot, machine: machine, cowLease: cowLease, serialConsole: serialConsole)
             let sandboxID = request.sandboxID
             let delegate = VZRuntimeDelegate { [weak self] error in
@@ -246,11 +246,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     // MARK: - Configuration
 
-    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL) throws -> (configuration: VZVirtualMachineConfiguration, console: VZSerialConsole?) {
+    private func makeConfiguration(_ request: SandboxCreateRequest, diskURL: URL, boot: BootContext) throws -> (configuration: VZVirtualMachineConfiguration, console: VZSerialConsole?) {
         let assets = request.guestAssets
         let bootLoader = VZLinuxBootLoader(kernelURL: assets.kernelURL)
         bootLoader.initialRamdiskURL = assets.initrdURL
-        bootLoader.commandLine = assets.kernelCommandLine
+        // These values are guest-visible bootstrap inputs, not attestation.
+        // The host still validates the hello against its in-memory BootContext.
+        bootLoader.commandLine = assets.kernelCommandLine + " dbx.sandbox=\(boot.sandboxID.raw) dbx.boot=\(boot.bootID.raw) dbx.nonce=\(boot.bootNonce.uuidString) dbx.manifest=\(boot.guestManifestDigest) dbx.port=1024"
 
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
