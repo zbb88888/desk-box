@@ -40,6 +40,19 @@ Guest Linux 镜像构建链与 `execd` fork 为跨平台共享，不放本目录
 8. 验证 suspend/resume API、最低系统版本、snapshot 中会话材料失效；失败则首版禁用该功能。
 9. 验证系统升级与应用回滚不加载低于安全最低版本的 guest asset。
 
+## 可启动 POC
+
+`Sources/dbx-poc` 提供前台 `launch` 入口，完整流程、manifest 格式、签名 entitlement 和当前限制见 [Resources/README.md](Resources/README.md)。
+
+```bash
+cd macos
+swift run dbx-poc capcheck
+swift run dbx-poc validate-assets ./guest/manifest.json
+swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Application Support/DeskBox/cows"
+```
+
+启动 POC 必须使用已签名的 `com.apple.security.virtualization` entitlement，并在真实 Apple Silicon Mac 上执行。没有 guest bootstrap proof 时，输出只能是 `pending-bootstrap`，不能宣称产品状态为 `Running`。
+
 ## 验收门槛
 
 macOS 侧发布前必须通过[安全验证追踪矩阵](../docs/security/security-verification-matrix.md)中 INV-01/03/05/07/08/10 的 macOS 证据项，以及架构 §11 的发布门槛；模拟器结果不构成发布证据（矩阵 §4）。

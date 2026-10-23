@@ -13,7 +13,7 @@ ADR-0001 要求先冻结跨平台生命周期、安全语义和验证契约，�
 
 - `DeskBoxCore`：跨平台契约语义，包括身份、reason code、decision、审计、boot proof、生命周期状态机、`WorkloadSpec` 编译器、`CredentialGrant` 解析器和 `SandboxRuntime` 接口。
 - `DeskBoxVZ`：`Virtualization.framework` 能力探针、guest asset digest 校验、APFS `clonefile` per-sandbox COW 磁盘和 VZ configuration/runtime。
-- `dbx-poc`：`capcheck` 和 `validate-assets` 命令，用于平台 POC 前置检查。
+- `dbx-poc`：`capcheck`、`validate-assets` 和前台 `launch` 命令，用于平台 POC 与最小 VM 启动。
 - `Tests/DeskBoxCoreTests`：契约级单测。
 - `Tests/ConformanceTests`：未来由 VZ 与 Hyper-V adapter 共享的 contract suite 起点。
 
@@ -33,7 +33,7 @@ ADR-0001 要求先冻结跨平台生命周期、安全语义和验证契约，�
 
 - `com.apple.security.virtualization` entitlement、发布签名和 notarization；
 - macOS COW 的 APFS/clonefile 方案尚未通过真实磁盘、空间耗尽、崩溃恢复和删除 POC；
-- VZ Socket 上的 TLS 1.3 双向握手和 execd bootstrap；
+- VZ Socket 上的 TLS 1.3 双向握手和 execd bootstrap；当前 `launch` 只能输出 `pending-bootstrap`，不能发布产品 `Running`；
 - Workspace Sync、Keychain/Credential Broker、guest image/containerd/execd；
 - Host CPU/内存/磁盘/生命周期强制；
 - suspend/resume、snapshot、崩溃恢复、孤儿资源回收；
@@ -47,6 +47,8 @@ ADR-0001 要求先冻结跨平台生命周期、安全语义和验证契约，�
 cd macos
 swift test
 swift run dbx-poc capcheck
+swift run dbx-poc validate-assets ./guest/manifest.json
+swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Application Support/DeskBox/cows"
 ```
 
 实体设备 POC 证据仍必须按 `docs/design/platform-capability-matrix.md` §4 和 `docs/security/security-verification-matrix.md` 记录。
