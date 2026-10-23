@@ -10,15 +10,22 @@ ALPINE_VERSION="${ALPINE_VERSION:-3.21.3}"
 OUT_DIR="${1:-$(pwd)/guest}"
 ROOT_SIZE_MB="${ROOT_SIZE_MB:-512}"
 BASE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/aarch64/netboot"
+# VZLinuxBootLoader requires a raw Linux arm64 Image, not Alpine's EFI wrapper.
+KERNEL_URL="https://deb.debian.org/debian/dists/bookworm/main/installer-arm64/current/images/netboot/debian-installer/arm64/linux"
 MINIROOT_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
 
 mkdir -p "$OUT_DIR"
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v docker >/dev/null || { echo "docker is required to build the ext4 image" >&2; exit 1; }
 
-echo "Downloading Alpine ${ALPINE_VERSION} arm64 boot assets..."
-curl --fail --location --retry 3 --output "$OUT_DIR/vmlinuz-virt" "$BASE_URL/vmlinuz-virt"
+echo "Downloading Alpine rootfs and direct-boot Linux arm64 kernel..."
+curl --fail --location --retry 3 --output "$OUT_DIR/vmlinuz-virt" "$KERNEL_URL"
 curl --fail --location --retry 3 --output "$OUT_DIR/initramfs-virt" "$BASE_URL/initramfs-virt"
+file "$OUT_DIR/vmlinuz-virt" | tee "$OUT_DIR/kernel-format.txt"
+if ! file "$OUT_DIR/vmlinuz-virt" | grep -q 'Linux kernel ARM64 boot executable'; then
+  echo "kernel is not a direct Linux arm64 Image; refusing to continue" >&2
+  exit 1
+fi
 
 # The initramfs expects /dev/vda as root. mke2fs -d populates an ext4 image
 # without requiring a privileged mount inside Docker.

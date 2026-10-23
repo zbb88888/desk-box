@@ -43,12 +43,21 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private var records: [SandboxID: Record] = [:]
     private let audit: AuditSink?
     private let cow: CowDiskManager
+    private let enableConsole: Bool
+    private let enableControlSocket: Bool
 
-    public init(cowRoot: URL, audit: AuditSink? = nil) throws {
+    public init(
+        cowRoot: URL,
+        audit: AuditSink? = nil,
+        enableConsole: Bool = true,
+        enableControlSocket: Bool = true
+    ) throws {
         self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
         self.queue.setSpecific(key: queueKey, value: 1)
         self.cow = try CowDiskManager(root: cowRoot)
         self.audit = audit
+        self.enableConsole = enableConsole
+        self.enableControlSocket = enableControlSocket
     }
 
     public func create(_ request: SandboxCreateRequest) async throws -> SandboxHandle {
@@ -97,11 +106,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             record.delegate = delegate
             machine.delegate = delegate
-            do {
-                try self.installControlListener(record)
-            } catch {
-                try? self.cow.removeClone(cowLease)
-                throw error
+            if self.enableControlSocket {
+                do {
+                    try self.installControlListener(record)
+                } catch {
+                    try? self.cow.removeClone(cowLease)
+                    throw error
+                }
             }
             self.records[request.sandboxID] = record
             self.recordAudit(record, action: .create, decision: .allow())
@@ -257,20 +268,26 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         // Guest `console=hvc0` 输出只用于诊断，不用于 readiness/attestation。
         let console: VZSerialConsole?
-        let serialConsole = VZSerialConsole { data in
-            FileHandle.standardError.write(data)
+        if enableConsole {
+            let serialConsole = VZSerialConsole { data in
+                FileHandle.standardError.write(data)
+            }
+            let serial = VZVirtioConsoleDeviceConfiguration()
+            let consolePort = VZVirtioConsolePortConfiguration()
+            consolePort.name = "org.deskbox.console"
+            consolePort.isConsole = true
+            consolePort.attachment = serialConsole.attachment
+            serial.ports[0] = consolePort
+            configuration.consoleDevices = [serial]
+            console = serialConsole
+        } else {
+            console = nil
         }
-        let serial = VZVirtioConsoleDeviceConfiguration()
-        let consolePort = VZVirtioConsolePortConfiguration()
-        consolePort.name = "org.deskbox.console"
-        consolePort.isConsole = true
-        consolePort.attachment = serialConsole.attachment
-        serial.ports[0] = consolePort
-        configuration.consoleDevices = [serial]
-        console = serialConsole
 
         // 管理通道设备存在，但没有普通网络设备；网络默认拒绝。
-        configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        if enableControlSocket {
+            configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        }
 
         let attachment = try VZDiskImageStorageDeviceAttachment(
             url: diskURL,

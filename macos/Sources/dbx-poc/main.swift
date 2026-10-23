@@ -65,7 +65,7 @@ struct DBXPOC {
 
     private static func launch(args: [String]) async throws {
         guard let manifestPath = args.first else {
-            throw CLIError.usage("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N]")
+            throw CLIError.usage("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz]")
         }
         let manifestURL = URL(fileURLWithPath: manifestPath).standardizedFileURL
         let manifest = try loadManifest(at: manifestURL)
@@ -79,7 +79,13 @@ struct DBXPOC {
         }
 
         let audit = InMemoryAuditSink()
-        let runtime = try VZRuntime(cowRoot: cowRoot, audit: audit)
+        let diagnosticOnly = args.contains("--minimal-vz")
+        let runtime = try VZRuntime(
+            cowRoot: cowRoot,
+            audit: audit,
+            enableConsole: !diagnosticOnly,
+            enableControlSocket: !diagnosticOnly
+        )
         let sandboxID = SandboxID.new()
         let workload = WorkloadSpec(
             entrypoint: ["/bin/sh"], args: [],
@@ -147,7 +153,7 @@ struct DBXPOC {
         print("dbx-poc capcheck")
         print("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] --output <manifest.json>")
         print("dbx-poc validate-assets <manifest.json>")
-        print("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N]")
+        print("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz]")
         print("launch is foreground; EOF stops and destroys the VM")
     }
 }

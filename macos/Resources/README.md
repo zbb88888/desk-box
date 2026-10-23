@@ -62,6 +62,8 @@ swift run dbx-poc make-manifest \
 
 当前实现只校验文件 digest，不校验 manifest 的签名。签名 manifest、更新签名和 downgrade protection 是发布阻断项。
 
+注意：`VZLinuxBootLoader` 需要直接可启动的 Linux arm64 `Image`。Alpine `vmlinuz-virt` 是 EFI PE/COFF wrapper，不能直接作为 VZ kernel；开发脚本使用 Debian installer arm64 `Image` 作为 kernel，Alpine minirootfs 作为 root disk 内容。两者的版本、来源和兼容性必须在生产 guest 资产流程中重新冻结。
+
 ## 启动
 
 ```bash
