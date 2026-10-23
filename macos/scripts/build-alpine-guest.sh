@@ -72,6 +72,8 @@ EOF
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
     cp /tmp/rootfs/bin/busybox /tmp/initrd/bin/busybox
+    mkdir -p /tmp/initrd/sbin
+    cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
     ln -s busybox /tmp/initrd/bin/mount
     ln -s busybox /tmp/initrd/bin/switch_root
     cat > /tmp/initrd/init <<EOF
@@ -79,6 +81,8 @@ EOF
 mount -t devtmpfs dev /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
+printf "Desk Box initramfs ready\\n"
+/sbin/deskbox-bootstrap || true
 until mount -t ext4 -o rw /dev/vda /newroot; do sleep 1; done
 exec /bin/switch_root /newroot /sbin/init
 EOF
