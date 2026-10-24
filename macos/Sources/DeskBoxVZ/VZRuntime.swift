@@ -311,8 +311,18 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func execute(_ handle: SandboxHandle, request: ControlRequest) async throws -> ControlResponse {
-        guard request.argv.contains("/bin/echo") || request.argv.contains("/bin/sh") else {
-            throw SandboxFailure(.bootstrapProofMissing, "MVP exec only accepts echo/sh as an explicit diagnostic command")
+        // M2-2: 允许 echo/sh 诊断与 /workspace 下经策略同步的可执行面。
+        guard let first = request.argv.first else {
+            throw SandboxFailure(.bootstrapProofMissing, "exec argv 不可为空")
+        }
+        let allowedFirst = first == "/bin/echo"
+            || first == "/bin/sh"
+            || first.hasPrefix("/workspace/")
+        let cwdOK = (request.cwd == nil)
+            || request.cwd == "/workspace"
+            || (request.cwd?.hasPrefix("/workspace/") ?? false)
+        guard allowedFirst && cwdOK else {
+            throw SandboxFailure(.bootstrapProofMissing, "MVP exec only accepts echo/sh or workspace-scoped argv")
         }
         try await onQueue {
             let record = try self.require(handle)

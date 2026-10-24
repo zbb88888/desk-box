@@ -158,6 +158,56 @@ static int install_exec_hardening(int timeout_seconds) {
     return 0;
 }
 
+/* ws_extract_string 定义在文件后面；在前前向声明。 */
+static int ws_extract_string(const char *json, const char *field, char *out, size_t cap);
+
+/* env 键名合规：[A-Z0-9_]，首字符非数字；禁 DBX_/PATH/HOME/USER。 */
+static int env_key_ok(const char *k) {
+    if (!k || !*k) return 0;
+    if (*k >= '0' && *k <= '9') return 0;
+    for (const char *p = k; *p; p++) {
+        if (!((*p >= 'A' && *p <= 'Z') || (*p == '_') || (*p >= '0' && *p <= '9'))) return 0;
+    }
+    if (strncmp(k, "DBX_", 4) == 0) return 0;
+    if (strcmp(k, "PATH") == 0 || strcmp(k, "HOME") == 0 || strcmp(k, "USER") == 0) return 0;
+    return 1;
+}
+
+/* 解析 "env":{\"K\":\"V\",...} 到静态存储；返回 pair 数（<=0 无） */
+static int extract_env_object(const char *json, char keys[][32], char vals[][160], int max_pairs) {
+    const char *p = strstr(json, "\"env\"");
+    if (!p) return 0;
+    const char *o = strchr(p, '{');
+    const char *e = strchr(o ? o : json, '}');
+    if (!o || !e || e <= o) return 0;
+    int count = 0;
+    p = o + 1;
+    while (p < e && count < max_pairs) {
+        while (p < e && (*p == ' ' || *p == ',' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+        if (p >= e || *p != '"') break;
+        p++;
+        const char *kend = strchr(p, '"');
+        if (!kend || kend > e) break;
+        size_t klen = (size_t)(kend - p);
+        if (klen == 0 || klen >= 32) return -1;
+        memcpy(keys[count], p, klen);
+        keys[count][klen] = 0;
+        p = kend + 1;
+        while (p < e && (*p == ' ' || *p == ':')) p++;
+        if (p >= e || *p != '"') return -2;
+        p++;
+        const char *vend = strchr(p, '"');
+        if (!vend || vend > e) break;
+        size_t vlen = (size_t)(vend - p);
+        if (vlen >= 160) return -3;
+        memcpy(vals[count], p, vlen);
+        vals[count][vlen] = 0;
+        p = vend + 1;
+        count++;
+    }
+    return count;
+}
+
 /** Run argv via fork/exec with pipes; fill an exitCode/stdout/stderr JSON. */
 static int run_exec_request(const char *request_json, char *response, size_t response_cap) {
     enum { MAX_ARGV = 32 };
@@ -167,6 +217,33 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     if (argc <= 0) {
         return snprintf(response, response_cap,
             "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"exec request argv parse failed\"}");
+    }
+
+    /* OCI 语义（M2-2）：
+     * - cwd 可选，但必须以 /workspace 为前缀；
+     * - env 可选键值对，key 符合白名单否则 hard-fail。
+     */
+    static char env_keys[8][32];
+    static char env_vals[8][160];
+    static char env_pairs[8][200];
+    static char *child_env[16];
+    int env_count = extract_env_object(request_json, env_keys, env_vals, 8);
+    if (env_count < 0) {
+        return snprintf(response, response_cap,
+            "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"exec env parse failed\"}");
+    }
+    for (int i = 0; i < env_count; i++) {
+        if (!env_key_ok(env_keys[i])) {
+            return snprintf(response, response_cap,
+                "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"env key rejected\"}");
+        }
+        snprintf(env_pairs[i], sizeof(env_pairs[i]), "%s=%s", env_keys[i], env_vals[i]);
+    }
+    static char cwd_buf[224];
+    int has_cwd = (ws_extract_string(request_json, "\"cwd\"", cwd_buf, sizeof(cwd_buf)) > 0);
+    if (has_cwd && strncmp(cwd_buf, "/workspace", 10) != 0) {
+        return snprintf(response, response_cap,
+            "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"cwd must be under /workspace\"}");
     }
 
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
@@ -190,6 +267,20 @@ static int run_exec_request(const char *request_json, char *response, size_t res
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
         if (install_exec_hardening(timeout_seconds) != 0) _exit(126);
+        /* M2-2: 应用 OCI 派生 env/cwd（白名单持有者已验证） */
+        extern char **environ;
+        static char *const base_env[] = {
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME=/workspace",
+            "USER=sandbox",
+            NULL
+        };
+        int ei = 0;
+        for (int i = 0; base_env[i]; i++) child_env[ei++] = (char *)base_env[i];
+        for (int i = 0; i < env_count && ei < 15; i++) child_env[ei++] = (char *)env_pairs[i];
+        child_env[ei] = NULL;
+        environ = child_env;
+        if (has_cwd) { if (chdir(cwd_buf) != 0) _exit(125); }
         execvp(argv[0], argv);
         _exit(127);
     }

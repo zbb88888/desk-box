@@ -216,6 +216,33 @@ struct DBXPOC {
                         ["/bin/echo", "deskbox-mvp-first"],
                         ["/bin/echo", "deskbox-mvp-second"]
                     ]
+                    // M2-2: OCI bundle 入口：policy 审核 → 同步 rootfs → OCI 语义执行。
+                    if let bundlePath = try optionString("--oci-bundle", in: args) {
+                        do {
+                            let bundleDir = URL(fileURLWithPath: bundlePath).standardizedFileURL
+                            let configURL = bundleDir.appendingPathComponent("config.json")
+                            let spec = try JSONDecoder().decode(OciRuntimeSpec.self, from: Data(contentsOf: configURL))
+                            let workload = try OciPolicyValidator.validate(spec: spec, bundleDir: bundleDir)
+                            if let rootfs = workload.rootfsURL {
+                                let snapshot = try WorkspaceSyncService.buildSnapshot(root: rootfs)
+                                let ack = try await runtime.pushWorkspace(handle, snapshot: snapshot)
+                                print("oci-sync ok wsId=\(ack.wsId) files=\(snapshot.files.count) bytes=\(snapshot.totalBytes)")
+                                fflush(stdout)
+                            }
+                            let execResponse = try await runtime.execute(handle, request: ControlRequest(
+                                kind: .exec,
+                                argv: workload.argv,
+                                env: workload.env.isEmpty ? nil : workload.env,
+                                cwd: workload.cwd,
+                                timeoutSeconds: 8
+                            ))
+                            print("oci-exec=\(execResponse.exitCode) stdout=\(execResponse.stdout.replacingOccurrences(of: "\n", with: " | "))")
+                            fflush(stdout)
+                        } catch {
+                            fputs("dbx-poc: oci-bundle failed: \(error)\n", stderr)
+                            fflush(stderr)
+                        }
+                    }
                     // M2-1: workspace 快照推送（可选）；失败 fail-closed 进入 destroy。
                     if let workspacePath = try optionString("--workspace", in: args) {
                         do {
