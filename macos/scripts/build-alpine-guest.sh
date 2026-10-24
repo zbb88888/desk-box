@@ -97,6 +97,7 @@ EOF
     cp -a /tmp/rootfs/usr/lib/* /tmp/initrd/usr/lib/ 2>/dev/null || true
     mkdir -p /tmp/initrd/lib/modules
     cp -a /tmp/deb-modules/lib/modules/* /tmp/initrd/lib/modules/
+    depmod -b /tmp/initrd 6.1.0-50-arm64
     mkdir -p /tmp/initrd/sbin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
     chmod 0755 /tmp/initrd/bin/busybox
