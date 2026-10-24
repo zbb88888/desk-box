@@ -267,7 +267,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             let payload = try JSONEncoder().encode(request)
             let frame = try ControlFrame(kind: .request, sequence: 1, requestID: UUID(), payload: payload)
-            try socket.send(frame)
+            do {
+                try socket.send(frame)
+                self.recordAudit(record, action: .channelEvent, decision: .allow())
+            } catch {
+                record.lifecycle.forceFail(reason: .bootstrapProofMismatch)
+                self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, error.localizedDescription))
+                throw error
+            }
         }
         let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         while true {
@@ -276,6 +283,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 let record = try self.require(handle)
                 return record.lifecycle.state == .stopped ? nil : record.lastExecResponse
             }
+            FileHandle.standardError.write(Data("dbx-vz: exec poll status=\(response == nil ? "waiting" : "received")\n".utf8))
+            try? FileHandle.standardError.synchronize()
             if let response { return try JSONDecoder().decode(ControlResponse.self, from: response.payload) }
             if Date() >= timeout { throw SandboxFailure(.bootstrapProofMismatch, "control response timeout") }
         }
@@ -455,6 +464,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     private func handleControlFrame(_ frame: ControlFrame, record: Record) {
         if frame.kind == .response {
+            let preview = String(decoding: frame.payload.prefix(120), as: UTF8.self)
+            FileHandle.standardError.write(Data("dbx-vz: received response payload=\(preview)\n".utf8))
+            try? FileHandle.standardError.synchronize()
             record.lastExecResponse = frame
             self.recordAudit(record, action: .channelEvent, decision: .allow())
             return
@@ -466,6 +478,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
         guard frame.kind == .hello else {
             recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "TLS/bootstrap 完成前只接受 hello"))
+            return
+        }
+        if record.bootstrapState == .authenticated {
+            recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMismatch, "duplicate hello after authenticated session"))
             return
         }
         do {

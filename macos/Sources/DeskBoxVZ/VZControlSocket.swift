@@ -37,6 +37,9 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     }
 
     func send(bytes data: Data) throws {
+        guard !closed else {
+            throw SandboxFailure(.bootstrapProofMismatch, "VZ control socket closed before write")
+        }
         writeLock.lock()
         defer { writeLock.unlock() }
         var offset = 0
@@ -79,9 +82,16 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     private func readAvailable() {
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
         let count = read(connection.fileDescriptor, &bytes, bytes.count)
+        FileHandle.standardError.write(Data("dbx-vz: socket read count=\(count)\n".utf8))
+        try? FileHandle.standardError.synchronize()
         guard count > 0 else {
             if count == 0 { onFailure("guest control socket closed") }
-            else { onFailure("guest control socket read failed") }
+            else {
+                let message = "guest control socket read failed: errno=\(errno)"
+                FileHandle.standardError.write(Data("dbx-vz: \(message)\n".utf8))
+                try? FileHandle.standardError.synchronize()
+                onFailure(message)
+            }
             close()
             return
         }
