@@ -100,6 +100,12 @@ EOF
 # from an initramfs execution failure.
 printf "Desk Box init entered\\n" > /dev/console 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
+# Debian's direct kernel keeps several VZ devices as modules. Load them before
+# probing /dev so virtio-console, virtio-blk and AF_VSOCK are available.
+for m in virtio virtio_pci virtio_mmio virtio_console virtio_blk
+          vsock vmw_vsock_virtio_transport; do
+  /bin/busybox modprobe "$m" 2>/dev/null || true
+done
 # Keep console usable even when the guest kernel lacks devtmpfs auto-population.
 [ -e /dev/console ] || /bin/busybox mknod -m 0600 /dev/console c 5 1 || true
 [ -e /dev/ttyS0 ] || /bin/busybox mknod -m 0600 /dev/ttyS0 c 4 64 || true
@@ -111,6 +117,11 @@ for c in /dev/console /dev/ttyS0 /dev/hvc0; do
 done
 /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 printf "Desk Box bootstrap completed\\n" > /dev/console 2>/dev/null || true
+# Give uevents a bounded opportunity to create VZ devices after module load.
+for i in 1 2 3 4 5; do
+  [ -e /dev/vda ] && break
+  /bin/busybox sleep 1
+done
 while ! mount -t ext4 -o rw /dev/vda /newroot; do
   printf "Desk Box waiting for /dev/vda\\n" > /dev/console 2>/dev/null || true
   /bin/busybox sleep 1
