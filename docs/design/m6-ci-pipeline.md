@@ -1,6 +1,20 @@
 # M6：CI pipeline（GitHub Actions）
 
-状态：进行中；关联 `docs/design/m2-roadmap.md`、`docs/design/m4-fuzz-hardening.md`、`docs/security/security-verification-matrix.md`。
+状态：已完成（本次 push 三 job 全部 green）；关联 `docs/design/m2-roadmap.md`、`docs/design/m4-fuzz-hardening.md`、`docs/security/security-verification-matrix.md`。
+
+## 进度
+
+- ✅ `.github/workflows/ci.yml` 三层 job：
+  - `fuzz`（ubuntu-latest）：clang -fsanitize 编译 + 运行 harness；
+  - `guest-build`（ubuntu-latest）：QEMU binfmt + SKIP_SWIFT_SIGN=1 全面构建 guest assets + 上传 artifact；
+  - `macos-build-test`（macos-latest，needs=guest-build）：swift test + cli build + 生成 CI key写 generated policy anchor + make-manifest/sign + validate-assets（signed 接受 + unsigned 预期拒）+ verify-sbom；
+- ✅ 修复确保 CI 三部曲：
+  - ubuntu QEMU binfmt 使容客 build arm64 alpine 镜像能跑；
+  - `dbx-poc/main.swift` 重名 + @main 冲突（在 CI toolchain 下报错，本地 toolchain 宽容）→ 改名 `DBXPOC.swift`；
+  - `swift build 津洋 | tail` 需要用 `set -o pipefail`；
+  - guest artifact 需含 scripts 源coding + debian-initrd.gz 方能做客 secondary verify。
+- ✅ 事实验证：`push` 后 `gh run watch` 一次三 job 全部为 success；
+- ✅ docs/CI.md 的 release checklist 段落。
 
 ## 1. 目标
 
