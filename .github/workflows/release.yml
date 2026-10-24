@@ -34,6 +34,7 @@ jobs:
             macos/guest/debian-initrd.gz
             macos/guest/guest-bootstrap.c
             macos/guest/brokerreq.c
+            macos/scripts/build-alpine-guest.sh
             macos/guest/sbom.json
           if-no-files-found: error
 
@@ -120,6 +121,7 @@ jobs:
              ./guest/release-keys.json /tmp/dbx-bundle/ 2>/dev/null || true
           cp ./guest/vmlinuz-virt ./guest/initrd-deskbox.img ./guest/root-disk.raw \
              ./guest/debian-initrd.gz ./guest/guest-bootstrap.c ./guest/brokerreq.c /tmp/dbx-bundle/
+          cp ./scripts/build-alpine-guest.sh /tmp/dbx-bundle/
           TAG="${{ github.ref_name }}"
           tar -czf "/tmp/dbx-channel/guest-bundle-${TAG}.tar.gz" -C /tmp/dbx-bundle .
           (cd /tmp/dbx-channel && shasum -a 256 manifest.json sbom.json channel.json "guest-bundle-${TAG}.tar.gz" > checksums.txt)

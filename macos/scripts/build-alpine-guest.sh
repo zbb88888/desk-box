@@ -202,7 +202,7 @@ cat > "$OUT_DIR/sbom.json" <<EOSBOM
     {"name":"alpine/minirootfs-$ALPINE_VERSION","url":"$MINIROOT_URL"},
     {"name":"scripts/guest-bootstrap.c","path":"scripts/guest-bootstrap.c","file":"guest-bootstrap.c","sha256":"$GUEST_SRC_SHA"},
     {"name":"scripts/brokerreq.c","path":"scripts/brokerreq.c","file":"brokerreq.c","sha256":"$BROKERREQ_SRC_SHA"},
-    {"name":"scripts/build-alpine-guest.sh","path":"scripts/build-alpine-guest.sh","sha256":"$BUILD_SCRIPT_SHA"}
+    {"name":"scripts/build-alpine-guest.sh","path":"scripts/build-alpine-guest.sh","file":"build-alpine-guest.sh","sha256":"$BUILD_SCRIPT_SHA"}
   ],
   "outputs": [
     {"name":"vmlinuz-virt","sha256":"$VMLINUZ_SHA"},
