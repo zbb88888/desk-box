@@ -64,12 +64,12 @@ int main(void) {
         sleep(1);
     }
     uint8_t frame[4096] = {0};
-    size_t total = 40 + (size_t)len;
+    size_t total = 36 + (size_t)len;
     uint32_t magic = be32(0x44425831); memcpy(frame, &magic, 4);
     uint16_t version = be16(1), kind = be16(1); memcpy(frame + 4, &version, 2); memcpy(frame + 6, &kind, 2);
     uint64_t sequence = be64(1); memcpy(frame + 8, &sequence, 8);
     uint32_t plen = be32((uint32_t)len); memcpy(frame + 36, &plen, 4);
-    memcpy(frame + 40, json, (size_t)len);
+    memcpy(frame + 36, json, (size_t)len);
     size_t sent = 0;
     while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) { close(fd); return 7; } sent += (size_t)n; }
     uint8_t response[4096]; (void)read(fd, response, sizeof(response));
