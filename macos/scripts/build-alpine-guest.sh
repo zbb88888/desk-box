@@ -102,8 +102,7 @@ printf "Desk Box init entered\\n" > /dev/console 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 # Debian's direct kernel keeps several VZ devices as modules. Load them before
 # probing /dev so virtio-console, virtio-blk and AF_VSOCK are available.
-for m in virtio virtio_pci virtio_mmio virtio_console virtio_blk
-          vsock vmw_vsock_virtio_transport; do
+for m in virtio virtio_pci virtio_mmio virtio_console virtio_blk vsock vmw_vsock_virtio_transport; do
   /bin/busybox modprobe "$m" 2>/dev/null || true
 done
 # Keep console usable even when the guest kernel lacks devtmpfs auto-population.
