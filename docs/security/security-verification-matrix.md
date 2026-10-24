@@ -18,7 +18,7 @@
 
 | ID | 安全不变量 | 主要责任组件 | 最低自动化验收 | 必需证据 | 责任角色 | 初始状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| INV-01 | 强隔离任务始终位于独立 VM | Controller、VZ/HV Adapter | 后端识别、禁用/故障注入、禁止静默降级 | 两平台实体机日志、运行时 backend attestation | 平台负责人 | 未实现 |
+| INV-01 | 强隔离任务始终位于独立 VM | Controller、VZ/HV Adapter | 后端识别、禁用/故障注入、禁止静默降级 | 两平台实体机日志、运行时 backend attestation | 平台负责人 | **macOS 已验证（M0-M2-3）**——VZ VM 为硬边界，并对 sandbox/失败路径做 fail-closed。Windows Hyper-V 侧纳入 M2-4 骨架与合约锁定（M2-4a），真机复核重点环节仍由 Windows 宿主机出样复核。 |
 | INV-02 | 不同凭据域不共享 guest kernel | Scheduler、Controller | 并发创建、身份/工作区/grant 组合属性测试 | 调度决策记录、跨域攻击报告 | 控制面负责人 | 未实现 |
 | INV-03 | 长期真实凭据不进入 sandbox | Credential Broker、日志、snapshot | Canary secret 扫描环境、文件、内存转储、COW、日志、snapshot | 扫描报告与人工取证记录 | 身份安全负责人 | **M2-3a 部分已验证（macOS）**——凭据只在宿主侧 `broker-credentials.local`（gitignored）驻留，注入只达白名单 host；仅响应体被推入 guest（凭据本身不进 worker 文件系统/日志）。多凭据域 canary 扫描与原始快照泄漏取证仍由 M2-3c 交付。 |
 | INV-04 | 所有外部访问经过宿主策略 | Network Broker、Platform Adapter | 互联网/私网/loopback/link-local/metadata、DNS rebinding、redirect、DoH/QUIC 绕过 | 网络 corpus 结果、packet capture 摘要 | 网络安全负责人 | **M2-3a/M2-3b 部分已验证（macOS）**——沙箱默认零网络设备；出站只经宿主 broker：域不在 allowlist、非 HTTPS 或超出响应上限均拒；guest 内 AF_UNIX + kind 21/22/23 在线请求与响应回传同规则适用（真机双路径 exit=0）。DNS rebinding/redirect/旁路包 corpus 以及 Windows phase 交叉验证仍由 M2-4 交付。 |

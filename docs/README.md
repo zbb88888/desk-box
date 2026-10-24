@@ -25,6 +25,7 @@
 - [M2-3 网络与凭据 Broker](design/m2-3-network-credential-broker.md)：默认零网络下的宿主 broker、outbound policy allowlist、凭据不进 worker 与审计决策链。
 - [M2-3b guest→host 在线 broker 通行](design/m2-3b-broker-online-channel.md)：guest 工作负载经 AF_UNIX + 加密 record channel 请求宿主 broker，响应落位 inbound-only。
 - [M2-2b namespaces + cgroup v2](design/m2-2b-isolation-layers.md)：exec 子进程 kernel namespace 隔离 + cgroup v2 cpu/memory/pids 限额，fail-closed 拒绝降级。
+- [M2-4 Windows Hyper-V](design/m2-4-windows-hyperv.md)：Windows phase 计划与共享合约锁定；真机验证在 Windows 宿主机进行，标注 UNVERIFIED 的环节不宣称达成。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。
