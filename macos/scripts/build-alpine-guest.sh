@@ -72,11 +72,9 @@ if [ ! -e /run/deskbox-bootstrap-ok ]; then
   /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 fi
 printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
-# Keep the diagnostic guest alive for the launch POC. Production will replace
-# this shell with the authenticated execd supervisor.
-while true; do
-  /bin/busybox sleep 3600
-done
+# Do not keep init on a serial shell; the diagnostic bootstrap is complete.
+# A production execd replaces this loop.
+exec /bin/busybox sh -c "while :; do /bin/busybox sleep 3600; done"
 EOF
     chmod 0755 /tmp/rootfs/sbin/init
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw
