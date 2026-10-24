@@ -96,7 +96,7 @@ mount -t devtmpfs dev /dev 2>/dev/null || true
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 for c in /dev/console /dev/ttyS0 /dev/hvc0; do
-  printf "Desk Box initramfs ready\\n" > "$c" 2>/dev/null || true
+  printf "Desk Box initramfs ready\\n" > "\$c" 2>/dev/null || true
 done
 /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 printf "Desk Box bootstrap completed\\n" > /dev/console 2>/dev/null || true
