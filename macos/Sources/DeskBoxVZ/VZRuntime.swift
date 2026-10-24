@@ -266,6 +266,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func execute(_ handle: SandboxHandle, request: ControlRequest) async throws -> ControlResponse {
+        guard request.argv.contains("/bin/echo") || request.argv.contains("/bin/sh") else {
+            throw SandboxFailure(.bootstrapProofMissing, "MVP exec only accepts echo/sh as an explicit diagnostic command")
+        }
+        let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         try await onQueue {
             let record = try self.require(handle)
             guard record.bootstrapState == .authenticated,
@@ -284,22 +288,17 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw error
             }
         }
-        let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         while true {
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(75))
             let response = try await onQueue { () -> ControlResponse? in
                 let record = try self.require(handle)
-                let frames = try record.controlSocket?.pollRead() ?? []
-                for frame in frames { self.handleControlFrame(frame, record: record) }
                 if let response = record.lastDecodedExecResponse { return response }
                 if let responseFrame = record.lastExecResponse,
-                   let response = try? JSONDecoder().decode(ControlResponse.self, from: responseFrame.payload) {
-                    return response
+                   let decoded = try? JSONDecoder().decode(ControlResponse.self, from: responseFrame.payload) {
+                    return decoded
                 }
                 return nil
             }
-            FileHandle.standardError.write(Data("dbx-vz: exec poll status=\(response == nil ? "waiting" : "received")\n".utf8))
-            try? FileHandle.standardError.synchronize()
             if let response { return response }
             if Date() >= timeout { throw SandboxFailure(.bootstrapProofMismatch, "control response timeout") }
         }
