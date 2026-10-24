@@ -258,24 +258,23 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func execute(_ handle: SandboxHandle, request: ControlRequest) async throws -> ControlResponse {
-        let (record, socket, frame): (Record, VZControlSocket, ControlFrame) = try await onQueue {
+        try await onQueue {
             let record = try self.require(handle)
             guard record.bootstrapState == .authenticated,
                   record.lifecycle.state == .running,
                   let socket = record.controlSocket else {
                 throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
             }
-            let responseID = UUID()
             let payload = try JSONEncoder().encode(request)
-            let frame = try ControlFrame(kind: .request, sequence: 1, requestID: responseID, payload: payload)
-            return (record, socket, frame)
+            let frame = try ControlFrame(kind: .request, sequence: 1, requestID: UUID(), payload: payload)
+            try socket.send(frame)
         }
-        try socket.send(frame)
         let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         while true {
             await Task.yield()
-            let response = try await onQueue {
-                record.lifecycle.state == .stopped ? nil : record.lastExecResponse
+            let response = try await onQueue { () -> ControlFrame? in
+                let record = try self.require(handle)
+                return record.lifecycle.state == .stopped ? nil : record.lastExecResponse
             }
             if let response { return try JSONDecoder().decode(ControlResponse.self, from: response.payload) }
             if Date() >= timeout { throw SandboxFailure(.bootstrapProofMismatch, "control response timeout") }
