@@ -91,6 +91,7 @@ EOF
     mkdir -p /tmp/initrd/sbin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
     chmod 0755 /tmp/initrd/bin/busybox
+    rm -f /tmp/initrd/bin/mount /tmp/initrd/bin/switch_root
     ln -s busybox /tmp/initrd/bin/mount
     ln -s busybox /tmp/initrd/bin/switch_root
     cat > /tmp/initrd/init <<EOF
