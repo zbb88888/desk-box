@@ -110,7 +110,7 @@ struct DBXPOC {
             )
             print(String(decoding: try JSONEncoder.pretty.encode(output), as: UTF8.self))
             fflush(stdout)
-            print("bootstrap=notConnected")
+            print("bootstrap=pending")
             let statusTask = Task {
                 var last: BootstrapState = .notConnected
                 var elapsed = 0

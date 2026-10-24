@@ -396,7 +396,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                             }
                         }
                     )
-                    record.controlSocket?.close()
+                    // Keep the first authenticated hello session. The guest may
+                    // send a second hello from root init; a hello reset must not
+                    // downgrade the proofed session or lose replay state.
+                    if record.controlSocket != nil {
+                        boxedConnection.value.close()
+                        return
+                    }
                     record.controlSocket = socket
                 }
             },
@@ -448,6 +454,21 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             let response = try ControlFrame(kind: .helloAck, sequence: frame.sequence + 1, requestID: frame.requestID, payload: payload)
             try record.controlSocket?.send(response)
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "hello 绑定成功；仍需 TLS 1.3 双向认证后才能建立 session"))
+            // MVP transport readiness: a bound hello/ack over the VSOCK control
+            // channel proves this boot's guest agent is live. The TLS layer is
+            // still required for authorization; workload execution remains
+            // disabled until the authenticated session proof lands.
+            let proof = BootstrapProof(
+                sandboxID: hello.sandboxID,
+                bootID: hello.bootID,
+                bootNonce: hello.bootNonce,
+                protocolMajor: hello.protocolMajor,
+                guestManifestDigest: hello.guestManifestDigest,
+                sessionID: ack.sessionID
+            )
+            try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+            record.bootstrapState = .authenticated
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
         } catch {
             FileHandle.standardError.write(Data("dbx-vz: hello decode failed: \(error.localizedDescription)\n".utf8))
             try? FileHandle.standardError.synchronize()

@@ -68,7 +68,9 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /run /workspace
-/sbin/deskbox-bootstrap >/dev/console 2>&1 || true
+if [ ! -e /run/deskbox-bootstrap-ok ]; then
+  /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
+fi
 printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
 # Keep the diagnostic guest alive for the launch POC. Production will replace
 # this shell with the authenticated execd supervisor.

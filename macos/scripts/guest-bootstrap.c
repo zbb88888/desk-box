@@ -85,6 +85,11 @@ int main(void) {
     const char *done = "Desk Box bootstrap: hello sent\n";
     write(STDOUT_FILENO, done, strlen(done));
     fsync(STDOUT_FILENO);
+    // Mark a successful bootstrap for the handoff rootfs. This avoids opening
+    // a second control connection while still running the full init chain.
+    (void)mkdir("/run", 0755);
+    int marker = open("/run/deskbox-bootstrap-ok", O_CREAT | O_WRONLY, 0644);
+    if (marker >= 0) close(marker);
     close(fd);
     return 0;
 }
