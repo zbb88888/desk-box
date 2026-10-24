@@ -1,5 +1,7 @@
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <linux/vm_sockets.h>
 #include <stdint.h>
 #include <stdio.h>
