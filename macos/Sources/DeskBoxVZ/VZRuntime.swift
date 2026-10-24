@@ -20,6 +20,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var delegate: VZRuntimeDelegate?
         var socketDelegate: VZControlSocketDelegate?
         var controlSocket: VZControlSocket?
+        var bootstrapState: BootstrapState = .notConnected
         let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
 
@@ -234,7 +235,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 endpoints: [EndpointDescriptor(
                     name: "control",
                     transport: .vsock(port: record.request.controlChannelPort)
-                )]
+                )],
+                bootstrap: record.bootstrapState
             )
         }
     }
@@ -412,6 +414,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 record.controlSocket?.close()
                 return
             }
+            record.bootstrapState = .helloAcceptedTLSRequired
             let ack = BootstrapHelloAck(sessionID: .new(), requiresTLS: true)
             let payload = try BootstrapCodec.encodeAck(ack)
             let response = try ControlFrame(kind: .helloAck, sequence: frame.sequence + 1, requestID: frame.requestID, payload: payload)

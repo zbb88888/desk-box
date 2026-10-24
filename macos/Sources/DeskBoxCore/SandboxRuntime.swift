@@ -104,6 +104,12 @@ public struct EndpointDescriptor: Sendable, Codable, Equatable {
     }
 }
 
+public enum BootstrapState: String, Sendable, Codable {
+    case notConnected
+    case helloAcceptedTLSRequired
+    case authenticated
+}
+
 public struct SandboxStatus: Sendable, Equatable {
     public let sandboxID: SandboxID
     public let bootID: BootID?
@@ -112,6 +118,7 @@ public struct SandboxStatus: Sendable, Equatable {
     public let correlationID: UUID
     public let history: [LifecycleMachine.Transition]
     public let endpoints: [EndpointDescriptor]
+    public let bootstrap: BootstrapState
 
     public init(
         sandboxID: SandboxID,
@@ -120,7 +127,8 @@ public struct SandboxStatus: Sendable, Equatable {
         state: SandboxState,
         correlationID: UUID,
         history: [LifecycleMachine.Transition],
-        endpoints: [EndpointDescriptor]
+        endpoints: [EndpointDescriptor],
+        bootstrap: BootstrapState = .notConnected
     ) {
         self.sandboxID = sandboxID
         self.bootID = bootID
@@ -129,6 +137,7 @@ public struct SandboxStatus: Sendable, Equatable {
         self.correlationID = correlationID
         self.history = history
         self.endpoints = endpoints
+        self.bootstrap = bootstrap
     }
 }
 

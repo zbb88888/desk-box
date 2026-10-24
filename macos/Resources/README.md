@@ -84,4 +84,4 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 6. 输出 `sandboxID`、`bootID` 和 `BootContext`；
 7. 前台 POC 将宿主 stdin 字节转发到 guest serial console（仅诊断/交互，不是可信控制面）；收到 stdin EOF、SIGINT 或 SIGTERM 后统一执行 stop + destroy + 删除 COW。
 
-当前没有 guest `execd` bootstrap 客户端，因此输出状态是 `pending-bootstrap`，不能当作产品 `Running`。guest kernel 的 `console=hvc0` 启动日志只能证明 guest 有输出，不能证明 readiness、身份或 attestation。serial console 输入同样不具备授权语义，产品命令执行必须走认证的 execd/control channel。信号清理路径仍需在真实实体机上验证，尤其是进程被 SIGKILL 或宿主崩溃时的孤儿资源回收。
+CLI 会输出 bootstrap 状态：`notConnected` 或 `helloAcceptedTLSRequired`。当前没有 TLS 1.3 session/proof，因此即使 hello 被接受也不能当作产品 `Running`。guest kernel 的 `console=hvc0` 启动日志只能证明 guest 有输出，不能证明 readiness、身份或 attestation。serial console 输入同样不具备授权语义，产品命令执行必须走认证的 execd/control channel。信号清理路径仍需在真实实体机上验证，尤其是进程被 SIGKILL 或宿主崩溃时的孤儿资源回收。

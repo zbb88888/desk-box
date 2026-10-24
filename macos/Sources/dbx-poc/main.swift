@@ -110,12 +110,25 @@ struct DBXPOC {
             )
             print(String(decoding: try JSONEncoder.pretty.encode(output), as: UTF8.self))
             fflush(stdout)
+            print("bootstrap=notConnected")
+            let statusTask = Task {
+                var last: BootstrapState = .notConnected
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if let status = try? await runtime.inspect(handle), status.bootstrap != last {
+                        last = status.bootstrap
+                        print("bootstrap=\(status.bootstrap.rawValue)")
+                        fflush(stdout)
+                    }
+                }
+            }
             let lifetime = ProcessLifetime { data in
                 Task {
                     try? await runtime.sendConsoleInput(handle, data: data)
                 }
             }
             let reason = await lifetime.wait()
+            statusTask.cancel()
             switch reason {
             case .stdinEOF:
                 print("shutdown requested by stdin EOF")
