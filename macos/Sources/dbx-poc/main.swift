@@ -137,8 +137,12 @@ struct DBXPOC {
                     fflush(stdout)
                     if let exec = try? await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 3)) {
                         print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
+                        if !exec.stderr.isEmpty {
+                            fputs("exec-stderr=\(exec.stderr.trimmingCharacters(in: .whitespacesAndNewlines))\n", stderr)
+                            fflush(stderr)
+                        }
                     } else {
-                        print("exec=0 stdout=Desk Box guest exec stub response")
+                        print("exec=-1 stdout= (response unavailable)")
                     }
                     fflush(stdout)
                     break

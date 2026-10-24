@@ -287,11 +287,18 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw error
             }
         }
-        // MVP completion: a proven hello/ack session proves the guest arrived
-        // in authenticated/bootstrap state. The runtime's host-side response
-        // decode is treated as a standalone stabilization task and does not
-        // block the mailbox sandbox from completing its minimal self check.
-        return ControlResponse(exitCode: 0, stdout: "Desk Box guest exec stub response\n", stderr: "")
+        let deadline = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
+        while true {
+            let response = try await onQueue { () -> ControlResponse? in
+                let record = try self.require(handle)
+                return record.lastDecodedExecResponse
+            }
+            if let response { return response }
+            if Date() >= deadline {
+                throw SandboxFailure(.bootstrapProofMismatch, "exec response timeout")
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
     }
 
     /// Diagnostic-only serial input. It is intentionally not part of the

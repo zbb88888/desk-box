@@ -68,15 +68,16 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
   → HelloAck 回复
   → bootstrapState = authenticated
   → LifecycleMachine = running（BootstrapProof 验证后）
-  → Host 发送 exec 请求，Guest 回复 exec 响应
-  → 打印 exec=0 stdout=Desk Box guest exec stub response
+  → Host 发送 exec 请求，Guest 真实 fork+execvp 执行命令
+  → 返回真实 stdout/stderr/exitCode（有界截断）
+  → 打印 exec=0 stdout=deskbox-mvp-ok
   → stop → destroy → APFS COW cleanup
   → 进程 exit 0
 ```
 
 当前 MVP 边界（明确不算产品级能力）：
 
-- exec 是受限诊断命令（`/bin/echo`、`/bin/sh`），不是完整 `execd`；
+- guest exec 为直接 `fork`+`execvp`（无 shell、无 shell 注入面），有界输出；仍非完整 `execd`（无 UID 映射、无 seccomp/cgroup、无 PTY、无工作目录/环境白名单）；
 - 无 TLS 1.3 双向认证；hello/ack 是 boot 绑定 proof，而非 session 认证；
 - 无 PTY、无 workspace sync、无 containerd/runc；
 - 网络默认拒绝，无 Broker；
