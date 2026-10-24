@@ -111,11 +111,17 @@ jobs:
         run: |
           cd macos
           ./.build/debug/dbx-poc verify-channel /tmp/dbx-channel/channel.json
-      - name: Checksums
+      - name: Create bundle + checksums
         run: |
           cd macos
-          cd /tmp/dbx-channel
-          shasum -a 256 manifest.json sbom.json channel.json > checksums.txt
+          rm -rf /tmp/dbx-bundle
+          mkdir -p /tmp/dbx-bundle
+          cp /tmp/dbx-channel/manifest.json /tmp/dbx-channel/sbom.json /tmp/dbx-channel/channel.json \
+             ./guest/release-keys.json /tmp/dbx-bundle/ 2>/dev/null || true
+          cp ./guest/vmlinuz-virt ./guest/initrd-deskbox.img ./guest/root-disk.raw /tmp/dbx-bundle/
+          TAG="${{ github.ref_name }}"
+          tar -czf "/tmp/dbx-channel/guest-bundle-${TAG}.tar.gz" -C /tmp/dbx-bundle .
+          (cd /tmp/dbx-channel && shasum -a 256 manifest.json sbom.json channel.json "guest-bundle-${TAG}.tar.gz" > checksums.txt)
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -124,6 +130,7 @@ jobs:
             /tmp/dbx-channel/sbom.json
             /tmp/dbx-channel/channel.json
             /tmp/dbx-channel/checksums.txt
+            /tmp/dbx-channel/guest-bundle-${{ github.ref_name }}.tar.gz
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
