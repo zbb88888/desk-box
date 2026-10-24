@@ -124,6 +124,21 @@ pending → bootstrap=notConnected
 
 ## 4. 实施步骤（按顺序，各自带验证门）
 
+**进度（M1-2，真机验证过）：**
+- ✅ Step 1/2: policy/BootstrapState/`SessionBinding`/`BootstrapHelloAck.hostKeyPublicHex` 代码化 + 实测修正 SecureTransport 不可用。
+- ✅ Step 3 (2b): host 侧 X25519 + HKDF-SHA256 + ChaChaPoly AEAD record protection（CryptoKit native），`keyExchange` frame + transport upgrade + `tlsAuthenticated` + `BootstrapProof` 走同一 TLS 派生 `sessionID`。
+- ✅ Step 4: guest 侧 libsodium 静态版本的 X25519/HKDF/AEAD（`guest-bootstrap.c`），record framing [u32be length][nonce(12)||ct+tag]，与 CryptoKit 结构一致。
+- ✅ Step 5 (end-to-end)：`--tls-dev` 真机完成已验证：`bootstrap=tlsAuthenticated` → `state=running` → `exec[0]=0 stdout=deskbox-mvp-first` / `exec[1]=0 stdout=deskbox-mvp-second` → `sandbox destroyed`。所有 exec request/response 都走加密通道。
+- ⏳ Step 6: `requiresTLSUpgrade` 默认改为 true 并全量回归 + release 构建。
+- ⏳ Step 7: 安全验证矩阵补充 TLS 证据条目（INV-xx）。
+- ⏳ Step 8: （M1-2b）用 `swift-crypto` 进程内生成每 boot ephemeral X.509 证书作为外层身份包装（可选硬化）。
+
+**当前加密部分明确不做的 ⚠️：X.509 证书握手、网络框架 TCP/UDP 传输、TLS 1.2 降级兼容。**
+
+---
+
+### 原始实施步骤（计划视图）
+
 1. **设计锚定**：本文档 + `ControlSecurityPolicy` + reason codes + `BootstrapState` 扩展 + fail-closed 语义代码化（默认允许旧行为，显式开启新行为）。验收：`swift test` 全绿；
 2. **Host TLS 开发态**：`SecureSession` 抽象 + 开发态静态证书注入、SSLHandshake 流程、SSLSetProtocolVersion TLS13；验收：单测挡住 escalate；
 3. **构建链**：`build-alpine-guest.sh` 增加 mbedtls（或 OpenSSL-static）依赖，静态 guest bootstrap 编译成功；验收：`ldd` 无关、二进制 < 12MB；

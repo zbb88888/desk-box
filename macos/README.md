@@ -80,13 +80,13 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 当前 MVP 边界（明确不算产品级能力）：
 
 - guest exec 为直接 `fork`+`execvp`（无 shell、无 shell 注入面），有界输出；仍非完整 `execd`（无 UID 映射、无 seccomp/cgroup、无 PTY、无工作目录/环境白名单）；
-- 无 TLS 1.3 双向认证；hello/ack 是 boot 绑定 proof，而非 session 认证；
+- 控制通道已升级为 **X25519+HKDF+ChaChaPoly** 加密会话（默认开启！且 hello/ack 仍是 boot 绑定 proof，敏感帧走加密 record channel；`--allow-plaintext` 只为开发诊断保留向下开关；真 TLS 1.3 证书型握手属于硬化组级后续）
 - 无 PTY、无 workspace sync、无 containerd/runc；
 - 网络默认拒绝，无 Broker；
 - guest manifest 未签名，供应链与降级保护未完成；
 - SIGKILL、宿主崩溃与系统重启的孤儿资源回收未实现。
 
-后续 M1+ 工作：TLS 1.3 双向认证与 session 绑定、guest `execd`（fork/exec、stdin/stdout/stderr、exit code、资源限额）、PTY、多密码 CM 测试、孤儿资源回收。
+后续 M1+ 工作：guest `execd`（fork/exec、stdin/stdout/stderr、exit code、资源限额）、PTY、多密码 CM 测试、孤儿资源回收、X.509 证书与 TLS 1.3 兼容握手硬化。
 
 ## 验收门槛
 

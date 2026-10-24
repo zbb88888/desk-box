@@ -40,7 +40,7 @@ docker run --rm \
   -v "$OUT_DIR:/out" \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
-    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static dpkg >/dev/null
+    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static dpkg libsodium-dev libsodium-static >/dev/null
     # The Debian installer initrd is intentionally small and does not contain
     # virtio-blk/VSOCK transport modules. Fetch the matching Debian module set
     # for the direct kernel used by VZ; the host never trusts guest claims.
@@ -48,7 +48,7 @@ docker run --rm \
     curl --fail --location --retry 3 -o /tmp/linux-image.deb \
       https://deb.debian.org/debian/pool/main/l/linux-signed-arm64/linux-image-6.1.0-50-arm64_6.1.176-1_arm64.deb
     dpkg-deb -x /tmp/linux-image.deb /tmp/deb-modules
-    gcc -static -O2 -Wall -Wextra -o /tmp/deskbox-bootstrap /out/guest-bootstrap.c
+    gcc -static -O2 -Wall -Wextra -o /tmp/deskbox-bootstrap /out/guest-bootstrap.c /usr/lib/libsodium.a
     rm -rf /tmp/rootfs
     mkdir -p /tmp/rootfs
     curl --fail --location --retry 3 "$MINIROOT_URL" | tar -xz -C /tmp/rootfs

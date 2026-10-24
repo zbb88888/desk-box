@@ -65,7 +65,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         audit: AuditSink? = nil,
         enableConsole: Bool = true,
         enableControlSocket: Bool = true,
-        securityPolicy: ControlSecurityPolicy = ControlSecurityPolicy()
+        securityPolicy: ControlSecurityPolicy = .strict
     ) throws {
         self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
         self.queue.setSpecific(key: queueKey, value: 1)

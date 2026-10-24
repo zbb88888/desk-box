@@ -82,13 +82,15 @@ struct DBXPOC {
 
         let audit = InMemoryAuditSink()
         let diagnosticOnly = args.contains("--minimal-vz")
-        let tlsDev = args.contains("--tls-dev")
+        // M1-2: the encrypted record channel is on by default. `--allow-plaintext`
+        // is an explicit downgrade switch kept for guest-side debugging only.
+        let plaintextAllowed = args.contains("--allow-plaintext")
         let runtime = try VZRuntime(
             cowRoot: cowRoot,
             audit: audit,
             enableConsole: !diagnosticOnly,
             enableControlSocket: !diagnosticOnly,
-            securityPolicy: ControlSecurityPolicy(requiresTLSUpgrade: tlsDev)
+            securityPolicy: plaintextAllowed ? ControlSecurityPolicy() : .strict
         )
         do {
             let sweep = try runtime.sweepOrphans()
@@ -146,7 +148,8 @@ struct DBXPOC {
             let authenticatedDeadline = Date().addingTimeInterval(15)
             while true {
                 let status = try await runtime.inspect(handle)
-                if status.bootstrap == .authenticated && status.state == .running {
+                let booted = status.bootstrap == .authenticated || status.bootstrap == .tlsAuthenticated
+                if booted && status.state == .running {
                     print("state=running")
                     fflush(stdout)
                     let commands: [[String]] = [
