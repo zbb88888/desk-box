@@ -47,6 +47,10 @@ struct DBXPOC {
                 try rotateReleaseKey(args: Array(args.dropFirst()))
             case "revoke-release-key":
                 try revokeReleaseKey(args: Array(args.dropFirst()))
+            case "publish":
+                try publishReleaseChannel(args: Array(args.dropFirst()))
+            case "verify-channel":
+                try verifyReleaseChannel(args: Array(args.dropFirst()))
             case "launch":
                 try await launch(args: Array(args.dropFirst()))
             case "sweep":
@@ -217,6 +221,65 @@ struct DBXPOC {
         )
         try writeReleaseKeys(manifest, to: outPath)
         print("revoked keyID=\(keyID)")
+    }
+
+    private static func publishReleaseChannel(args: [String]) throws {
+        guard let channelDirPath = try optionString("--channel", in: args) else {
+            throw CLIError.usage("dbx-poc publish --channel <dir> --manifest <path> --sbom <path> --release-keys <path> [--release-tag <tag>] [--min-version-floor N]")
+        }
+        guard let manifestPath = try optionString("--manifest", in: args),
+              let sbomPath = try optionString("--sbom", in: args),
+              let releaseKeysPath = try optionString("--release-keys", in: args)
+        else { throw CLIError.usage("dbx-poc publish 需 manifest/sbom/release-keys") }
+        let releaseTag = try optionString("--release-tag", in: args)
+            ?? ISO8601DateFormatter().string(from: Date())
+        let floor = try optionInt("--min-version-floor", in: args) ?? 1
+        let manifestRaw = try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: URL(fileURLWithPath: manifestPath)))
+        guard let sig = manifestRaw.signature else { throw CLIError.usage("publish 要求已签名 manifest") }
+        let releaseKeysRaw = try Data(contentsOf: URL(fileURLWithPath: releaseKeysPath))
+        let releaseKeys = try JSONDecoder().decode(ReleaseKeyFile.self, from: releaseKeysRaw)
+        guard releaseKeys.keys.contains(where: { $0.keyID == sig.keyID && $0.status == .active }) else {
+            throw CLIError.usage("publish 要求 signature keyID 是 active key")
+        }
+        if manifestRaw.guestAssetVersion < floor {
+            throw CLIError.usage("publish floor 下挂 assetVersion \(manifestRaw.guestAssetVersion) < floor \(floor)")
+        }
+        let channelDir = URL(fileURLWithPath: channelDirPath).standardizedFileURL
+        try FileManager.default.createDirectory(at: channelDir, withIntermediateDirectories: true)
+        let channelManifestURL = channelDir.appendingPathComponent("manifest.json")
+        let channelSbomURL = channelDir.appendingPathComponent("sbom.json")
+        try Data(contentsOf: URL(fileURLWithPath: manifestPath)).write(to: channelManifestURL, options: .atomic)
+        try Data(contentsOf: URL(fileURLWithPath: sbomPath)).write(to: channelSbomURL, options: .atomic)
+        let manifestDigest = try AssetDigest.sha256Hex(of: channelManifestURL)
+        let sbomDigest = try AssetDigest.sha256Hex(of: channelSbomURL)
+        struct ChannelFile: Codable {
+            let schema: String; let generatedAtUtc: String; let releaseTag: String
+            let minGuestAssetVersionFloor: Int; let keys: [ReleaseKeysManifest.Key]
+            let manifest: ReleaseChannelManifest.Manifest
+        }
+        let channel = ChannelFile(
+            schema: ReleaseChannelManifest.schemaValue,
+            generatedAtUtc: ISO8601DateFormatter().string(from: Date()),
+            releaseTag: releaseTag,
+            minGuestAssetVersionFloor: floor,
+            keys: releaseKeys.keys,
+            manifest: ReleaseChannelManifest.Manifest(
+                files: .init(manifest: "manifest.json", sbom: "sbom.json"),
+                assetVersion: manifestRaw.guestAssetVersion,
+                manifestDigest: manifestDigest,
+                sbomDigest: sbomDigest
+            )
+        )
+        try JSONEncoder.pretty.encode(channel).write(to: channelDir.appendingPathComponent("channel.json"), options: .atomic)
+        print("published release channel at \(channelDir.path) tag=\(releaseTag) keys=\(releaseKeys.keys.count)")
+    }
+
+    private static func verifyReleaseChannel(args: [String]) throws {
+        guard let channelPath = args.first else {
+            throw CLIError.usage("dbx-poc verify-channel <channel.json>")
+        }
+        let result = try ReleaseChannelVerifier.verify(channelURL: URL(fileURLWithPath: channelPath))
+        print("verified channel tag=\(result.channel.releaseTag) assetVersion=\(result.channel.manifest.assetVersion) keys=\(result.channel.keys.count)")
     }
 
     private static func makeManifest(args: [String]) throws {
