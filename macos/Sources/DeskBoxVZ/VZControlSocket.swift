@@ -19,6 +19,30 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     private var sequence = ControlSequenceGuard()
     private var writeLock = NSLock()
     private var closed = false
+    private var eventsSuspended = false
+    private var tlsSession: SecureTransportSession?
+
+    var fileDescriptor: Int32 { connection.fileDescriptor }
+
+    /// Pause/readliner-free window while a TLS handshake consumes raw bytes on
+    /// the same fd; resumed by `resumeEvents` after the transport switches.
+    func suspendEvents() {
+        guard let source, !eventsSuspended else { return }
+        source.suspend()
+        eventsSuspended = true
+    }
+
+    func resumeEvents() {
+        guard let source, eventsSuspended else { return }
+        source.resume()
+        eventsSuspended = false
+    }
+
+    /// Switch to encrypted transport after `SecureTransportSession` completed a
+    /// handshake on this fd. All subsequent frames flow over TLS records.
+    func upgradeTransport(to session: SecureTransportSession) {
+        tlsSession = session
+    }
 
     init(
         connection: VZVirtioSocketConnection,
@@ -44,6 +68,10 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         }
         writeLock.lock()
         defer { writeLock.unlock() }
+        if let tls = tlsSession {
+            try tls.write(data)
+            return
+        }
         var offset = 0
         while offset < data.count {
             let written = data.withUnsafeBytes { raw in
@@ -65,6 +93,8 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         closed = true
         source?.cancel()
         source = nil
+        tlsSession?.close()
+        tlsSession = nil
         connection.close()
         writeLock.unlock()
     }
@@ -97,6 +127,10 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     }
 
     private func readAvailable() {
+        if let tls = tlsSession {
+            readTLSRecord(tls)
+            return
+        }
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
         let capacity = bytes.capacity
         // `read` needs the element storage, not the Swift array object pointer.
@@ -112,6 +146,24 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         }
         do {
             let frames = try decoder.append(Data(bytes[0..<count]))
+            for frame in frames { try sequence.accept(frame) }
+            for frame in frames { onFrames([frame]) }
+        } catch {
+            onFailure(error.localizedDescription)
+            close()
+        }
+    }
+
+    /// Drain one TLS record event into the same frame pipeline as the raw path.
+    private func readTLSRecord(_ tls: SecureTransportSession) {
+        do {
+            guard let data = try tls.read() else {
+                onFailure("guest control socket closed")
+                close()
+                return
+            }
+            if data.isEmpty { return }
+            let frames = try decoder.append(data)
             for frame in frames { try sequence.accept(frame) }
             for frame in frames { onFrames([frame]) }
         } catch {

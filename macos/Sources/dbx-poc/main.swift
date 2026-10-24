@@ -82,11 +82,13 @@ struct DBXPOC {
 
         let audit = InMemoryAuditSink()
         let diagnosticOnly = args.contains("--minimal-vz")
+        let tlsDev = args.contains("--tls-dev")
         let runtime = try VZRuntime(
             cowRoot: cowRoot,
             audit: audit,
             enableConsole: !diagnosticOnly,
-            enableControlSocket: !diagnosticOnly
+            enableControlSocket: !diagnosticOnly,
+            securityPolicy: ControlSecurityPolicy(requiresTLSUpgrade: tlsDev)
         )
         do {
             let sweep = try runtime.sweepOrphans()

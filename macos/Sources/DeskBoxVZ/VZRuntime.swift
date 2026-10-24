@@ -583,10 +583,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 sessionID: ack.sessionID
             )
             if self.securityPolicy.requiresTLSUpgrade {
-                // M1-2: keep the session pre-TLS until SecureSession finishes
-                // its handshake; running is only valid with a TLS session ID.
-                record.bootstrapState = .helloAcceptedTLSRequired
-                self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "TLS upgrade required before running"))
+                try self.upgradeToTLS(record: record, ack: ack)
             } else {
                 try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
                 record.bootstrapState = .authenticated
@@ -600,6 +597,52 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     private func record(for sandboxID: SandboxID) -> Record? {
         records[sandboxID]
+    }
+
+    /// M1-2 TLS upgrade: handshake over the accepted VSOCK fd, momentarily
+    /// suspending the read source; on success the session ID becomes the proof
+    /// material for `running`. Any failure fails closed.
+    private func upgradeToTLS(record: Record, ack: BootstrapHelloAck) throws {
+        guard let socket = record.controlSocket else {
+            throw SandboxFailure(.bootstrapTLSRequired, "TLS upgrade without control socket")
+        }
+        let identity = try DevelopmentTLSAssets.loadIdentity()
+        let session = SecureTransportSession(
+            fileDescriptor: socket.fileDescriptor,
+            queue: queue,
+            localIdentity: identity
+        )
+        socket.suspendEvents()
+        defer { socket.resumeEvents() }
+        record.bootstrapState = .tlsAuthenticating
+        do {
+            try session.performHandshake(
+                as: .hostClient,
+                peerContext: record.boot,
+                deadline: Date().addingTimeInterval(10)
+            )
+        } catch {
+            record.lifecycle.forceFail(reason: .bootstrapTLSRequired)
+            self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "TLS handshake failed: \(error.localizedDescription)"))
+            self.closeSocketOnQueue(record)
+            throw error
+        }
+        guard let binding = session.sessionBinding else {
+            throw SandboxFailure(.bootstrapTLSRequired, "TLS handshake completed without session binding")
+        }
+        socket.upgradeTransport(to: session)
+        let proof = BootstrapProof(
+            sandboxID: record.request.sandboxID,
+            bootID: record.boot.bootID,
+            bootNonce: record.boot.bootNonce,
+            protocolMajor: record.boot.protocolMajor,
+            guestManifestDigest: record.boot.guestManifestDigest,
+            sessionID: binding.sessionID
+        )
+        try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+        record.bootstrapState = .tlsAuthenticated
+        _ = ack
+        self.recordAudit(record, action: .channelEvent, decision: .allow())
     }
 
     private func recordAudit(_ record: Record, action: AuditAction, decision: Decision) {

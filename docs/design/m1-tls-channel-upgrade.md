@@ -41,25 +41,25 @@ M0/M1-1 已有能力不丢：
 
 ### 3.1 宿主侧（Swift / macOS API）
 
-首选：**`Security.framework` 的 `SSLCreateContext` + 自定义 I/O 回调**
+~~首选：`Security.framework` 的 `SSLCreateContext` + 自定义 I/O 回调~~
 
-理由：
-- `Network.framework` 的 `NWConnection` 不支持把**任意已存在的 POSIX fd**（我们的 VZ virtio-socket `VZVirtioSocketConnection.fileDescriptor`）包成连接；`NWProtocolFramer` 自定义 transport 需要完整协议栈；
-- `SSLCreateContext` 允许传入 `SSLIOFunc`（read/write callbacks），底层就是我们自己的 fd，`TLS 1.3` 在 macOS 14+ 支持（`SSLSetProtocolVersion(.TLS13)`）；
-- Security API 是 Apple 官方安全边界（不引入第三方 C 库到宿主）。
+**决策修正（M1-2 开发期实测）**：`Security.framework` 的旧 SecureTransport **不支持 TLS 1.3**——`SSLSetProtocolVersionMin(.tlsProtocol13)` 在运行时被拒绝（见 M1-2a 切片中复现的 `handshake error … -9830`）。TLS 1.3 在 Apple 平台上的官方实现位于 **Network.framework**。
 
-关键 API 序列（宿主）：
-1. 证书：`SecKeyCreateRandomKey`（`kSecAttrKeyTypeECSECPrimeRandom`, `kSecAttrKeySizeInBits=256`）；
-2. 自签名证书 DER 生成：
-   - **M1-2a（推进）**：开发期用 OpenSSL CLI 预生成单个开发证书，写入构建阶段脚本（与 guest modules 处理方式一致，已锁定版本）；文档标记为开发态；
-   - **M1-2b（落地）**：用 `swift-crypto` 或系统 OpenSSL 编译为静态库，进程内生成每 boot ephemeral 证书；
-3. `SSLCreateContext` → `SSLSetConnection`（fd）→ `SSLSetIOFuncs`；
-4. `SSLSetProtocolVersionMin/Max(.TLS13)`；禁用 renegotiation；
-5. 握手：循环 `SSLHandshake`，直到 `errSSLWouldBlock`/成功/失败（有界 10s 超时）。
+宿主侧正确实现路径（点击进入代码的桥接方案）：
+
+1. 在进程内创建 `NWListener`，监听 **本机 Unix domain socket**（`~/.deskbox/tls-bridge-<uuid>.sock` 还临时路径，以 kSecScopeLocal 限定）；
+2. `NWConnection` 在 `newConnectionHandler` 中作为 **TLS 1.3 服务端** accept（`NWParameters(secProtocolOptions:)` 应用 `sec_protocol_options_set_min/max_tls_protocol_version(.TLSv13)` + 证书）；
+3. 进程内启动一个 *byte pump*：`VZVirtioSocketConnection.fileDescriptor` ⇄ 该 NWConnection 的 raw transport（recv/send HPack-like record forwarding）；
+4. TLS record 密钥材料在进程内部产生，不经网络 —— VSOCK/pipe 仅承载密文 vs 明文的进出；
+5. 完成 handshake 之后派生 sessionID（见公式 §3.3）；
+6. 失败即不能成立 TLS 会话 → fail closed。
+
+风险权衡：本方案在宿主内引入了 Unix 域桥接 socket（文件系统路径），但仅限宿主本机访问；比原 `SSLCreateContext`（因不支持 TLS 1.3 已被排除）更贴近 Apple 推荐 API。如果桥泵太复杂，第二候选方案是 `swift-crypto` 的 handshake 板独立在 DeskBoxCore 里实现 （工作量大，不推荐首发）。
 
 凭据绑定：
 - host cert 的 DER 计算 SHA-256，作为 helloAck payload 的一部分传给 guest；
 - 或者 host cert fingerprint 通过 kernel cmdline `dbx.hostfp=`（更直接，不需要额外往返）。
+- **M1-2b（落地）**：用 `swift-crypto` 进程内生成每 boot ephemeral 证书。
 
 ### 3.2 Guest 侧（C / 静态库）
 
@@ -147,7 +147,7 @@ pending → bootstrap=notConnected
 
 | 风险 | 缓解 |
 |------|------|
-| SSLCreateContext 在 release/deprecated 行为差异 | 优先验证辅助 target；若被 Apple 警告，切 `Network.framework` 自定义 transport + `NWProtocolFramer`（备选但成本高） |
+| ✅ 已发生：`SSLCreateContext` 不支持 TLS 1.3（实际复现 `handshake error … -9830`） | 转向 Network.framework 的 Unix bridge（§3.1 修正） |
 | Guest 静态 TLS 库带体积膨胀 | 选 mbedtls；若 >12MB，裁剪 x509/CA/theme |
 | Signing/notarization 对 SSL 代码路径影响 | 需要 entitlements 现有，`libssl` 静态链接不增加 entitlement；在 signing step 校验 `codesign --verify` |
 | 双明文明 hello 后的 race（第 2 次 hello vs TLS） | listener 已独占首个连接；二次连接被丢弃，TLS 升级仅在首连接上进行 |

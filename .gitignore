@@ -5,3 +5,7 @@ macos/.swiftpm/
 
 # Local guest assets (large/generated, never commit)
 macos/guest/
+
+# Dev-only TLS identity material for the M1-2 slice (scripts/gen-dev-tls.sh);
+# private keys must never be committed, even for development.
+macos/Resources/tls-dev/

@@ -1,6 +1,53 @@
 import Foundation
 
 /// 控制通道消息类型（docs/design/control-channel-security.md §6）。
+/// TLS session binding inputs (docs/design/m1-tls-channel-upgrade.md §3.3).
+/// The session identifier is derived from both peer fingerprints and the boot
+/// context so certificates from older boots cannot be replayed.
+public struct SessionBinding: Sendable, Codable, Equatable {
+    public let hostFingerprintHex: String
+    public let guestFingerprintHex: String
+    public let sessionID: SessionID
+
+    public init(hostFingerprintHex: String, guestFingerprintHex: String, sessionID: SessionID) {
+        self.hostFingerprintHex = hostFingerprintHex
+        self.guestFingerprintHex = guestFingerprintHex
+        self.sessionID = sessionID
+    }
+
+    public static func deriveSessionID(
+        hostFingerprintHex: String,
+        guestFingerprintHex: String,
+        context: BootContext
+    ) -> SessionID {
+        let material = [
+            "deskbox-m1-tls-v1", hostFingerprintHex, guestFingerprintHex,
+            context.sandboxID.raw, context.bootID.raw,
+            context.bootNonce.uuidString, context.guestManifestDigest
+        ].joined(separator: "|")
+        var digestInput = [UInt8](material.utf8)
+        digestInput.append(UInt8(context.protocolMajor))
+        return SessionID(ControlSessionHash.sha256Hex(of: Data(digestInput)))
+    }
+}
+
+/// SHA-256 is reimplemented to avoid platform crypto dependencies inside the
+/// public DeskBoxCore contract surface.
+public enum ControlSessionHash {
+    public static func sha256Hex(of data: Data) -> String {
+        // Uses CommonCrypto on Apple platforms; deterministic and constant across
+        // Swift versions for the wire/session contracts.
+        var hash = [UInt8](repeating: 0, count: 32)
+        data.withUnsafeBytes { raw in
+            _ = SHA256Digest(raw.baseAddress ?? UnsafeRawPointer(bitPattern: 0), raw.count, &hash)
+        }
+        return hash.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+@_silgen_name("CC_SHA256")
+private func SHA256Digest(_ data: UnsafeRawPointer?, _ length: Int, _ md: UnsafeMutablePointer<UInt8>) -> UnsafeMutablePointer<UInt8>?
+
 public enum ControlMessageKind: UInt16, Sendable, Codable {
     case hello = 1
     case helloAck = 2
