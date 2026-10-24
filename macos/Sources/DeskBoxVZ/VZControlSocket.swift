@@ -107,8 +107,13 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
             for frame in frames {
                 let preview = String(decoding: frame.payload.prefix(120), as: UTF8.self)
                 FileHandle.standardError.write(Data("dbx-vz: parsed frame kind=\(frame.kind.rawValue) seq=\(frame.sequence) payload=\(preview)\n".utf8))
-                try? FileHandle.standardError.synchronize()
-                try sequence.accept(frame)
+                do {
+                    try sequence.accept(frame)
+                } catch {
+                    FileHandle.standardError.write(Data("dbx-vz: sequence accept error=\(error.localizedDescription)\n".utf8))
+                    try? FileHandle.standardError.synchronize()
+                    throw error
+                }
             }
             if !frames.isEmpty { onFrames(frames) }
         } catch {
