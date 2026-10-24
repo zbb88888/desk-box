@@ -98,7 +98,12 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
 
     private func readAvailable() {
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
-        let count = read(connection.fileDescriptor, &bytes, bytes.count)
+        let capacity = bytes.capacity
+        // `read` needs the element storage, not the Swift array object pointer.
+        // Passing `&bytes` writes past the array header and corrupts the heap.
+        let count = bytes.withUnsafeMutableBytes { raw in
+            read(connection.fileDescriptor, raw.baseAddress, capacity)
+        }
         guard count > 0 else {
             if count == 0 { onFailure("guest control socket closed") }
             else { onFailure("guest control socket read failed: errno=\(errno)") }

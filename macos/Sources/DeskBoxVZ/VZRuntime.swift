@@ -199,7 +199,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
             }
             record.started = false
-            record.controlSocket?.close()
+            self.closeSocketOnQueue(record)
             record.controlSocket = nil
             self.recordAudit(record, action: .stop, decision: .allow())
         }
@@ -223,7 +223,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                     try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
                 }
                 if self.machineCanStop(record.machine) { try await self.stopMachine(record.machine) }
-                record.controlSocket?.close()
+                self.closeSocketOnQueue(record)
                 record.controlSocket = nil
                 if record.lifecycle.state != .stopped {
                     try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
@@ -269,18 +269,17 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         guard request.argv.contains("/bin/echo") || request.argv.contains("/bin/sh") else {
             throw SandboxFailure(.bootstrapProofMissing, "MVP exec only accepts echo/sh as an explicit diagnostic command")
         }
-        let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         try await onQueue {
             let record = try self.require(handle)
             guard record.bootstrapState == .authenticated,
                   record.lifecycle.state == .running,
-                  let socket = record.controlSocket else {
+                  record.controlSocket != nil else {
                 throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
             }
             let payload = try JSONEncoder().encode(request)
             let frame = try ControlFrame(kind: .request, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
             do {
-                try socket.send(frame)
+                try self.sendFrameOnQueue(record, frame: frame)
                 self.recordAudit(record, action: .channelEvent, decision: .allow())
             } catch {
                 record.lifecycle.forceFail(reason: .bootstrapProofMismatch)
@@ -388,6 +387,25 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
+    /// VZ objects and their connection/file descriptor accessors must be used
+    /// on the VM queue. `onQueue` resumes async work on a cooperative thread,
+    /// which is not guaranteed to still be `queue`, so dispatch explicitly.
+    private func closeSocketOnQueue(_ record: Record) {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            record.controlSocket?.close()
+        } else {
+            queue.sync { record.controlSocket?.close() }
+        }
+    }
+
+    private func sendFrameOnQueue(_ record: Record, frame: ControlFrame) throws {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            try record.controlSocket?.send(frame)
+        } else {
+            try queue.sync { try record.controlSocket?.send(frame) }
+        }
+    }
+
     private func stopMachine(_ machine: VZVirtualMachine) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
@@ -490,7 +508,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             let ack = BootstrapHelloAck(sessionID: .new(), requiresTLS: true)
             let payload = try BootstrapCodec.encodeAck(ack)
             let response = try ControlFrame(kind: .helloAck, sequence: frame.sequence + 1, requestID: frame.requestID, payload: payload)
-            try record.controlSocket?.send(response)
+            try self.sendFrameOnQueue(record, frame: response)
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "hello 绑定成功；仍需 TLS 1.3 双向认证后才能建立 session"))
             // MVP transport readiness: a bound hello/ack over the VSOCK control
             // channel proves this boot's guest agent is live. The TLS layer is
@@ -509,7 +527,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             self.recordAudit(record, action: .channelEvent, decision: .allow())
         } catch {
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, error.localizedDescription))
-            record.controlSocket?.close()
+            self.closeSocketOnQueue(record)
         }
     }
 

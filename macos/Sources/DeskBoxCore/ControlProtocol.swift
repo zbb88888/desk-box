@@ -114,9 +114,12 @@ public struct ControlFrame: Sendable, Equatable {
     /// Reads the big-endian payload length without accepting an incomplete frame.
     public static func payloadLength(in data: Data) -> Int? {
         guard data.count >= headerSize else { return nil }
-        let offset = headerSize - 4
-        return Int(UInt32(data[offset]) << 24 | UInt32(data[offset + 1]) << 16
-            | UInt32(data[offset + 2]) << 8 | UInt32(data[offset + 3]))
+        // Copy the length bytes into zero-based storage. Reading by absolute
+        // index on a sliced Data traps in release builds after dropFirst.
+        let lengthBytes = Array(data.prefix(headerSize).suffix(4))
+        guard lengthBytes.count == 4 else { return nil }
+        return Int(UInt32(lengthBytes[0]) << 24 | UInt32(lengthBytes[1]) << 16
+            | UInt32(lengthBytes[2]) << 8 | UInt32(lengthBytes[3]))
     }
 }
 
@@ -146,7 +149,9 @@ public struct ControlFrameDecoder: Sendable {
             let frameData = buffer.prefix(frameLength)
             let frame = try ControlFrame.decode(Data(frameData), maximumPayload: maximumPayload)
             frames.append(frame)
-            buffer.removeFirst(frameLength)
+            // Normalize to zero-based storage instead of keeping a shared
+            // slice view; subsequent absolute-index parsing must not trap.
+            buffer = Data(buffer.dropFirst(frameLength))
         }
         return frames
     }
