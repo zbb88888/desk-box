@@ -98,8 +98,7 @@ jobs:
             DEV_PUB=$(swift -e 'import CryptoKit; import Foundation; let hex = CommandLine.arguments[1]; var data = Data(); var i = hex.startIndex; while i < hex.endIndex { data.append(UInt8(hex[i..<hex.index(i, offsetBy: 2)], radix: 16)!); i = hex.index(i, offsetBy: 2) }; let k = try Curve25519.Signing.PrivateKey(rawRepresentation: data); print(k.publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined())' "$(sed 's/private://' ./guest/ci-sign-key.local | tr -d '[:space:]')")
             KEY_ID="${DEV_PUB:0:16}"
             NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-            KEY_ID="$KEY_ID" DEV_PUB="$DEV_PUB" NOW="$NOW" python3 -c 'import json, os
-print(json.dumps({"schema":"deskbox-release-keys/v1","generatedAtUtc":os.environ["NOW"],"keys":[{"keyID":os.environ["KEY_ID"],"publicHex":os.environ["DEV_PUB"],"status":"active","notBefore":os.environ["NOW"],"notAfter":None,"note":"ci release key"}]}, indent=2))' > ./guest/release-keys.json
+            printf '{"schema":"deskbox-release-keys/v1","generatedAtUtc":"%s","keys":[{"keyID":"%s","publicHex":"%s","status":"active","notBefore":"%s","notAfter":null,"note":"ci release key"}]}\n' "$NOW" "$KEY_ID" "$DEV_PUB" "$NOW" > ./guest/release-keys.json
           fi
           ./.build/debug/dbx-poc publish \
             --channel /tmp/dbx-channel \
