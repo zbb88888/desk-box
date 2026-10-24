@@ -72,6 +72,12 @@ EOF
 
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
+    # Keep the early boot path independent of devtmpfs/udev. VZ exposes the
+    # virtio block device as vda and the primary console as hvc0.
+    mknod -m 0600 /tmp/initrd/dev/console c 5 1
+    mknod -m 0600 /tmp/initrd/dev/hvc0 c 229 0
+    mknod -m 0600 /tmp/initrd/dev/ttyS0 c 4 64
+    mknod -m 0600 /tmp/initrd/dev/vda b 254 0
     cp /bin/busybox.static /tmp/initrd/bin/busybox
     # Alpine busybox is dynamically linked against musl; include its loader
     # and runtime libraries in the initramfs or /init will fail before console.
