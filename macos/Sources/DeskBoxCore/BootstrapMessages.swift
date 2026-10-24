@@ -3,6 +3,20 @@ import Foundation
 /// Bootstrap message payloads. These are intentionally separate from
 /// `BootstrapProof`: a hello is guest-reported identity, not attestation.
 public struct BootstrapHello: Sendable, Codable, Equatable {
+    // Guest bootstrap uses the stable v1 wire shape. Swift's default Codable
+    // would encode UUID as base64 data, which is not the documented contract.
+    enum CodingKeys: String, CodingKey {
+        case sandboxID
+        case bootID
+        case bootNonce
+        case protocolMajor
+        case guestManifestDigest
+    }
+
+    private struct Ref: Codable {
+        var raw: String
+    }
+
     public let sandboxID: SandboxID
     public let bootID: BootID
     public let bootNonce: UUID
@@ -29,6 +43,28 @@ public struct BootstrapHello: Sendable, Codable, Equatable {
         self.bootNonce = context.bootNonce
         self.protocolMajor = context.protocolMajor
         self.guestManifestDigest = context.guestManifestDigest
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sandboxID = SandboxID(try container.decode(Ref.self, forKey: .sandboxID).raw)
+        bootID = BootID(try container.decode(Ref.self, forKey: .bootID).raw)
+        let nonceString = try container.decode(String.self, forKey: .bootNonce)
+        guard let nonce = UUID(uuidString: nonceString) else {
+            throw DecodingError.dataCorruptedError(forKey: .bootNonce, in: container, debugDescription: "invalid boot nonce")
+        }
+        bootNonce = nonce
+        protocolMajor = try container.decode(Int.self, forKey: .protocolMajor)
+        guestManifestDigest = try container.decode(String.self, forKey: .guestManifestDigest)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(Ref(raw: sandboxID.raw), forKey: .sandboxID)
+        try container.encode(Ref(raw: bootID.raw), forKey: .bootID)
+        try container.encode(bootNonce.uuidString, forKey: .bootNonce)
+        try container.encode(protocolMajor, forKey: .protocolMajor)
+        try container.encode(guestManifestDigest, forKey: .guestManifestDigest)
     }
 
     public func bindingDecision(against context: BootContext) -> Decision {
