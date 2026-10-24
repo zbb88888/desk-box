@@ -60,6 +60,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y curl docker.io
+      - name: Setup QEMU for arm64 emulation
+        run: docker run --privileged --rm tonistiigi/binfmt --install arm64
       - name: Build guest assets
         run: |
           cd macos
