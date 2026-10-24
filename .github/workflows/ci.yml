@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  SWIFT_VERSION: "6.0"
+  ALPINE_VERSION: "3.21.3"
+
+jobs:
+  macos-build-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: |
+          (sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer) || \
+          (sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer) || true
+      - name: swift test
+        run: |
+          cd macos
+          swift test 2>&1 | tee test.log
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-test-log
+          path: macos/test.log
+          if-no-files-found: ignore
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Run guest C fuzz harness
+        run: |
+          cd macos
+          ./scripts/run-fuzz.sh /tmp/dbx-fuzz-harness 2>&1 | tee /tmp/fuzz.log
+      - name: Upload fuzz log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-log
+          path: /tmp/fuzz.log
+          if-no-files-found: ignore
+
+  guest-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl docker.io
+      - name: Build guest assets
+        run: |
+          cd macos
+          chmod +x ./scripts/build-alpine-guest.sh
+          ALPINE_VERSION=$ALPINE_VERSION ./scripts/build-alpine-guest.sh ./guest
+      - name: Build Swift artifacts (for CLI)
+        run: |
+          cd macos
+          swift build 2>&1 | tail -5
+      - name: validate-assets (unsigned signer should be REJECTED, code 2)
+        run: |
+          cd macos
+          mv ./guest/manifest.json /tmp/manifest.signed.json
+          cp ./guest/manifest.unsigned.json ./guest/manifest.json
+          if ./.build/debug/dbx-poc validate-assets ./guest/manifest.json; then
+            echo "EXPECTED-FAIL regression: unsigned manifest should NOT be accepted"
+            exit 1
+          fi
+          mv /tmp/manifest.signed.json ./guest/manifest.json
+          ./.build/debug/dbx-poc validate-assets ./guest/manifest.json
+      - name: verify-sbom
+        run: |
+          cd macos
+          ./.build/debug/dbx-poc verify-sbom ./guest/sbom.json
+      - name: Upload guest evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-evidence
+          path: |
+            macos/guest/manifest.json
+            macos/guest/sbom.json
+          if-no-files-found: ignore
