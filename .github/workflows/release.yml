@@ -93,15 +93,13 @@ jobs:
           mkdir -p /tmp/dbx-channel
           cp ./guest/manifest.json /tmp/dbx-channel/manifest.json
           cp ./guest/sbom.json /tmp/dbx-channel/sbom.json
-          # release-keys.json 在 build script 中写入 guest/；若不存在，用 CI key 重建一份。
+          # release-keys.json 若不存在，则基于 CI key 重建。
           if [ ! -f ./guest/release-keys.json ]; then
             DEV_PUB=$(swift -e 'import CryptoKit; import Foundation; let hex = CommandLine.arguments[1]; var data = Data(); var i = hex.startIndex; while i < hex.endIndex { data.append(UInt8(hex[i..<hex.index(i, offsetBy: 2)], radix: 16)!); i = hex.index(i, offsetBy: 2) }; let k = try Curve25519.Signing.PrivateKey(rawRepresentation: data); print(k.publicKey.rawRepresentation.map { String(format: "%02x", $0) }.joined())' "$(sed 's/private://' ./guest/ci-sign-key.local | tr -d '[:space:]')")
-            KEY_ID=${DEV_PUB:0:16}
-            cat > ./guest/release-keys.json <<EORK
-            {"schema":"deskbox-release-keys/v1","generatedAtUtc":"$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-             "keys":[{"keyID":"$KEY_ID","publicHex":"$DEV_PUB","status":"active",
-                       "notBefore":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","notAfter":null,"note":"ci release key"}]}
-            EORK
+            KEY_ID="${DEV_PUB:0:16}"
+            NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            KEY_ID="$KEY_ID" DEV_PUB="$DEV_PUB" NOW="$NOW" python3 -c 'import json, os
+print(json.dumps({"schema":"deskbox-release-keys/v1","generatedAtUtc":os.environ["NOW"],"keys":[{"keyID":os.environ["KEY_ID"],"publicHex":os.environ["DEV_PUB"],"status":"active","notBefore":os.environ["NOW"],"notAfter":None,"note":"ci release key"}]}, indent=2))' > ./guest/release-keys.json
           fi
           ./.build/debug/dbx-poc publish \
             --channel /tmp/dbx-channel \
