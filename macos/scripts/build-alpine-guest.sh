@@ -46,7 +46,7 @@ docker run --rm \
     # for the direct kernel used by VZ; the host never trusts guest claims.
     mkdir -p /tmp/deb-modules
     curl --fail --location --retry 3 -o /tmp/linux-image.deb \
-      https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.1.0-50-arm64_6.1.194-1_arm64.deb
+      https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.1.0-50-arm64_6.1.176-1_arm64.deb
     dpkg-deb -x /tmp/linux-image.deb /tmp/deb-modules
     gcc -static -O2 -Wall -Wextra -o /tmp/deskbox-bootstrap /out/guest-bootstrap.c
     rm -rf /tmp/rootfs
