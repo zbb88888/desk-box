@@ -96,15 +96,24 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             let machine = VZVirtualMachine(configuration: configuration, queue: self.queue)
             let record = Record(request: request, boot: boot, machine: machine, cowLease: cowLease, serialConsole: serialConsole)
             let sandboxID = request.sandboxID
-            let delegate = VZRuntimeDelegate { [weak self] error in
-                guard let self else { return }
-                self.queue.async {
+            let delegate = VZRuntimeDelegate(
+                onGuestStopped: { [weak self] error in
+                    guard let self else { return }
+                    self.queue.async {
                     guard let record = self.record(for: sandboxID), record.lifecycle.state != .stopped else { return }
                     let reason = error == nil ? ReasonCode.lifecycleUnexpectedExit : ReasonCode.platformCapabilityUnavailable
                     record.lifecycle.forceFail(reason: reason)
-                    self.recordAudit(record, action: .channelEvent, decision: .error(reason, error?.localizedDescription ?? "guest 意外停止"))
+                        self.recordAudit(record, action: .channelEvent, decision: .error(reason, error?.localizedDescription ?? "guest 意外停止"))
+                    }
+                },
+                onState: { [weak self] state in
+                    guard let self else { return }
+                    self.queue.async {
+                        guard let record = self.record(for: sandboxID) else { return }
+                        self.recordAudit(record, action: .channelEvent, decision: .error(.lifecycleUnexpectedExit, "VZ state=\(state.rawValue)"))
+                    }
                 }
-            }
+            )
             record.delegate = delegate
             machine.delegate = delegate
             if self.enableControlSocket {
