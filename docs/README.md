@@ -16,6 +16,7 @@
 - [Host 与 Guest 双层统一安全体系](design/two-layer-security-model.md)：定义两层共用的身份、授权、资源、决策与审计语义，以及 Host、VM 边界、Guest 和跨边界协议的责任。
 - [网络与凭据 Broker](design/network-credential-broker.md)：定义 Broker-only 出口拓扑、凭据边界、协议兼容矩阵和 POC 门槛。
 - [控制通道与启动完整性](design/control-channel-security.md)：定义宿主/来宾身份绑定、握手、重放防护、版本和 snapshot 规则。
+- [M1-2 控制通道 TLS 1.3 双向认证升级](design/m1-tls-channel-upgrade.md)：当前 M0 明文 bootstrap 的加密认证升级计划（ephemeral 证书、session 绑定、mbedtls guest、SSLCreateContext 宿主、fail-closed 状态机）。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。

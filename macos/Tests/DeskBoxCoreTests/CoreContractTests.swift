@@ -46,6 +46,18 @@ final class CoreContractTests: XCTestCase {
         XCTAssertFalse(BootstrapProof.verify(proof, against: boot, expectedProtocolMajor: 1).isAllowed)
     }
 
+    func testTLSPolicyStatesExistAndDefaultIsOpenForMVP() {
+        // M1-2 transition policy: strict mode exists but the default remains
+        // the previously verified MVP boot-proof semantics.
+        XCTAssertFalse(ControlSecurityPolicy().requiresTLSUpgrade)
+        XCTAssertTrue(ControlSecurityPolicy.strict.requiresTLSUpgrade)
+        XCTAssertEqual(BootstrapState.notConnected, .notConnected)
+        XCTAssertEqual(BootstrapState.helloAcceptedTLSRequired, .helloAcceptedTLSRequired)
+        XCTAssertEqual(BootstrapState.tlsAuthenticating, .tlsAuthenticating)
+        XCTAssertEqual(BootstrapState.tlsAuthenticated, .tlsAuthenticated)
+        XCTAssertEqual(BootstrapState.authenticated, .authenticated)
+    }
+
     func testControlRequestResponseRoundTrip() throws {
         let request = ControlRequest(kind: .exec, argv: ["/bin/echo", "hello"], timeoutSeconds: 3)
         let encoded = try JSONEncoder().encode(request)

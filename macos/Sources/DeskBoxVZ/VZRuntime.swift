@@ -57,12 +57,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private let registry: SandboxRegistry
     private let enableConsole: Bool
     private let enableControlSocket: Bool
+    private let securityPolicy: ControlSecurityPolicy
 
     public init(
         cowRoot: URL,
         audit: AuditSink? = nil,
         enableConsole: Bool = true,
-        enableControlSocket: Bool = true
+        enableControlSocket: Bool = true,
+        securityPolicy: ControlSecurityPolicy = ControlSecurityPolicy()
     ) throws {
         self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
         self.queue.setSpecific(key: queueKey, value: 1)
@@ -71,6 +73,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         self.audit = audit
         self.enableConsole = enableConsole
         self.enableControlSocket = enableControlSocket
+        self.securityPolicy = securityPolicy
     }
 
     /// Recover orphan resources left by SIGKILL/host crash before accepting
@@ -305,8 +308,16 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
         try await onQueue {
             let record = try self.require(handle)
-            guard record.bootstrapState == .authenticated,
-                  record.lifecycle.state == .running,
+            guard record.bootstrapState == .authenticated || record.bootstrapState == .tlsAuthenticated else {
+                throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
+            }
+            if self.securityPolicy.requiresTLSUpgrade && record.bootstrapState != .tlsAuthenticated {
+                throw SandboxFailure(.bootstrapTLSRequired, "M1-2: exec requires an established TLS 1.3 session")
+            }
+        }
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running,
                   record.controlSocket != nil else {
                 throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
             }
@@ -541,7 +552,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "TLS/bootstrap 完成前只接受 hello"))
             return
         }
-        if record.bootstrapState == .authenticated {
+        if record.bootstrapState == .authenticated || record.bootstrapState == .tlsAuthenticated {
             recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMismatch, "duplicate hello after authenticated session"))
             return
         }
@@ -571,9 +582,16 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 guestManifestDigest: hello.guestManifestDigest,
                 sessionID: ack.sessionID
             )
-            try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
-            record.bootstrapState = .authenticated
-            self.recordAudit(record, action: .channelEvent, decision: .allow())
+            if self.securityPolicy.requiresTLSUpgrade {
+                // M1-2: keep the session pre-TLS until SecureSession finishes
+                // its handshake; running is only valid with a TLS session ID.
+                record.bootstrapState = .helloAcceptedTLSRequired
+                self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "TLS upgrade required before running"))
+            } else {
+                try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+                record.bootstrapState = .authenticated
+                self.recordAudit(record, action: .channelEvent, decision: .allow())
+            }
         } catch {
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, error.localizedDescription))
             self.closeSocketOnQueue(record)

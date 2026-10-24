@@ -107,7 +107,25 @@ public struct EndpointDescriptor: Sendable, Codable, Equatable {
 public enum BootstrapState: String, Sendable, Codable {
     case notConnected
     case helloAcceptedTLSRequired
+    case tlsAuthenticating
+    case tlsAuthenticated
+    /// MVP boot-proof authentication. This is weaker than a TLS session and is
+    /// only reachable while the TLS upgrade requirement (M1-2) is disabled.
     case authenticated
+}
+
+/// Control-channel security policy. While the M1-2 TLS upgrade is in
+/// progress the default keeps MVP boot-proof semantics; enabling
+/// `requiresTLSUpgrade` makes exec fail-closed until a TLS session exists.
+public struct ControlSecurityPolicy: Sendable, Equatable, Codable {
+    public var requiresTLSUpgrade: Bool
+
+    public init(requiresTLSUpgrade: Bool = false) {
+        self.requiresTLSUpgrade = requiresTLSUpgrade
+    }
+
+    /// M1-2 release policy: no exec may proceed without a TLS session.
+    public static var strict: ControlSecurityPolicy { ControlSecurityPolicy(requiresTLSUpgrade: true) }
 }
 
 public struct SandboxStatus: Sendable, Equatable {
