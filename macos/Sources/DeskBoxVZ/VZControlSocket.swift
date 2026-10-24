@@ -31,7 +31,10 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     }
 
     func send(_ frame: ControlFrame) throws {
-        let data = frame.encoded()
+        try send(bytes: frame.encoded())
+    }
+
+    func send(bytes data: Data) throws {
         writeLock.lock()
         defer { writeLock.unlock() }
         var offset = 0

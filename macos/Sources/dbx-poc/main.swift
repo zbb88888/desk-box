@@ -129,10 +129,13 @@ struct DBXPOC {
                     }
                 }
             }
+            if let status = try? await runtime.inspect(handle), status.bootstrap == .authenticated, status.state == .running {
+                let exec = try await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 5))
+                print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
+                fflush(stdout)
+            }
             let lifetime = ProcessLifetime { data in
-                Task {
-                    try? await runtime.sendConsoleInput(handle, data: data)
-                }
+                Task { try? await runtime.sendConsoleInput(handle, data: data) }
             }
             let reason = await lifetime.wait()
             statusTask.cancel()

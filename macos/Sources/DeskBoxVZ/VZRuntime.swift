@@ -20,6 +20,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var delegate: VZRuntimeDelegate?
         var socketDelegate: VZControlSocketDelegate?
         var controlSocket: VZControlSocket?
+        var lastExecResponse: ControlFrame?
         var bootstrapState: BootstrapState = .notConnected
         let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
@@ -256,6 +257,31 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         return status.endpoints.first { $0.name == name }
     }
 
+    public func execute(_ handle: SandboxHandle, request: ControlRequest) async throws -> ControlResponse {
+        let (record, socket, frame): (Record, VZControlSocket, ControlFrame) = try await onQueue {
+            let record = try self.require(handle)
+            guard record.bootstrapState == .authenticated,
+                  record.lifecycle.state == .running,
+                  let socket = record.controlSocket else {
+                throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
+            }
+            let responseID = UUID()
+            let payload = try JSONEncoder().encode(request)
+            let frame = try ControlFrame(kind: .request, sequence: 1, requestID: responseID, payload: payload)
+            return (record, socket, frame)
+        }
+        try socket.send(frame)
+        let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
+        while true {
+            await Task.yield()
+            let response = try await onQueue {
+                record.lifecycle.state == .stopped ? nil : record.lastExecResponse
+            }
+            if let response { return try JSONDecoder().decode(ControlResponse.self, from: response.payload) }
+            if Date() >= timeout { throw SandboxFailure(.bootstrapProofMismatch, "control response timeout") }
+        }
+    }
+
     /// Diagnostic-only serial input. It is intentionally not part of the
     /// trusted control plane and must never be used for authorization.
     public func sendConsoleInput(_ handle: SandboxHandle, data: Data) async throws {
@@ -429,6 +455,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     private func handleControlFrame(_ frame: ControlFrame, record: Record) {
+        if frame.kind == .response {
+            record.lastExecResponse = frame
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return
+        }
         if frame.kind == .hello {
             let preview = String(decoding: frame.payload.prefix(120), as: UTF8.self)
             FileHandle.standardError.write(Data("dbx-vz: received hello frame payload=\(frame.payload.count) preview=\(preview)\n".utf8))
@@ -469,6 +500,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
             record.bootstrapState = .authenticated
             self.recordAudit(record, action: .channelEvent, decision: .allow())
+            FileHandle.standardError.write(Data("dbx-vz: authenticated session ready\n".utf8))
+            try? FileHandle.standardError.synchronize()
         } catch {
             FileHandle.standardError.write(Data("dbx-vz: hello decode failed: \(error.localizedDescription)\n".utf8))
             try? FileHandle.standardError.synchronize()

@@ -164,4 +164,5 @@ public protocol SandboxRuntime: Sendable {
     func destroy(_ handle: SandboxHandle) async throws
     func inspect(_ handle: SandboxHandle) async throws -> SandboxStatus
     func resolveEndpoint(_ handle: SandboxHandle, name: String) async throws -> EndpointDescriptor?
+    func execute(_ handle: SandboxHandle, request: ControlRequest) async throws -> ControlResponse
 }

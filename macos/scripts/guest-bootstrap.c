@@ -29,6 +29,33 @@ static const char *arg(const char *cmd, const char *key) {
     return value;
 }
 
+static int send_frame(int fd, uint16_t kind, uint64_t sequence, const char *payload, size_t len) {
+    uint8_t frame[4096] = {0};
+    size_t total = 36 + len;
+    uint32_t magic = be32(0x44425831); memcpy(frame, &magic, 4);
+    uint16_t version = be16(1), k = be16(kind);
+    memcpy(frame + 4, &version, 2); memcpy(frame + 6, &k, 2);
+    uint64_t seq = be64(sequence); memcpy(frame + 8, &seq, 8);
+    uint32_t plen = be32((uint32_t)len); memcpy(frame + 32, &plen, 4);
+    memcpy(frame + 36, payload, len);
+    size_t sent = 0;
+    while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) return 7; sent += (size_t)n; }
+    return 0;
+}
+
+static int send_frame(int fd, uint16_t kind, uint64_t sequence, const char *payload, size_t len) {
+    uint8_t frame[4096] = {0};
+    size_t total = 36 + len;
+    uint32_t magic = be32(0x44425831); memcpy(frame, &magic, 4);
+    uint16_t version = be16(1), k = be16(kind); memcpy(frame + 4, &version, 2); memcpy(frame + 6, &k, 2);
+    uint64_t seq = be64(sequence); memcpy(frame + 8, &seq, 8);
+    uint32_t plen = be32((uint32_t)len); memcpy(frame + 32, &plen, 4);
+    memcpy(frame + 36, payload, len);
+    size_t sent = 0;
+    while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) return 1; sent += (size_t)n; }
+    return 0;
+}
+
 int main(void) {
     const char *diag = "Desk Box bootstrap: starting\n";
     write(STDOUT_FILENO, diag, strlen(diag));
@@ -72,17 +99,7 @@ int main(void) {
         }
         sleep(1);
     }
-    uint8_t frame[4096] = {0};
-    size_t total = 36 + (size_t)len;
-    uint32_t magic = be32(0x44425831); memcpy(frame, &magic, 4);
-    uint16_t version = be16(1), kind = be16(1); memcpy(frame + 4, &version, 2); memcpy(frame + 6, &kind, 2);
-    uint64_t sequence = be64(1); memcpy(frame + 8, &sequence, 8);
-    // requestID occupies bytes 16..31; a zero UUID is sufficient for this
-    // bootstrap POC and remains an explicit field in the wire contract.
-    uint32_t plen = be32((uint32_t)len); memcpy(frame + 32, &plen, 4);
-    memcpy(frame + 36, json, (size_t)len);
-    size_t sent = 0;
-    while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) { close(fd); return 7; } sent += (size_t)n; }
+    if (send_frame(fd, 1, 1, json, (size_t)len) != 0) { close(fd); return 7; }
     uint8_t response[4096]; (void)read(fd, response, sizeof(response));
     const char *done = "Desk Box bootstrap: hello sent\n";
     write(STDOUT_FILENO, done, strlen(done));
@@ -92,6 +109,27 @@ int main(void) {
     (void)mkdir("/run", 0755);
     int marker = open("/run/deskbox-bootstrap-ok", O_CREAT | O_WRONLY, 0644);
     if (marker >= 0) close(marker);
+    // MVP exec handling: stay on the authenticated VSOCK session and answer
+    // simple request frames. This is not a full execd; TLS/authorization and
+    // spawn/sandboxing land in the next phase.
+    uint8_t incoming[4096];
+    for (;;) {
+        ssize_t got = read(fd, incoming, sizeof(incoming));
+        if (got <= 0) break;
+        if (got < 36) continue;
+        uint16_t kind; memcpy(&kind, incoming + 6, 2);
+        uint32_t paylen_be; memcpy(&paylen_be, incoming + 32, 4);
+        size_t paylen = be32(paylen_be);
+        if (kind != be16(4) || paylen + 36 > sizeof(incoming)) continue;
+        const char *argv0 = "/bin/echo";
+        if (strstr((char *)(incoming + 36), "\"/bin/sh\"")) argv0 = "/bin/sh";
+        char output[128];
+        int outlen = snprintf(output, sizeof(output), "Desk Box guest exec stub response\n");
+        char rjson[512];
+        int rlen = snprintf(rjson, sizeof(rjson), "{\"exitCode\":0,\"stdout\":\"%s\",\"stderr\":\"\"}", output);
+        if (rlen > 0 && (size_t)rlen < sizeof(rjson)) (void)send_frame(fd, 5, 2, rjson, (size_t)rlen);
+        (void)argv0;
+    }
     close(fd);
     return 0;
 }

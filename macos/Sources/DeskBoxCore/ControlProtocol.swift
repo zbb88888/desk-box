@@ -11,6 +11,38 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     case close = 7
 }
 
+public struct ControlRequest: Sendable, Codable, Equatable {
+    public enum Kind: String, Sendable, Codable {
+        case exec
+        case ping
+    }
+    public let kind: Kind
+    public let argv: [String]
+    public let env: [String: String]?
+    public let cwd: String?
+    public let timeoutSeconds: Int?
+
+    public init(kind: Kind, argv: [String], env: [String: String]? = nil, cwd: String? = nil, timeoutSeconds: Int? = nil) {
+        self.kind = kind
+        self.argv = argv
+        self.env = env
+        self.cwd = cwd
+        self.timeoutSeconds = timeoutSeconds
+    }
+}
+
+public struct ControlResponse: Sendable, Codable, Equatable {
+    public let exitCode: Int32
+    public let stdout: String
+    public let stderr: String
+
+    public init(exitCode: Int32, stdout: String, stderr: String) {
+        self.exitCode = exitCode
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+}
+
 /// 有界应用层 frame。TLS 仍是后续实现的机密性/完整性层；
 /// framing 本身负责 parser 边界、版本和序列号，不能单独当作认证。
 public struct ControlFrame: Sendable, Equatable {
