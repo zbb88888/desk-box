@@ -80,13 +80,13 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     }
 
     func pollRead() throws -> [ControlFrame] {
-        var frames: [ControlFrame] = []
-        var frameBytes = [UInt8](repeating: 0, count: 64 * 1024)
-        let count = withUnsafeMutablePointer(to: &frameBytes) { pointer in
-            read(connection.fileDescriptor, pointer, frameBytes.count)
+        var bytes = [UInt8](repeating: 0, count: 64 * 1024)
+        let capacity = bytes.capacity
+        let count = bytes.withUnsafeMutableBytes { raw in
+            read(connection.fileDescriptor, raw.baseAddress, capacity)
         }
         guard count > 0 else { return [] }
-        frames = try decoder.append(Data(frameBytes[0..<count]))
+        let frames = try decoder.append(Data(bytes[0..<count]))
         for frame in frames { try sequence.accept(frame) }
         return frames
     }
