@@ -84,4 +84,6 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 6. 输出 `sandboxID`、`bootID` 和 `BootContext`；
 7. 前台 POC 将宿主 stdin 字节转发到 guest serial console（仅诊断/交互，不是可信控制面）；收到 stdin EOF、SIGINT 或 SIGTERM 后统一执行 stop + destroy + 删除 COW。
 
-CLI 会输出 bootstrap 状态：`notConnected` 或 `helloAcceptedTLSRequired`。当前没有 TLS 1.3 session/proof，因此即使 hello 被接受也不能当作产品 `Running`。若持续运行只看到 `notConnected`，CLI 每 5 秒会提示检查 guest initramfs。应通过 serial console 检查是否输出 `Desk Box bootstrap:`；构建脚本生成的 guest client 会报告 cmdline 缺失、VSOCK socket/connect errno 或 hello sent。guest kernel 的 `console=hvc0` 启动日志只能证明 guest 有输出，不能证明 readiness、身份或 attestation。serial console 输入同样不具备授权语义，产品命令执行必须走认证的 execd/control channel。信号清理路径仍需在真实实体机上验证，尤其是进程被 SIGKILL 或宿主崩溃时的孤儿资源回收。
+CLI 会输出 bootstrap 状态：`pending` 或 `authenticated`。当前没有 TLS 1.3 session，`authenticated` 表示 guest hello 已与本次 boot 绑定，此证明足以致产品 `running`，但不代表 session 加密。若持续停留在 `pending`，CLI 每 5 秒会提示检查 guest initramfs；应通过 serial console 检查是否输出 `Desk Box bootstrap:`；构建脚本生成的 guest client 会报告 cmdline 缺失、VSOCK socket/connect errno 或 hello sent。guest kernel 的 `console=hvc0` 启动日志只能证明 guest 有输出，不能证明 readiness、身份或 attestation。serial console 输入同样不具备授权语义，产品命令执行必须走认证的 execd/control channel。
+
+进程在 EOF / SIGTERM 路径已验证会正常 stop/destroy 并清理 COW；在 SIGKILL 或宿主崩溃路径下仍会留下 orphan COW（本仓库中的 cows 目录中曾积至 370MB+），M1 需要 orphan registry + startup sweep 类回收，当前仅限手动清理 `sandbox-*.vhd`。
