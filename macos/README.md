@@ -68,9 +68,11 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
   → HelloAck 回复
   → bootstrapState = authenticated
   → LifecycleMachine = running（BootstrapProof 验证后）
-  → Host 发送 exec 请求，Guest 真实 fork+execvp 执行命令
-  → 返回真实 stdout/stderr/exitCode（有界截断）
-  → 打印 exec=0 stdout=deskbox-mvp-ok
+  → Host 发送 exec 请求（requestID 关联 + 会话内递增 sequence 防重放）
+  → Guest 真实 fork+execvp 执行命令，返回真实 stdout/stderr/exitCode（有界截断）
+  → 超时 kill 全进程组（exitCode=-2）
+  → 同一会话连续 exec 返回各自真实结果（无陈旧响应）
+  → 打印 exec[0]=0/exec[1]=0 + 各自 stdout
   → stop → destroy → APFS COW cleanup
   → 进程 exit 0
 ```
