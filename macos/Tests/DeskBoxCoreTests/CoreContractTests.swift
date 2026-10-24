@@ -46,6 +46,41 @@ final class CoreContractTests: XCTestCase {
         XCTAssertFalse(BootstrapProof.verify(proof, against: boot, expectedProtocolMajor: 1).isAllowed)
     }
 
+    func testControlRequestResponseRoundTrip() throws {
+        let request = ControlRequest(kind: .exec, argv: ["/bin/echo", "hello"], timeoutSeconds: 3)
+        let encoded = try JSONEncoder().encode(request)
+        let decoded = try JSONDecoder().decode(ControlRequest.self, from: encoded)
+        XCTAssertEqual(decoded.kind, .exec)
+        XCTAssertEqual(decoded.argv, ["/bin/echo", "hello"])
+        XCTAssertEqual(decoded.timeoutSeconds, 3)
+
+        let response = ControlResponse(exitCode: 0, stdout: "hello\n", stderr: "")
+        let roundTrip = try JSONDecoder().decode(ControlResponse.self, from: JSONEncoder().encode(response))
+        XCTAssertEqual(roundTrip, response)
+
+        // The wire produced from the guest C agent must decode, including the
+        // JSON-escaped forms Swift's encoder produces.
+        let guestText = Data("{\"exitCode\":127,\"stdout\":\"\",\"stderr\":\"exec missing\"}".utf8)
+        let fromGuest = try JSONDecoder().decode(ControlResponse.self, from: guestText)
+        XCTAssertEqual(fromGuest.exitCode, 127)
+        XCTAssertEqual(fromGuest.stderr, "exec missing")
+    }
+
+    func testRequestFrameCarriesPayload() throws {
+        let payload = try JSONEncoder().encode(ControlRequest(kind: .exec, argv: ["/bin/echo"]))
+        let frame = try ControlFrame(kind: .request, sequence: 3, payload: payload)
+        let decoded = try ControlFrame.decode(frame.encoded())
+        XCTAssertEqual(decoded.kind, .request)
+        XCTAssertEqual(decoded.sequence, 3)
+        XCTAssertEqual(try JSONDecoder().decode(ControlRequest.self, from: decoded.payload).argv, ["/bin/echo"])
+    }
+
+    func testExecTimeoutResponseDecodes() throws {
+        let guest = Data("{\"exitCode\":-2,\"stdout\":\"\",\"stderr\":\"exec timed out; process group killed\"}".utf8)
+        let decoded = try JSONDecoder().decode(ControlResponse.self, from: guest)
+        XCTAssertEqual(decoded.exitCode, -2)
+    }
+
     func testRootImageIsRejectedByDefault() {
         let result = WorkloadSpecCompiler.compile(
             image: OCIImageConfig(user: "root", entrypoint: ["/bin/sh"]),

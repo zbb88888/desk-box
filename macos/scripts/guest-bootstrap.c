@@ -1,10 +1,13 @@
 #include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#ifdef __linux__
 #include <linux/vm_sockets.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,6 +90,20 @@ static int parse_argv(const char *json, char **argv, int max_argv, char *storage
 
 enum { EXEC_MAX_OUTPUT = 1024 };
 
+/** Best-effort integer extraction for `"timeoutSeconds":N` from request JSON. */
+static int parse_timeout_seconds(const char *json) {
+    const char *key = strstr(json, "\"timeoutSeconds\"");
+    if (!key) return 10;
+    const char *p = strchr(key, ':');
+    if (!p) return 10;
+    p++;
+    while (*p == ' ') p++;
+    int value = 0;
+    while (*p >= '0' && *p <= '9') { value = value * 10 + (*p - '0'); p++; }
+    if (value <= 0 || value > 3600) return 10;
+    return value;
+}
+
 /** Run argv via fork/exec with pipes; fill an exitCode/stdout/stderr JSON. */
 static int run_exec_request(const char *request_json, char *response, size_t response_cap) {
     enum { MAX_ARGV = 32 };
@@ -103,14 +120,15 @@ static int run_exec_request(const char *request_json, char *response, size_t res
         return snprintf(response, response_cap,
             "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"pipe failed\"}");
     }
+    int timeout_seconds = parse_timeout_seconds(request_json);
     pid_t pid = fork();
     if (pid < 0) {
         return snprintf(response, response_cap,
             "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"fork failed\"}");
     }
     if (pid == 0) {
-        // Child: wire pipes as stdio, close parents' ends, exec. No shell:
-        // argv is executed directly so arguments can't be re-split.
+        // Child: own process group so the parent can kill the whole tree.
+        setpgid(0, 0);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
         close(out_pipe[0]); close(out_pipe[1]);
@@ -124,8 +142,22 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     char out_buf[EXEC_MAX_OUTPUT] = {0};
     char err_buf[EXEC_MAX_OUTPUT] = {0};
     size_t out_len = 0;
-    // Read stdout to EOF (bounded), then drain stderr; child runs argv[0]
-    // with no network access per sandbox policy.
+
+    // Bounded wait: check child completion once per 100ms; after the deadline
+    // kill the entire process group and reap deterministically.
+    int status = 0;
+    int timed_out = 1;
+    pid_t reaped = 0;
+    for (int i = 0; i < timeout_seconds * 10; i++) {
+        reaped = waitpid(pid, &status, WNOHANG);
+        if (reaped == pid) { timed_out = 0; break; }
+        usleep(100000);
+    }
+    if (timed_out) {
+        kill(-pid, SIGKILL);
+        (void)waitpid(pid, &status, 0);
+    }
+
     for (;;) {
         ssize_t n = read(out_pipe[0], out_buf + out_len, sizeof(out_buf) - out_len - 1);
         if (n <= 0) break;
@@ -140,16 +172,21 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     close(out_pipe[0]); close(err_pipe[0]);
 
     int exit_code = 0;
-    int status = 0;
-    (void)waitpid(pid, &status, 0);
-    if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
+    if (timed_out) exit_code = -2;
+    else if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) exit_code = 128 + WTERMSIG(status);
     else exit_code = -1;
 
     char esc_out[EXEC_MAX_OUTPUT * 3];
     char esc_err[EXEC_MAX_OUTPUT * 3];
     json_escape(out_buf, out_len, esc_out, sizeof(esc_out));
-    json_escape(err_buf, err_buf[0] ? strlen(err_buf) : 0, esc_err, sizeof(esc_err));
+    size_t err_len = err_buf[0] ? strlen(err_buf) : 0;
+    json_escape(err_buf, err_len, esc_err, sizeof(esc_err));
+    if (timed_out) {
+        return snprintf(response, response_cap,
+            "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"exec timed out; process group killed\"}",
+            exit_code, esc_out);
+    }
     return snprintf(response, response_cap,
         "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"%s\"}",
         exit_code, esc_out, esc_err);
@@ -169,6 +206,7 @@ static int send_frame(int fd, uint16_t kind, uint64_t sequence, const char *payl
     return 0;
 }
 
+#ifndef DBX_TEST_NO_MAIN
 int main(void) {
     const char *diag = "Desk Box bootstrap: starting\n";
     write(STDOUT_FILENO, diag, strlen(diag));
@@ -243,3 +281,4 @@ int main(void) {
     close(fd);
     return 0;
 }
+#endif // DBX_TEST_NO_MAIN
