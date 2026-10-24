@@ -12,6 +12,7 @@ ROOT_SIZE_MB="${ROOT_SIZE_MB:-512}"
 BASE_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/aarch64/netboot"
 # VZLinuxBootLoader requires a raw Linux arm64 Image, not Alpine's EFI wrapper.
 KERNEL_URL="https://deb.debian.org/debian/dists/bookworm/main/installer-arm64/current/images/netboot/debian-installer/arm64/linux"
+DEBIAN_INITRD_URL="https://deb.debian.org/debian/dists/bookworm/main/installer-arm64/current/images/netboot/debian-installer/arm64/initrd.gz"
 MINIROOT_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
 
 mkdir -p "$OUT_DIR"
@@ -21,7 +22,7 @@ command -v docker >/dev/null || { echo "docker is required to build the ext4 ima
 
 echo "Downloading Alpine rootfs and direct-boot Linux arm64 kernel..."
 curl --fail --location --retry 3 --output "$OUT_DIR/vmlinuz-virt" "$KERNEL_URL"
-curl --fail --location --retry 3 --output "$OUT_DIR/initramfs-virt" "$BASE_URL/initramfs-virt"
+curl --fail --location --retry 3 --output "$OUT_DIR/debian-initrd.gz" "$DEBIAN_INITRD_URL"
 file "$OUT_DIR/vmlinuz-virt" | tee "$OUT_DIR/kernel-format.txt"
 if ! file "$OUT_DIR/vmlinuz-virt" | grep -q 'Linux kernel ARM64 boot executable'; then
   echo "kernel is not a direct Linux arm64 Image; refusing to continue" >&2
@@ -71,9 +72,12 @@ EOF
     mke2fs -q -t ext4 -F -d /tmp/rootfs /out/root-disk.raw
 
     rm -rf /tmp/initrd
+    mkdir -p /tmp/initrd
+    gzip -dc /out/debian-initrd.gz | (cd /tmp/initrd && cpio -id --quiet)
     mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
     # Keep the early boot path independent of devtmpfs/udev. VZ exposes the
     # virtio block device as vda and the primary console as hvc0.
+    rm -f /tmp/initrd/dev/console /tmp/initrd/dev/hvc0 /tmp/initrd/dev/ttyS0 /tmp/initrd/dev/vda
     mknod -m 0600 /tmp/initrd/dev/console c 5 1
     mknod -m 0600 /tmp/initrd/dev/hvc0 c 229 0
     mknod -m 0600 /tmp/initrd/dev/ttyS0 c 4 64
