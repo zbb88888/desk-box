@@ -303,9 +303,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             let serial = VZVirtioConsoleDeviceConfiguration()
             let consolePort = VZVirtioConsolePortConfiguration()
-            // The primary VZ virtio console port is exposed as hvc0. A named
-            // non-console port would not receive Linux kernel console output.
-            consolePort.name = nil
+            // Match Apple's Linux VZ console example. The console port name is
+            // guest-visible metadata; isConsole makes it the hvc0 console.
+            consolePort.name = "org.linux.console"
             consolePort.isConsole = true
             consolePort.attachment = serialConsole.attachment
             serial.ports[0] = consolePort
