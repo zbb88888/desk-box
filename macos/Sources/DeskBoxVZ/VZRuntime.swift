@@ -423,6 +423,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     private func handleControlFrame(_ frame: ControlFrame, record: Record) {
+        if frame.kind == .hello {
+            FileHandle.standardError.write(Data("dbx-vz: received hello frame payload=\(frame.payload.count)\n".utf8))
+            try? FileHandle.standardError.synchronize()
+        }
         guard frame.kind == .hello else {
             recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "TLS/bootstrap 完成前只接受 hello"))
             return
@@ -431,6 +435,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             let hello = try BootstrapCodec.decodeHello(frame.payload)
             let decision = hello.bindingDecision(against: record.boot)
             guard decision.isAllowed else {
+                FileHandle.standardError.write(Data("dbx-vz: hello binding failed\n".utf8))
+                try? FileHandle.standardError.synchronize()
                 recordAudit(record, action: .channelEvent, decision: decision)
                 record.controlSocket?.close()
                 return
@@ -442,6 +448,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             try record.controlSocket?.send(response)
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "hello 绑定成功；仍需 TLS 1.3 双向认证后才能建立 session"))
         } catch {
+            FileHandle.standardError.write(Data("dbx-vz: hello decode failed: \(error.localizedDescription)\n".utf8))
+            try? FileHandle.standardError.synchronize()
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, error.localizedDescription))
             record.controlSocket?.close()
         }
