@@ -53,7 +53,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: guest-assets
-          path: macos/guest/
+          path: macos/
       - name: Generate CI signing key
         run: |
           cd macos
