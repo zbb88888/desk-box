@@ -61,8 +61,9 @@ mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /run /workspace
 /sbin/deskbox-bootstrap >/dev/null 2>&1 || true
-printf "Desk Box guest init ready\\n"
-if [ -x /sbin/init.real ]; then exec /sbin/init.real; fi
+printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
+# Keep the diagnostic guest alive for the launch POC. Production will replace
+# this shell with the authenticated execd supervisor.
 exec /bin/sh
 EOF
     chmod 0755 /tmp/rootfs/sbin/init
