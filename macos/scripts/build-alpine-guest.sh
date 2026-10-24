@@ -41,6 +41,13 @@ docker run --rm \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
     apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static >/dev/null
+    # The Debian installer initrd is intentionally small and does not contain
+    # virtio-blk/VSOCK transport modules. Fetch the matching Debian module set
+    # for the direct kernel used by VZ; the host never trusts guest claims.
+    mkdir -p /tmp/deb-modules
+    curl --fail --location --retry 3 -o /tmp/linux-image.deb \
+      https://deb.debian.org/debian/pool/main/l/linux/linux-image-6.1.0-50-arm64_6.1.194-1_arm64.deb
+    dpkg-deb -x /tmp/linux-image.deb /tmp/deb-modules
     gcc -static -O2 -Wall -Wextra -o /tmp/deskbox-bootstrap /out/guest-bootstrap.c
     rm -rf /tmp/rootfs
     mkdir -p /tmp/rootfs
@@ -88,6 +95,8 @@ EOF
     mkdir -p /tmp/initrd/lib /tmp/initrd/usr/lib
     cp -a /tmp/rootfs/lib/* /tmp/initrd/lib/ 2>/dev/null || true
     cp -a /tmp/rootfs/usr/lib/* /tmp/initrd/usr/lib/ 2>/dev/null || true
+    mkdir -p /tmp/initrd/lib/modules
+    cp -a /tmp/deb-modules/lib/modules/* /tmp/initrd/lib/modules/
     mkdir -p /tmp/initrd/sbin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
     chmod 0755 /tmp/initrd/bin/busybox
@@ -102,7 +111,7 @@ printf "Desk Box init entered\\n" > /dev/console 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 # The Debian direct kernel keeps several VZ devices as modules. Load them before
 # probing /dev so virtio-console, virtio-blk and AF_VSOCK are available.
-for m in virtio virtio_pci virtio_mmio virtio_console virtio_blk vsock vmw_vsock_virtio_transport; do
+for m in virtio virtio_ring virtio_pci virtio_mmio virtio_console virtio_blk vsock vmw_vsock_virtio_transport vmw_vsock_virtio_transport_common; do
   /bin/busybox modprobe "\$m" 2>/dev/null || true
 done
 # Keep console usable even when the guest kernel lacks devtmpfs auto-population.
