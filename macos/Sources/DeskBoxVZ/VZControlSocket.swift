@@ -5,6 +5,10 @@ import DeskBoxCore
 /// A bounded host-side VZ virtio-socket session. The file descriptor is owned
 /// by VZVirtioSocketConnection; this object keeps the connection alive and
 /// closes it on session teardown.
+///
+/// Frame validation stays strict (magic/version/length/sequence). Malformed or
+/// replayed frames fail closed and the connection is dropped; failures are
+/// surfaced through `onFailure` for audit instead of debug printing.
 final class VZControlSocket: NSObject, @unchecked Sendable {
     private let connection: VZVirtioSocketConnection
     private let queue: DispatchQueue
@@ -31,8 +35,6 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     }
 
     func send(_ frame: ControlFrame) throws {
-        FileHandle.standardError.write(Data("dbx-vz: socket send kind=\(frame.kind) seq=\(frame.sequence)\n".utf8))
-        try? FileHandle.standardError.synchronize()
         try send(bytes: frame.encoded())
     }
 
@@ -79,6 +81,9 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         source.resume()
     }
 
+    /// Synchronous read used by the runtime after sending a request frame.
+    /// It shares the same bounded decoder and sequence guard as the async
+    /// reader; replayed or malformed frames still fail closed.
     func pollRead() throws -> [ControlFrame] {
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
         let capacity = bytes.capacity
@@ -94,47 +99,17 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     private func readAvailable() {
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
         let count = read(connection.fileDescriptor, &bytes, bytes.count)
-        FileHandle.standardError.write(Data("dbx-vz: socket read count=\(count)\n".utf8))
-        try? FileHandle.standardError.synchronize()
         guard count > 0 else {
             if count == 0 { onFailure("guest control socket closed") }
-            else {
-                let message = "guest control socket read failed: errno=\(errno)"
-                FileHandle.standardError.write(Data("dbx-vz: \(message)\n".utf8))
-                try? FileHandle.standardError.synchronize()
-                onFailure(message)
-            }
+            else { onFailure("guest control socket read failed: errno=\(errno)") }
             close()
             return
         }
         do {
-            let preview = String(decoding: Data(bytes[0..<min(count, 16)]), as: UTF8.self)
-            FileHandle.standardError.write(Data("dbx-vz: received preview=\(preview)\n".utf8))
-            try? FileHandle.standardError.synchronize()
             let frames = try decoder.append(Data(bytes[0..<count]))
-            if frames.isEmpty {
-                FileHandle.standardError.write(Data("dbx-vz: decoder yielded no frames for count=\(count)\n".utf8))
-                try? FileHandle.standardError.synchronize()
-            }
-            for frame in frames {
-                let preview = String(decoding: frame.payload.prefix(120), as: UTF8.self)
-                FileHandle.standardError.write(Data("dbx-vz: parsed frame kind=\(frame.kind.rawValue) seq=\(frame.sequence) payload=\(preview)\n".utf8))
-                do {
-                    try sequence.accept(frame)
-                } catch {
-                    FileHandle.standardError.write(Data("dbx-vz: sequence accept error=\(error.localizedDescription)\n".utf8))
-                    try? FileHandle.standardError.synchronize()
-                    throw error
-                }
-            }
-            if !frames.isEmpty { onFrames(frames) }
+            for frame in frames { try sequence.accept(frame) }
+            for frame in frames { onFrames([frame]) }
         } catch {
-            FileHandle.standardError.write(Data("dbx-vz: socket read error=\(error.localizedDescription)\n".utf8))
-            try? FileHandle.standardError.synchronize()
-            if let failure = error as? SandboxFailure {
-                FileHandle.standardError.write(Data("dbx-vz: sandbox failure reason=\(failure.reason)\n".utf8))
-                try? FileHandle.standardError.synchronize()
-            }
             onFailure(error.localizedDescription)
             close()
         }
@@ -142,7 +117,7 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
 }
 
 /// VZ listener delegate. It accepts only the configured control port and keeps
-/// no unauthenticated connection as a product session; TLS/bootstrap is still
+/// no unauthenticated connection as a product session; bootstrap/TLS is still
 /// required before a frame can change lifecycle state.
 final class VZControlSocketDelegate: NSObject, VZVirtioSocketListenerDelegate {
     let onConnection: @Sendable (VZVirtioSocketConnection) -> Void
@@ -162,10 +137,7 @@ final class VZControlSocketDelegate: NSObject, VZVirtioSocketListenerDelegate {
         shouldAcceptNewConnection connection: VZVirtioSocketConnection,
         from socketDevice: VZVirtioSocketDevice
     ) -> Bool {
-        let fileDescriptor = connection.fileDescriptor
-        FileHandle.standardError.write(Data("dbx-vz: incoming virtio-socket connection fd=\(fileDescriptor)\n".utf8))
-        try? FileHandle.standardError.synchronize()
-        guard fileDescriptor >= 0 else {
+        guard connection.fileDescriptor >= 0 else {
             onReject("VZ control connection has invalid file descriptor")
             return false
         }

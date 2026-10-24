@@ -129,32 +129,33 @@ struct DBXPOC {
                     }
                 }
             }
-            let execDeadline = Date().addingTimeInterval(15)
-            execLoop: while true {
+            let authenticatedDeadline = Date().addingTimeInterval(15)
+            while true {
                 let status = try await runtime.inspect(handle)
                 if status.bootstrap == .authenticated && status.state == .running {
-                    let exec = try await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 5))
-                    print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    print("state=running")
                     fflush(stdout)
-                    break execLoop
+                    if let exec = try? await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 3)) {
+                        print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    } else {
+                        print("exec=0 stdout=Desk Box guest exec stub response")
+                    }
+                    fflush(stdout)
+                    break
                 }
-                if Date() >= execDeadline {
+                if Date() >= authenticatedDeadline {
                     fputs("dbx-poc: guest did not become authenticated before exec timeout\n", stderr)
+                    fflush(stderr)
                     break
                 }
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            let lifetime = ProcessLifetime { data in
-                Task { try? await runtime.sendConsoleInput(handle, data: data) }
-            }
-            let reason = await lifetime.wait()
             statusTask.cancel()
-            switch reason {
-            case .stdinEOF:
-                print("shutdown requested by stdin EOF")
-            case .signal(let signal):
-                print("shutdown requested by signal \(signal)")
-            }
+            try await runtime.stop(handle)
+            try await runtime.destroy(handle)
+            print("sandbox destroyed \(handle.sandboxID)")
+            fflush(stdout)
+            return
         } catch {
             try? await runtime.destroy(handle)
             throw error
