@@ -12,12 +12,17 @@ struct DBXPOC {
                 let report = VZCapabilityProbe.probe()
                 print(String(decoding: try JSONEncoder.pretty.encode(report), as: UTF8.self))
             case "validate-assets":
-                guard args.count == 2 else { throw CLIError.usage("dbx-poc validate-assets <manifest.json>") }
-                let manifest = try loadManifest(at: URL(fileURLWithPath: args[1]))
-                let result = try GuestAssetValidator.validate(manifest.asManifest)
+                guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest]") }
+                let manifest = try loadManifest(at: URL(fileURLWithPath: first))
+                let result = try GuestAssetValidator.validate(manifest.asManifest,
+                                                              allowUnsignedManifest: args.contains("--allow-unsigned-manifest"))
                 print("validated manifest \(result.manifestDigest)")
             case "make-manifest":
                 try makeManifest(args: Array(args.dropFirst()))
+            case "gen-guest-sign-key":
+                try genGuestSignKey(args: Array(args.dropFirst()))
+            case "sign-manifest":
+                try signManifest(args: Array(args.dropFirst()))
             case "launch":
                 try await launch(args: Array(args.dropFirst()))
             case "sweep":
@@ -33,6 +38,54 @@ struct DBXPOC {
         }
     }
 
+    private static func genGuestSignKey(args: [String]) throws {
+        guard let outputPath = try optionString("--output-key", in: args) else {
+            throw CLIError.usage("dbx-poc gen-guest-sign-key --output-key <path>")
+        }
+        let pair = ManifestSigner.generateKeypairHex()
+        let output = URL(fileURLWithPath: outputPath).standardizedFileURL
+        try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ("private:\(pair.privateHex)\n").write(to: output, atomically: true, encoding: .utf8)
+        print("public:\(pair.publicHex)")
+        print("wrote key material \(output.path)")
+    }
+
+    private static func signManifest(args: [String]) throws {
+        guard let inputPath = try optionString("--manifest", in: args),
+              let keyPath = try optionString("--key", in: args),
+              let outputPath = try optionString("--output", in: args)
+        else {
+            throw CLIError.usage("dbx-poc sign-manifest --manifest <in> --key <path> --output <out> [--asset-version N]")
+        }
+        var manifest = try loadManifest(at: URL(fileURLWithPath: inputPath))
+        if let version = try optionInt("--asset-version", in: args) {
+            manifest = ManifestFile(
+                kernelURL: manifest.kernelURL, initrdURL: manifest.initrdURL, rootDiskURL: manifest.rootDiskURL,
+                kernelCommandLine: manifest.kernelCommandLine,
+                guestAssetVersion: version,
+                manifestDigest: manifest.manifestDigest,
+                fileDigests: manifest.fileDigests,
+                signature: manifest.signature
+            )
+        }
+        let raw = try String(contentsOf: URL(fileURLWithPath: keyPath), encoding: .utf8)
+        guard let privateHex = raw.components(separatedBy: "private:").last?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            throw CLIError.usage("key file missing private material")
+        }
+        let signature = try ManifestSigner.sign(payload: manifest.asManifest.signingPayload, privateKeyHex: privateHex)
+        let signed = ManifestFile(
+            kernelURL: manifest.kernelURL, initrdURL: manifest.initrdURL, rootDiskURL: manifest.rootDiskURL,
+            kernelCommandLine: manifest.kernelCommandLine,
+            guestAssetVersion: manifest.guestAssetVersion,
+            manifestDigest: manifest.manifestDigest,
+            fileDigests: manifest.fileDigests,
+            signature: signature
+        )
+        let output = URL(fileURLWithPath: outputPath).standardizedFileURL
+        try JSONEncoder.pretty.encode(signed).write(to: output, options: .atomic)
+        print("signed manifest \(output.path) keyID=\(signature.keyID)")
+    }
+
     private static func makeManifest(args: [String]) throws {
         guard let kernelPath = try optionString("--kernel", in: args),
               let rootDiskPath = try optionString("--root-disk", in: args),
@@ -43,6 +96,7 @@ struct DBXPOC {
         let kernel = URL(fileURLWithPath: kernelPath).standardizedFileURL
         let rootDisk = URL(fileURLWithPath: rootDiskPath).standardizedFileURL
         let initrd = try optionString("--initrd", in: args).map { URL(fileURLWithPath: $0).standardizedFileURL }
+        let assetVersion = try optionInt("--asset-version", in: args) ?? 1
         let files = [kernel] + (initrd.map { [$0] } ?? []) + [rootDisk]
         for file in files where !FileManager.default.isReadableFile(atPath: file.path) {
             throw CLIError.usage("asset is not readable: \(file.path)")
@@ -54,15 +108,15 @@ struct DBXPOC {
             initrdURL: initrd,
             rootDiskURL: rootDisk,
             kernelCommandLine: "console=hvc0 root=/dev/vda rw init=/init",
-            guestAssetVersion: 1,
+            guestAssetVersion: assetVersion,
             manifestDigest: "unsigned-local-manifest",
-            fileDigests: digests
+            fileDigests: digests,
+            signature: nil
         )
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder.pretty.encode(manifest).write(to: output, options: .atomic)
-        print("wrote unsigned manifest \(output.path)")
-        print("manifest signing and downgrade protection are still required before release")
+        print("wrote unsigned manifest \(output.path) — sign with `dbx-poc sign-manifest` before launch")
     }
 
     private static func launch(args: [String]) async throws {
@@ -84,13 +138,19 @@ struct DBXPOC {
         let diagnosticOnly = args.contains("--minimal-vz")
         // M1-2: the encrypted record channel is on by default. `--allow-plaintext`
         // is an explicit downgrade switch kept for guest-side debugging only.
+        // M1-5: `--allow-unsigned-manifest` is the manifest-side twin of that flag.
         let plaintextAllowed = args.contains("--allow-plaintext")
+        let unsignedAllowed = args.contains("--allow-unsigned-manifest")
+        if unsignedAllowed {
+            fputs("dbx-poc: warning: unsigned manifest allowed (development only)\n", stderr)
+        }
         let runtime = try VZRuntime(
             cowRoot: cowRoot,
             audit: audit,
             enableConsole: !diagnosticOnly,
             enableControlSocket: !diagnosticOnly,
-            securityPolicy: plaintextAllowed ? ControlSecurityPolicy() : .strict
+            securityPolicy: plaintextAllowed ? ControlSecurityPolicy() : .strict,
+            allowUnsignedManifest: unsignedAllowed
         )
         do {
             let sweep = try runtime.sweepOrphans()
@@ -247,9 +307,11 @@ struct DBXPOC {
 
     private static func printUsage() {
         print("dbx-poc capcheck")
-        print("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] --output <manifest.json>")
-        print("dbx-poc validate-assets <manifest.json>")
-        print("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz]")
+        print("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] [--asset-version N] --output <manifest.json>")
+        print("dbx-poc gen-guest-sign-key --output-key <path>")
+        print("dbx-poc sign-manifest --manifest <in> --key <path> --output <out> [--asset-version N]")
+        print("dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest]")
+        print("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz] [--allow-plaintext] [--allow-unsigned-manifest]")
         print("dbx-poc sweep [--cow-root <directory>]")
         print("launch is foreground; EOF stops and destroys the VM")
     }
@@ -274,11 +336,13 @@ private struct ManifestFile: Codable {
     let guestAssetVersion: Int
     let manifestDigest: String
     var fileDigests: [String: String]
+    var signature: ManifestSignature?
 
     var asManifest: GuestAssetManifest {
         GuestAssetManifest(kernelURL: kernelURL, initrdURL: initrdURL, rootDiskURL: rootDiskURL,
                            kernelCommandLine: kernelCommandLine, guestAssetVersion: guestAssetVersion,
-                           manifestDigest: manifestDigest, fileDigests: fileDigests)
+                           manifestDigest: manifestDigest, fileDigests: fileDigests,
+                           signature: signature)
     }
 
     mutating func resolveRelativeURLs(from base: URL) {

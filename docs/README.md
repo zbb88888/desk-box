@@ -18,6 +18,7 @@
 - [控制通道与启动完整性](design/control-channel-security.md)：定义宿主/来宾身份绑定、握手、重放防护、版本和 snapshot 规则。
 - [M1-2 控制通道 TLS 1.3 双向认证升级](design/m1-tls-channel-upgrade.md)：控制通道加密升级计划（ephemeral 密钥协商、session 绑定、libsodium guest、默认开启加密、fail-closed）。
 - [M1-4 Guest PTY 支撑](design/m1-4-pty-support.md)：交互式 Agent 场景所需的 pseudo-TTY 分配、流式 I/O、resize 与关闭的设计与实现参考。
+- [M1-5 Guest Manifest 签名与防降级](design/m1-5-manifest-signing.md)：Ed25519 信任根、canonical payload、显式允许列表与 `guestAssetVersion` 单调最低版本（fail-closed）。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。

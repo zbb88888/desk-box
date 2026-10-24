@@ -26,6 +26,8 @@ public struct GuestAssetManifest: Sendable, Equatable, Codable {
     public let manifestDigest: String
     /// 文件绝对路径 -> sha256 hex；kernel/initrd/rootDisk 必须在内。
     public let fileDigests: [String: String]
+    /// 可信签名（M1-5）；发布面必须存在且可被宿主编译内嵌允许列表验证。
+    public let signature: ManifestSignature?
 
     public init(
         kernelURL: URL,
@@ -34,7 +36,8 @@ public struct GuestAssetManifest: Sendable, Equatable, Codable {
         kernelCommandLine: String,
         guestAssetVersion: Int,
         manifestDigest: String,
-        fileDigests: [String: String]
+        fileDigests: [String: String],
+        signature: ManifestSignature? = nil
     ) {
         self.kernelURL = kernelURL
         self.initrdURL = initrdURL
@@ -43,6 +46,7 @@ public struct GuestAssetManifest: Sendable, Equatable, Codable {
         self.guestAssetVersion = guestAssetVersion
         self.manifestDigest = manifestDigest
         self.fileDigests = fileDigests
+        self.signature = signature
     }
 }
 

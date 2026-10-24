@@ -26,7 +26,7 @@
 | INV-06 | OCI metadata 不能扩权 | OCI Service、WorkloadSpec Compiler、Guest Policy | 恶意 config/layer、privileged/device/mount/capability/BPF 拒绝、setuid/whiteout/路径与链接滥用、解压炸弹 | Parser fuzz、BPF 越权测试与拒绝审计 | OCI 负责人 | 未实现 |
 | INV-07 | 控制通道绑定具体 VM 身份 | Controller、`execd`、VZ Socket/HVSock Adapter | 串线、证书篡改、旧 nonce/token/snapshot、版本降级 | 协议测试和独立密码学评审 | 控制通道负责人 | **M1-2 已验证（macOS VZ）**——Hello/Ack boot 绑定 + X25519 ephemeral + HKDF-SHA256 + ChaChaPoly AEAD 加密 record channel；`bootstrap=tlsAuthenticated` → `running`；旧 boot 材料无法产生合法 `sessionID`；`--allow-plaintext` 仅在显式开发模式下。 |
 | INV-08 | 资源和生命周期由宿主强制 | Controller、Platform Adapter、guest cgroup | CPU/内存/磁盘/PID/日志耗尽、卡死关机、崩溃恢复 | 压力测试与孤儿资源清单 | Runtime 负责人 | **M1-3/M1-4 已验证（macOS）**——exec/PTY child 均为 nobody 65534 + rlimit 上限 + no_new_privs + env-cwd 白名单 + timeout kill 上线进程组；PTY child 的真实 stdin/输出通过加密 record channel 流式回传；HOST/VZ cgroup/CPU 时间配额仍是 M2 上游贡献。 |
-| INV-09 | 构建域与运行域隔离 | Builder Service、Artifact Import | Build secret canary、cache 跨构建、runtime 磁盘读取、产物篡改 | Builder 销毁和 artifact provenance | 构建供应链负责人 | 未实现 |
+| INV-09 | 构建域与运行域隔离 | Builder Service、Artifact Import | Build secret canary、cache 跨构建、runtime 磁盘读取、产物篡改 | Builder 销毁和 artifact provenance | 构建供应链负责人 | **M1-5 部分已验证（macOS）**——manifest 信任根已落地：Ed25519 签名 canonical payload、`keyID` 限定信任少数、防降级（`guestAssetVersion < minimum` 透过 `ManifestSignerError.downgradeRejected`）、默认拒绝未签名 manifest（`--allow-unsigned-manifest` 与 `--allow-plaintext` 同级别的显式开发降级）；本地 dev key 由 `guest/dev-sign-key.local`（gitignored）派生并汇编进 policy。上游构建 secret canary / 构建器产物共享体系（SBOM、发布签名链）仍是 M2。 |
 | INV-10 | 更新、持久化和销毁不复活权限 | Updater、Snapshot、Controller | 签名失败、降级、旧 snapshot、撤销后恢复、清理失败 | 更新/回滚/销毁故障注入报告 | 发布安全负责人 | 未实现 |
 
 ## 3. 跨组件发布套件

@@ -18,8 +18,19 @@ public enum GuestAssetValidator {
 
     public static func validate(
         _ manifest: GuestAssetManifest,
-        minimumAssetVersion: Int = 1
+        minimumAssetVersion: Int = 1,
+        signingPolicy: GuestSigningPolicy? = GuestSigningPolicy.current,
+        allowUnsignedManifest: Bool = false
     ) throws -> ValidatedManifest {
+        if let policy = signingPolicy {
+            do {
+                try ManifestSigner.verify(manifest: manifest,
+                                          policy: policy,
+                                          allowUnsignedManifest: allowUnsignedManifest)
+            } catch let error as ManifestSignerError {
+                throw SandboxFailure(.platformAssetDigestMismatch, error.description)
+            }
+        }
         guard manifest.guestAssetVersion >= minimumAssetVersion else {
             throw SandboxFailure(.platformAssetDigestMismatch, "guest asset 版本低于安全最低版本")
         }

@@ -61,13 +61,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private let enableConsole: Bool
     private let enableControlSocket: Bool
     private let securityPolicy: ControlSecurityPolicy
+    private let allowUnsignedManifest: Bool
 
     public init(
         cowRoot: URL,
         audit: AuditSink? = nil,
         enableConsole: Bool = true,
         enableControlSocket: Bool = true,
-        securityPolicy: ControlSecurityPolicy = .strict
+        securityPolicy: ControlSecurityPolicy = .strict,
+        allowUnsignedManifest: Bool = false
     ) throws {
         self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
         self.queue.setSpecific(key: queueKey, value: 1)
@@ -77,6 +79,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         self.enableConsole = enableConsole
         self.enableControlSocket = enableControlSocket
         self.securityPolicy = securityPolicy
+        self.allowUnsignedManifest = allowUnsignedManifest
     }
 
     /// Recover orphan resources left by SIGKILL/host crash before accepting
@@ -103,7 +106,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw SandboxFailure(.lifecycleInvalidTransition, "sandbox 已存在：\(request.sandboxID)")
             }
 
-            _ = try GuestAssetValidator.validate(request.guestAssets)
+            _ = try GuestAssetValidator.validate(request.guestAssets,
+                                                 allowUnsignedManifest: self.allowUnsignedManifest)
             let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL, sandboxID: request.sandboxID)
             let boot = BootContext(
                 sandboxID: request.sandboxID,
