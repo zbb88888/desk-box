@@ -12,12 +12,17 @@ static uint32_t be32(uint32_t x) { return __builtin_bswap32(x); }
 static uint64_t be64(uint64_t x) { return __builtin_bswap64(x); }
 
 static const char *arg(const char *cmd, const char *key) {
-    static char value[256];
+    // Each caller keeps its own static slot; a single shared value buffer makes
+    // later parameters overwrite earlier identity fields.
+    enum { SLOT_COUNT = 8, SLOT_SIZE = 256 };
+    static char slots[SLOT_COUNT][SLOT_SIZE];
+    static int next_slot;
+    char *value = slots[next_slot++ % SLOT_COUNT];
     const char *p = strstr(cmd, key);
     if (!p) return NULL;
     p += strlen(key);
     size_t n = strcspn(p, " \n\r\t");
-    if (n >= sizeof(value)) return NULL;
+    if (n >= SLOT_SIZE) return NULL;
     memcpy(value, p, n); value[n] = 0;
     return value;
 }
