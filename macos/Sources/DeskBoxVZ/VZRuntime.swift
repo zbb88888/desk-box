@@ -54,6 +54,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private var records: [SandboxID: Record] = [:]
     private let audit: AuditSink?
     private let cow: CowDiskManager
+    private let registry: SandboxRegistry
     private let enableConsole: Bool
     private let enableControlSocket: Bool
 
@@ -66,9 +67,19 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
         self.queue.setSpecific(key: queueKey, value: 1)
         self.cow = try CowDiskManager(root: cowRoot)
+        self.registry = try SandboxRegistry(root: cowRoot)
         self.audit = audit
         self.enableConsole = enableConsole
         self.enableControlSocket = enableControlSocket
+    }
+
+    /// Recover orphan resources left by SIGKILL/host crash before accepting
+    /// new work. Fail-closed: a malformed registry stops startup.
+    public func sweepOrphans() throws -> RegistrySweepReport {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return try registry.sweep()
+        }
+        return try queue.sync { try registry.sweep() }
     }
 
     public func create(_ request: SandboxCreateRequest) async throws -> SandboxHandle {
@@ -127,6 +138,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             record.delegate = delegate
             machine.delegate = delegate
             self.records[request.sandboxID] = record
+            try self.registry.upsert(RegisteredSandbox(
+                sandboxID: request.sandboxID,
+                bootID: boot.bootID,
+                status: .created,
+                clonePath: cowLease.cloneURL.standardizedFileURL.path,
+                hostPID: ProcessInfo.processInfo.processIdentifier
+            ))
             if self.enableControlSocket {
                 do {
                     try self.installControlListener(record)
@@ -151,6 +169,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             do {
                 try await self.startMachine(record.machine)
                 record.started = true
+                try self.registry.upsert(RegisteredSandbox(
+                    sandboxID: record.request.sandboxID,
+                    bootID: record.boot.bootID,
+                    status: .running,
+                    clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
+                    hostPID: ProcessInfo.processInfo.processIdentifier
+                ))
                 self.recordAudit(record, action: .start, decision: .allow())
                 return record.boot
             } catch {
@@ -202,6 +227,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             record.started = false
             self.closeSocketOnQueue(record)
             record.controlSocket = nil
+            try self.registry.upsert(RegisteredSandbox(
+                sandboxID: record.request.sandboxID,
+                bootID: record.boot.bootID,
+                status: .stopped,
+                clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
+                hostPID: ProcessInfo.processInfo.processIdentifier
+            ))
             self.recordAudit(record, action: .stop, decision: .allow())
         }
     }
@@ -239,6 +271,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             self.recordAudit(record, action: .destroy, decision: .allow())
             self.records.removeValue(forKey: handle.sandboxID)
+            try self.registry.markDestroyed(sandboxID: handle.sandboxID)
         }
     }
 

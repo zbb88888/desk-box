@@ -50,4 +50,54 @@ final class CowDiskManagerTests: XCTestCase {
             throw XCTSkip("temporary volume does not support APFS clonefile: \(error)")
         }
     }
+
+    func testRegistrySweepRemovesOnlyDeadProcessEntries() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deskbox-reg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = try SandboxRegistry(root: root)
+        let orphanClone = root.appendingPathComponent("orphan.vhd")
+        try Data("clone".utf8).write(to: orphanClone)
+        let liveClone = root.appendingPathComponent("live.vhd")
+        try Data("live".utf8).write(to: liveClone)
+
+        try registry.upsert(RegisteredSandbox(
+            sandboxID: .new(), bootID: .new(), status: .running,
+            clonePath: orphanClone.path, hostPID: Int32(999_999_999)))
+        try registry.upsert(RegisteredSandbox(
+            sandboxID: .new(), bootID: .new(), status: .running,
+            clonePath: liveClone.path,
+            hostPID: ProcessInfo.processInfo.processIdentifier))
+
+        let report = try registry.sweep()
+        XCTAssertEqual(report.orphanedSandboxes.count, 1)
+        XCTAssertEqual(report.removedCloneFiles, [orphanClone.path])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanClone.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: liveClone.path))
+        XCTAssertEqual(try registry.load().count, 1)
+    }
+
+    func testRegistryRefusesClonesOutsideCowRoot() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deskbox-reg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outside-\(UUID().uuidString).vhd")
+        try Data("outside".utf8).write(to: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let registry = try SandboxRegistry(root: root)
+        try registry.upsert(RegisteredSandbox(
+            sandboxID: .new(), bootID: .new(), status: .running,
+            clonePath: outside.path, hostPID: Int32(999_999_999)))
+
+        let report = try registry.sweep()
+        XCTAssertEqual(report.removedCloneFiles, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+        XCTAssertEqual(try registry.load().count, 1)
+    }
 }

@@ -20,6 +20,8 @@ struct DBXPOC {
                 try makeManifest(args: Array(args.dropFirst()))
             case "launch":
                 try await launch(args: Array(args.dropFirst()))
+            case "sweep":
+                try sweep(args: Array(args.dropFirst()))
             case "help", "-h", "--help":
                 printUsage()
             default:
@@ -86,6 +88,16 @@ struct DBXPOC {
             enableConsole: !diagnosticOnly,
             enableControlSocket: !diagnosticOnly
         )
+        do {
+            let sweep = try runtime.sweepOrphans()
+            if !sweep.isEmpty {
+                fputs("dbx-poc: swept orphaned sandboxes=\(sweep.orphanedSandboxes.count) removedClones=\(sweep.removedCloneFiles.count)\n", stderr)
+                fflush(stderr)
+            }
+        } catch {
+            fputs("dbx-poc: orphan sweep refused unsafe registry: \(error)\n", stderr)
+            Foundation.exit(2)
+        }
         let sandboxID = SandboxID.new()
         let workload = WorkloadSpec(
             entrypoint: ["/bin/sh"], args: [],
@@ -197,11 +209,24 @@ struct DBXPOC {
         return int
     }
 
+    private static func sweep(args: [String]) throws {
+        let cowRoot = try optionURL("--cow-root", in: args)
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("DeskBox/cows", isDirectory: true)
+        let registry = try SandboxRegistry(root: cowRoot)
+        let report = try registry.sweep()
+        print(String(decoding: try JSONEncoder.pretty.encode([
+            "orphanedSandboxes": report.orphanedSandboxes.map(\.raw),
+            "removedCloneFiles": report.removedCloneFiles
+        ]), as: UTF8.self))
+    }
+
     private static func printUsage() {
         print("dbx-poc capcheck")
         print("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] --output <manifest.json>")
         print("dbx-poc validate-assets <manifest.json>")
         print("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz]")
+        print("dbx-poc sweep [--cow-root <directory>]")
         print("launch is foreground; EOF stops and destroys the VM")
     }
 }
