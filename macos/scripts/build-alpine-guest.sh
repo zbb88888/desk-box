@@ -72,7 +72,9 @@ mkdir -p /run /workspace
 printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
 # Keep the diagnostic guest alive for the launch POC. Production will replace
 # this shell with the authenticated execd supervisor.
-exec /bin/sh
+while true; do
+  /bin/busybox sleep 3600
+done -l < /dev/console > /dev/console 2>&1
 EOF
     chmod 0755 /tmp/rootfs/sbin/init
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw

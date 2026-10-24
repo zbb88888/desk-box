@@ -23,7 +23,7 @@ static const char *arg(const char *cmd, const char *key) {
 }
 
 int main(void) {
-    const char *diag = "Desk Box bootstrap: starting\\n";
+    const char *diag = "Desk Box bootstrap: starting\n";
     write(STDOUT_FILENO, diag, strlen(diag));
     fsync(STDOUT_FILENO);
     char cmd[4096] = {0};
@@ -36,7 +36,7 @@ int main(void) {
     const char *manifest = arg(cmd, "dbx.manifest=");
     const char *port_s = arg(cmd, "dbx.port=");
     if (!sandbox || !boot || !nonce || !manifest) {
-        const char *msg = "Desk Box bootstrap: missing cmdline identity\\n";
+        const char *msg = "Desk Box bootstrap: missing cmdline identity\n";
         write(STDOUT_FILENO, msg, strlen(msg));
         fsync(STDOUT_FILENO);
         return 3;
@@ -50,7 +50,7 @@ int main(void) {
 
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (fd < 0) {
-        char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: socket errno=%d\\n", errno);
+        char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: socket errno=%d\n", errno);
         write(STDOUT_FILENO, msg, (size_t)n); fsync(STDOUT_FILENO); return 5;
     }
     struct sockaddr_vm address = {0};
@@ -60,7 +60,7 @@ int main(void) {
     for (int attempt = 0; attempt < 30; attempt++) {
         if (connect(fd, (struct sockaddr *)&address, sizeof(address)) == 0) break;
         if (attempt == 29) {
-            char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: connect errno=%d\\n", errno);
+            char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: connect errno=%d\n", errno);
             write(STDOUT_FILENO, msg, (size_t)n); fsync(STDOUT_FILENO); close(fd); return 6;
         }
         sleep(1);
@@ -77,7 +77,7 @@ int main(void) {
     size_t sent = 0;
     while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) { close(fd); return 7; } sent += (size_t)n; }
     uint8_t response[4096]; (void)read(fd, response, sizeof(response));
-    const char *done = "Desk Box bootstrap: hello sent\\n";
+    const char *done = "Desk Box bootstrap: hello sent\n";
     write(STDOUT_FILENO, done, strlen(done));
     fsync(STDOUT_FILENO);
     close(fd);
