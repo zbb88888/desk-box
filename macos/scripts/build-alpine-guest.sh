@@ -200,8 +200,8 @@ cat > "$OUT_DIR/sbom.json" <<EOSBOM
     {"name":"debian/linux-arm64-kernel","url":"$KERNEL_URL","file":"vmlinuz-virt","sha256":"$KERNEL_SHA256"},
     {"name":"debian/initrd.gz","url":"$DEBIAN_INITRD_URL","file":"debian-initrd.gz","sha256":"$DEBIAN_INITRD_SHA256"},
     {"name":"alpine/minirootfs-$ALPINE_VERSION","url":"$MINIROOT_URL"},
-    {"name":"scripts/guest-bootstrap.c","path":"scripts/guest-bootstrap.c","sha256":"$GUEST_SRC_SHA"},
-    {"name":"scripts/brokerreq.c","path":"scripts/brokerreq.c","sha256":"$BROKERREQ_SRC_SHA"},
+    {"name":"scripts/guest-bootstrap.c","path":"scripts/guest-bootstrap.c","file":"guest-bootstrap.c","sha256":"$GUEST_SRC_SHA"},
+    {"name":"scripts/brokerreq.c","path":"scripts/brokerreq.c","file":"brokerreq.c","sha256":"$BROKERREQ_SRC_SHA"},
     {"name":"scripts/build-alpine-guest.sh","path":"scripts/build-alpine-guest.sh","sha256":"$BUILD_SCRIPT_SHA"}
   ],
   "outputs": [
