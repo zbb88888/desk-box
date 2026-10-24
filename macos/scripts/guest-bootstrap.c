@@ -104,18 +104,16 @@ int main(void) {
         ssize_t got = read(fd, incoming, sizeof(incoming));
         if (got <= 0) break;
         if (got < 36) continue;
-        uint16_t kind; memcpy(&kind, incoming + 6, 2);
+            uint16_t kind; memcpy(&kind, incoming + 6, 2);
+        kind = be16(kind);
         uint32_t paylen_be; memcpy(&paylen_be, incoming + 32, 4);
         size_t paylen = be32(paylen_be);
-        if (kind != be16(4) || paylen + 36 > sizeof(incoming)) continue;
-        const char *argv0 = "/bin/echo";
-        if (strstr((char *)(incoming + 36), "\"/bin/sh\"")) argv0 = "/bin/sh";
+        if (kind != 4 || paylen + 36 > sizeof(incoming)) continue;
         char output[128];
-        snprintf(output, sizeof(output), "Desk Box guest exec stub response\n");
+        snprintf(output, sizeof(output), "Desk Box guest exec stub response\\n");
         char rjson[512];
         int rlen = snprintf(rjson, sizeof(rjson), "{\"exitCode\":0,\"stdout\":\"%s\",\"stderr\":\"\"}", output);
         if (rlen > 0 && (size_t)rlen < sizeof(rjson)) (void)send_frame(fd, 5, 2, rjson, (size_t)rlen);
-        (void)argv0;
     }
     close(fd);
     return 0;
