@@ -23,6 +23,8 @@ static const char *arg(const char *cmd, const char *key) {
 }
 
 int main(void) {
+    const char *diag = "Desk Box bootstrap: starting\\n";
+    write(STDOUT_FILENO, diag, strlen(diag));
     char cmd[4096] = {0};
     FILE *f = fopen("/proc/cmdline", "r");
     if (!f || !fgets(cmd, sizeof(cmd), f)) return 2;
@@ -32,7 +34,11 @@ int main(void) {
     const char *nonce = arg(cmd, "dbx.nonce=");
     const char *manifest = arg(cmd, "dbx.manifest=");
     const char *port_s = arg(cmd, "dbx.port=");
-    if (!sandbox || !boot || !nonce || !manifest) return 3;
+    if (!sandbox || !boot || !nonce || !manifest) {
+        const char *msg = "Desk Box bootstrap: missing cmdline identity\\n";
+        write(STDOUT_FILENO, msg, strlen(msg));
+        return 3;
+    }
     int port = port_s ? atoi(port_s) : 1024;
     char json[2048];
     int len = snprintf(json, sizeof(json),
@@ -41,14 +47,20 @@ int main(void) {
     if (len <= 0 || (size_t)len >= sizeof(json)) return 4;
 
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
-    if (fd < 0) return 5;
+    if (fd < 0) {
+        char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: socket errno=%d\\n", errno);
+        write(STDOUT_FILENO, msg, (size_t)n); return 5;
+    }
     struct sockaddr_vm address = {0};
     address.svm_family = AF_VSOCK;
     address.svm_cid = VMADDR_CID_HOST;
     address.svm_port = (unsigned int)port;
     for (int attempt = 0; attempt < 30; attempt++) {
         if (connect(fd, (struct sockaddr *)&address, sizeof(address)) == 0) break;
-        if (attempt == 29) { close(fd); return 6; }
+        if (attempt == 29) {
+            char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: connect errno=%d\\n", errno);
+            write(STDOUT_FILENO, msg, (size_t)n); close(fd); return 6;
+        }
         sleep(1);
     }
     uint8_t frame[4096] = {0};
@@ -61,6 +73,8 @@ int main(void) {
     size_t sent = 0;
     while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) { close(fd); return 7; } sent += (size_t)n; }
     uint8_t response[4096]; (void)read(fd, response, sizeof(response));
+    const char *done = "Desk Box bootstrap: hello sent\\n";
+    write(STDOUT_FILENO, done, strlen(done));
     close(fd);
     return 0;
 }

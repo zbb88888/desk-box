@@ -11,6 +11,12 @@ final class RuntimeContractTests: XCTestCase {
         ])
     }
 
+    func testBootstrapStateDoesNotImplyRunning() {
+        XCTAssertNotEqual(BootstrapState.notConnected.rawValue, "running")
+        XCTAssertNotEqual(BootstrapState.helloAcceptedTLSRequired.rawValue, "running")
+        XCTAssertNotEqual(BootstrapState.authenticated.rawValue, "running")
+    }
+
     func testTerminalStateIsOnlyStopped() {
         XCTAssertTrue(SandboxState.stopped.isTerminal)
         XCTAssertFalse(SandboxState.failed.isTerminal)
