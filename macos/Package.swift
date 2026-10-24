@@ -23,5 +23,6 @@ let package = Package(
         ),
         .testTarget(name: "DeskBoxCoreTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),
         .testTarget(name: "ConformanceTests", dependencies: ["DeskBoxCore"]),
+        .testTarget(name: "FuzzTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),
     ]
 )
