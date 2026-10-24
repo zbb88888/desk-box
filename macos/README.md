@@ -86,7 +86,7 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 - guest manifest 未签名，供应链与降级保护未完成；
 - SIGKILL、宿主崩溃与系统重启的孤儿资源回收未实现。
 
-后续 M1+ 工作：guest `execd`（fork/exec、stdin/stdout/stderr、exit code、资源限额）、PTY、多密码 CM 测试、孤儿资源回收、X.509 证书与 TLS 1.3 兼容握手硬化。
+后续 M1+ 工作（部分已完成）：guest `execd`（M1-3：非 root nobody 65534 + rlimit 内存/CPU/进程/FD/文件上限 + `no_new_privs` + 环境/cwd 白名单 + exec 失败即 `-2`/`-1` fail-closed 语义，cgroup v2 二级 σ 硬保障属于 M1-4），PTY、多密码 CM 测试、X.509 证书与 TLS 1.3 兼容握手硬化。
 
 ## 验收门槛
 

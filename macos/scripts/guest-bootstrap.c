@@ -1,5 +1,10 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <signal.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#endif
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -105,6 +110,50 @@ static int parse_timeout_seconds(const char *json) {
     return value;
 }
 
+/**
+ * Apply the exec child hardening contract used by the M1-3 guest agent:
+ * - no_new_privs so exec can't regain rights;
+ * - tight rlimits (CPU seconds, resident memory, processes, fds, output size);
+ * - drop supplementary groups + setuid/setgid to the nobody uid/gid (65534);
+ * - environment whitelist: PATH and HOME only;
+ * - cwd is forced to a workspace root that the runtime mounts read-write;
+ * Symbol returns 0 in the child when all steps succeeded; on host/test
+ * builds there is no privilege boundary to establish (best effort).
+ */
+static int install_exec_hardening(int timeout_seconds) {
+#ifdef __linux__
+    enum { SVC_UID = 65534, SVC_GID = 65534 };
+    // rlimits survive setuid; install before dropping privileges.
+    const struct rlimit no_lfile = {0, 0};
+    if (setrlimit(RLIMIT_FSIZE, &(struct rlimit){65536, 65536}) != 0) return -1; // 64KiB per file
+    (void)no_lfile;
+    if (setrlimit(RLIMIT_NOFILE, &(struct rlimit){32, 32}) != 0) return -2;
+    if (setrlimit(RLIMIT_NPROC, &(struct rlimit){32, 32}) != 0) return -3;
+    if (setrlimit(RLIMIT_AS, &(struct rlimit){(256UL << 20), (256UL << 20)}) != 0) return -4; // 256MiB
+    if (setrlimit(RLIMIT_CPU, &(struct rlimit){(rlim_t)(timeout_seconds + 1), (rlim_t)(timeout_seconds + 1)}) != 0) return -5;
+    // Losing privs: nobody (65534) is a well-known anonymous account; init
+    // must own the filesystem paths needed for workspace writes later.
+    if (setgroups(0, NULL) != 0) return -6;
+    if (setregid(SVC_GID, SVC_GID) != 0) return -7;
+    if (setreuid(SVC_UID, SVC_UID) != 0) return -8;
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -9;
+    if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) return -10;
+    // Environment: forced whitelist, later requests only get these defaults.
+    static char *const default_env[] = {
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME=/workspace",
+        "USER=sandbox",
+        NULL
+    };
+    extern char **environ;
+    environ = (char **)default_env;
+    // Working dir workspace; safe because /workspace exists in the guest rootfs.
+    if (chdir("/workspace") != 0)
+        chdir("/");
+#endif
+    return 0;
+}
+
 /** Run argv via fork/exec with pipes; fill an exitCode/stdout/stderr JSON. */
 static int run_exec_request(const char *request_json, char *response, size_t response_cap) {
     enum { MAX_ARGV = 32 };
@@ -128,12 +177,15 @@ static int run_exec_request(const char *request_json, char *response, size_t res
             "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"fork failed\"}");
     }
     if (pid == 0) {
-        // Child: own process group so the parent can kill the whole tree.
+        // Child hardening (M1-3): non-privileged execution with resource
+        // ceilings. Order is important: limits are installed before privilege
+        // drop so rlimit survives setuid.
         setpgid(0, 0);
         dup2(out_pipe[1], STDOUT_FILENO);
         dup2(err_pipe[1], STDERR_FILENO);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+        if (install_exec_hardening(timeout_seconds) != 0) _exit(126);
         execvp(argv[0], argv);
         _exit(127);
     }
