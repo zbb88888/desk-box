@@ -216,6 +216,42 @@ struct DBXPOC {
                         ["/bin/echo", "deskbox-mvp-first"],
                         ["/bin/echo", "deskbox-mvp-second"]
                     ]
+                    // M2-1: workspace 快照推送（可选）；失败 fail-closed 进入 destroy。
+                    if let workspacePath = try optionString("--workspace", in: args) {
+                        do {
+                            let snapshot = try WorkspaceSyncService.buildSnapshot(root: URL(fileURLWithPath: workspacePath))
+                            let ack = try await runtime.pushWorkspace(handle, snapshot: snapshot)
+                            print("ws-sync ok wsId=\(ack.wsId) files=\(snapshot.files.count) bytes=\(snapshot.totalBytes)")
+                            fflush(stdout)
+                            // Guest-side digest verification: sha256sum every synced file and
+                            // compare against the host snapshot manifest.
+                            let paths = snapshot.files.map { "/workspace/\($0.relativePath)" }
+                            let digestProbe = try await runtime.ptyRoundTrip(
+                                handle,
+                                argv: ["/bin/sh", "-c", "busybox sha256sum \(paths.joined(separator: " "))"],
+                                inputHex: nil, timeoutSeconds: 10)
+                            // PTY 输出可能带 CR/CRLF；转为统一行后抽取 64-hex 摘要集合。
+                            let normalized = digestProbe.stdoutText
+                                .replacingOccurrences(of: "\r\n", with: "\n")
+                                .replacingOccurrences(of: "\r", with: "\n")
+                            let tokenLines: [String] = normalized.split(separator: "\n").map(String.init)
+                            let tokens: [String] = tokenLines.flatMap { $0.split(separator: " ", omittingEmptySubsequences: true).map(String.init) }
+                            let guestHashes = Set(tokens.filter { $0.count == 64 && $0.allSatisfy({ "0123456789abcdef".contains($0) }) })
+                            var mismatches: [String] = []
+                            for file in snapshot.files where !guestHashes.contains(file.sha256Hex) {
+                                mismatches.append(file.relativePath)
+                            }
+                            if mismatches.isEmpty {
+                                print("ws-verify ok files=\(snapshot.files.count) (guest sha256 matches snapshot)")
+                            } else {
+                                print("ws-verify FAILED \(mismatches.joined(separator: ","))")
+                            }
+                            fflush(stdout)
+                        } catch {
+                            fputs("dbx-poc: workspace sync failed: \(error)\n", stderr)
+                            fflush(stderr)
+                        }
+                    }
                     // M1-4 mainstream PTY demo path: real shell inside a real
                     // controlling terminal, output streamed back through the
                     // encrypted record channel.

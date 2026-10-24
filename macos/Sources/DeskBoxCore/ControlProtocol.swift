@@ -69,6 +69,59 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     case ptyClose = 12
     /// Guest -> host: PTY lifecycle/output event (opened/output/exit).
     case ptyEvent = 13
+    /// Host -> guest: workspace sync session start (M2-1).
+    case wsBegin = 14
+    /// Host -> guest: workspace file chunk (≤512 bytes hex-encoded).
+    case wsPut = 15
+    /// Host -> guest: workspace sync session commit.
+    case wsEnd = 16
+    /// Guest -> host: workspace sync result (success or fail-closed reason).
+    case wsAck = 17
+}
+
+// MARK: - Workspace Sync messages (M2-1)
+
+public struct WsBeginRequest: Sendable, Codable, Equatable {
+    public let wsId: String
+    public let fileCount: Int
+    public let totalBytes: UInt64
+
+    public init(wsId: String, fileCount: Int, totalBytes: UInt64) {
+        self.wsId = wsId
+        self.fileCount = fileCount
+        self.totalBytes = totalBytes
+    }
+}
+
+public struct WsPutRequest: Sendable, Codable, Equatable {
+    public let path: String   // relative to workspace root; no leading '/', no '..'
+    public let offset: UInt64
+    public let mode: UInt32
+    public let dataHex: String
+
+    public init(path: String, offset: UInt64, mode: UInt32, dataHex: String) {
+        self.path = path
+        self.offset = offset
+        self.mode = mode
+        self.dataHex = dataHex
+    }
+}
+
+public struct WsEndRequest: Sendable, Codable, Equatable {
+    public let wsId: String
+    public init(wsId: String) { self.wsId = wsId }
+}
+
+public struct WsAckEvent: Sendable, Codable, Equatable {
+    public let wsId: String
+    public let ok: Bool
+    public let error: String?
+
+    public init(wsId: String, ok: Bool, error: String? = nil) {
+        self.wsId = wsId
+        self.ok = ok
+        self.error = error
+    }
 }
 
 public struct ControlRequest: Sendable, Codable, Equatable {

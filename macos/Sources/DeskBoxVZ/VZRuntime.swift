@@ -26,6 +26,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var pendingExecRequestID: UUID?
         var pendingPtyOpenID: UUID?
         var ptyEvents: [PtyEvent] = []
+        var wsAcks: [WsAckEvent] = []
         var bootstrapState: BootstrapState = .notConnected
         var requestSequence: UInt64 = 1
 
@@ -451,6 +452,80 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         return PtySessionResult(exitCode: exitCode, signal: signal, output: output)
     }
 
+    /// Push an authorized workspace snapshot over the encrypted control
+    /// channel and wait for the guest ack (M2-1, fail-closed).
+    @discardableResult
+    public func pushWorkspace(
+        _ handle: SandboxHandle,
+        snapshot: WorkspaceSnapshot,
+        timeoutSeconds: Int = 120
+    ) async throws -> WsAckEvent {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running, record.controlSocket != nil else {
+                throw SandboxFailure(.bootstrapProofMissing, "workspace sync requires running session")
+            }
+            let payload = try JSONEncoder().encode(WsBeginRequest(wsId: snapshot.wsId,
+                                                                  fileCount: snapshot.files.count,
+                                                                  totalBytes: snapshot.totalBytes))
+            let frame = try ControlFrame(kind: .wsBegin, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+        for file in snapshot.files {
+            let full = snapshot.rootURL.appendingPathComponent(file.relativePath)
+            let data = try Data(contentsOf: full)
+            var offset: UInt64 = 0
+            if data.isEmpty {
+                let payload = try JSONEncoder().encode(WsPutRequest(path: file.relativePath, offset: 0, mode: file.mode, dataHex: ""))
+                try await onQueue {
+                    let record = try self.require(handle)
+                    let frame = try ControlFrame(kind: .wsPut, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+                    try self.sendFrameOnQueue(record, frame: frame)
+                }
+            } else {
+                let chunkSize = 512
+                while offset < UInt64(data.count) {
+                    let end = min(offset + UInt64(chunkSize), UInt64(data.count))
+                    let slice = data[Int(offset)..<Int(end)]
+                    let payload = try JSONEncoder().encode(WsPutRequest(path: file.relativePath,
+                                                                        offset: offset,
+                                                                        mode: file.mode,
+                                                                        dataHex: HexCoder.encode(Data(slice))))
+                    try await onQueue {
+                        let record = try self.require(handle)
+                        let frame = try ControlFrame(kind: .wsPut, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+                        try self.sendFrameOnQueue(record, frame: frame)
+                    }
+                    offset = end
+                }
+            }
+        }
+        try await onQueue {
+            let record = try self.require(handle)
+            let payload = try JSONEncoder().encode(WsEndRequest(wsId: snapshot.wsId))
+            let frame = try ControlFrame(kind: .wsEnd, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+        while true {
+            let ack = try await onQueue { () -> WsAckEvent? in
+                let record = try self.require(handle)
+                guard let index = record.wsAcks.firstIndex(where: { $0.wsId == snapshot.wsId }) else { return nil }
+                let event = record.wsAcks[index]
+                record.wsAcks.remove(at: index)
+                return event
+            }
+            if let ack {
+                guard ack.ok else {
+                    throw SandboxFailure(.platformAssetDigestMismatch, "workspace sync rejected by guest: \(ack.error ?? "unknown")")
+                }
+                return ack
+            }
+            if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "workspace sync timeout") }
+            try await Task.sleep(for: .milliseconds(40))
+        }
+    }
+
     /// Diagnostic-only serial input. It is intentionally not part of the
     /// trusted control plane and must never be used for authorization.
     public func sendConsoleInput(_ handle: SandboxHandle, data: Data) async throws {
@@ -650,6 +725,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 record.ptyEvents.append(event)
             } else {
                 recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, "ptyEvent payload decode failed"))
+            }
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return
+        }
+        if frame.kind == .wsAck {
+            if let ack = try? JSONDecoder().decode(WsAckEvent.self, from: frame.payload) {
+                record.wsAcks.append(ack)
+            } else {
+                recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, "wsAck payload decode failed"))
             }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
             return

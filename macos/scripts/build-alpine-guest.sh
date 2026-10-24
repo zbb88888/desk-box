@@ -86,7 +86,7 @@ EOF
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd
     gzip -dc /out/debian-initrd.gz | (cd /tmp/initrd && cpio -id --quiet)
-    mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
+    mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot /tmp/initrd/workspace
     # Keep the early boot path independent of devtmpfs/udev. VZ exposes the
     # virtio block device as vda and the primary console as hvc0.
     rm -f /tmp/initrd/dev/console /tmp/initrd/dev/hvc0 /tmp/initrd/dev/ttyS0 /tmp/initrd/dev/vda

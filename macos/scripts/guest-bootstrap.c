@@ -350,7 +350,93 @@ static int send_any_frame(int fd, int encrypted,
     return 0;
 }
 
-/* ---------------- PTY manager (M1-4) ---------------- */
+/* ---------------- Workspace sync (M2-1) ---------------- */
+struct ws_session {
+    int active;
+    char ws_id[64];
+    int declared_files;
+    unsigned long long declared_bytes;
+    int received_files;
+    unsigned long long received_bytes;
+};
+
+/* 提取 JSON 字符串字段值到 out（返回负失败）；处理 \\/ \\ 反转义。 */
+static int ws_extract_string(const char *json, const char *field, char *out, size_t cap) {
+    const char *p = strstr(json, field);
+    if (!p) return -1;
+    const char *c = strchr(p, ':');
+    if (!c) return -2;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (*c != '"') return -3;
+    c++;
+    size_t w = 0;
+    while (*c && *c != '"') {
+        char v = *c;
+        if (v == '\\' && c[1] != 0) { c++; v = *c; }
+        if (w + 1 >= cap) return -4;
+        out[w++] = v;
+        c++;
+    }
+    if (*c != '"') return -5;
+    if (w == 0) return -6;
+    out[w] = 0;
+    return (int)w;
+}
+
+static unsigned long long ws_extract_u64(const char *json, const char *field, unsigned long long fallback) {
+    const char *p = strstr(json, field);
+    if (!p) return fallback;
+    const char *c = strchr(p, ':');
+    if (!c) return fallback;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    unsigned long long value = 0;
+    int digits = 0;
+    while (*c >= '0' && *c <= '9' && digits < 20) { value = value * 10 + (unsigned long long)(*c - '0'); c++; digits++; }
+    if (digits == 0) return fallback;
+    return value;
+}
+
+/* guest workspace 路径安全：相对、不含 '..'/NUL 且不深于 32 层。 */
+static int ws_path_ok(const char *rel) {
+    if (!rel || !*rel) return 0;
+    if (rel[0] == '/') return 0;
+    size_t len = strlen(rel);
+    if (len > 200) return 0;
+    int depth = 1;
+    for (size_t i = 0; i < len; i++) {
+        char c = rel[i];
+        if (c == 0) return 0;
+        if (c == '/') {
+            depth++;
+            if (depth > 32) return 0;
+            if (i + 1 < len && rel[i+1] == '.') {
+                if (i + 2 < len && rel[i+2] == '.') return 0;         /* '..' */
+            }
+        }
+        if (c == '.') {
+            if (i + 1 < len && rel[i+1] == '.' && (i == 0 || rel[i-1] == '/')) return 0;
+        }
+    }
+    return 1;
+}
+
+static int ws_emit_ack(int fd, int encrypted, uint64_t *sequence, const uint8_t *request_id,
+                       const char *ws_id, int ok, const char *error) {
+    char body[192];
+    int n;
+    if (error && *error) {
+        n = snprintf(body, sizeof(body), "{\"wsId\":\"%s\",\"ok\":%s,\"error\":\"%s\"}",
+                     ws_id, ok ? "true" : "false", error);
+    } else {
+        n = snprintf(body, sizeof(body), "{\"wsId\":\"%s\",\"ok\":%s}", ws_id, ok ? "true" : "false");
+    }
+    if (n <= 0 || (size_t)n >= sizeof(body)) return -1;
+    return send_any_frame(fd, encrypted, 17, (*sequence)++, request_id, body, (size_t)n);
+}
+
+/* PTY manager (M1-4) */
 struct pty_session {
     pid_t pid;
     int master_fd;
@@ -567,6 +653,7 @@ int main(void) {
         (void)mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
         (void)mkdir("/dev/pts", 0755);
         (void)mount("devpts", "/dev/pts", "devpts", 0, NULL);
+
     }
     char cmd[4096] = {0};
     FILE *f = fopen("/proc/cmdline", "r");
@@ -642,6 +729,7 @@ int main(void) {
     int marker = open("/run/deskbox-bootstrap-ok", O_CREAT | O_WRONLY, 0644);
     if (marker >= 0) close(marker);
     struct pty_session pty = {.pid = -1, .master_fd = -1, .id = 0};
+    struct ws_session ws = {.active = 0, .ws_id = {0}, .declared_files = 0, .declared_bytes = 0, .received_files = 0, .received_bytes = 0};
     uint8_t incoming[4096];
     for (;;) {
         struct pollfd pfds[2];
@@ -738,6 +826,66 @@ int main(void) {
                                          "exit", NULL, 0, 137, SIGKILL, request_id);
                     pty.pid = -1;
                     pty.id = 0;
+                }
+            } else if (kind == 14) { /* wsBegin */
+                struct ws_session n;
+                memset(&n, 0, sizeof(n));
+                n.active = 1;
+                if (ws_extract_string((const char *)(incoming + 36), "\"wsId\"", n.ws_id, sizeof(n.ws_id)) < 0) {
+                    n.active = 0;
+                } else {
+                    n.declared_files = (int)parse_small_int((const char *)(incoming + 36), "\"fileCount\"", 0);
+                    n.declared_bytes = ws_extract_u64((const char *)(incoming + 36), "\"totalBytes\"", 0);
+                    ws = n;
+                }
+            } else if (kind == 15) { /* wsPut */
+                if (ws.active) {
+                    char rel[224];
+                    uint8_t bytes[1024];
+                    unsigned long long off = ws_extract_u64((const char *)(incoming + 36), "\"offset\"", 0);
+                    unsigned mode = parse_small_int((const char *)(incoming + 36), "\"mode\"", 0644);
+                    int rc = ws_extract_string((const char *)(incoming + 36), "\"path\"", rel, sizeof(rel));
+                    int blen = (rc >= 0) ? extract_hex_field((const char *)(incoming + 36), "\"dataHex\"", bytes, sizeof(bytes)) : -1;
+                    if (rc >= 0 && blen >= 0 && ws_path_ok(rel)) {
+                        char full[320];
+                        int n = snprintf(full, sizeof(full), "/workspace/%s", rel);
+                        if (n > 0 && (size_t)n < sizeof(full)) {
+                            /* 确保父目录存在（只允许 newdir；无符号链接路径问题） */
+                            for (char *p = full + 11; *p; p++) {
+                                if (*p == '/') { *p = 0; (void)mkdir(full, 0755); *p = '/'; }
+                            }
+                            int ofd = open(full, O_WRONLY | O_CREAT, (mode_t)mode);
+                            if (ofd >= 0) {
+                                (void)fchown(ofd, 65534, 65534);
+                                ssize_t w = (blen > 0) ? pwrite(ofd, bytes, (size_t)blen, (off_t)off) : 0;
+                                (void)fsync(ofd);
+                                (void)fchmod(ofd, (mode_t)mode);
+                                close(ofd);
+                                if (w == blen) {
+                                    if (off == 0) ws.received_files += 1;  /* 一个文件的首块 */
+                                    ws.received_bytes += (unsigned long long)blen;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (kind == 16) { /* wsEnd */
+                if (ws.active) {
+                    char rel[64];
+                    int rc = ws_extract_string((const char *)(incoming + 36), "\"wsId\"", rel, sizeof(rel));
+                    int ok = (rc > 0) && (strcmp(rel, ws.ws_id) == 0)
+                           && (ws.received_files == ws.declared_files);
+                    char msg[96];
+                    if (ok) { msg[0] = 0; }
+                    else { snprintf(msg, sizeof(msg), "mismatch got=%d/%d bytes=%llu/%llu", ws.received_files, ws.declared_files, ws.received_bytes, ws.declared_bytes); }
+                    (void)ws_emit_ack(fd, record_mode, &response_sequence, request_id, ws.ws_id, ok, ok ? NULL : msg);
+                    if (ok) {
+                        char line[160];
+                        int n = snprintf(line, sizeof(line), "Desk Box ws: synced %d files %llu bytes (wsId=%s)\\n",
+                                         ws.received_files, ws.received_bytes, ws.ws_id);
+                        if (n > 0) { write(STDOUT_FILENO, line, (size_t)n); fsync(STDOUT_FILENO); }
+                    }
+                    memset(&ws, 0, sizeof(ws));
                 }
             }
         }

@@ -32,4 +32,5 @@ codesign --force --sign "$IDENTITY" \
 codesign --verify --strict --verbose=2 "$BIN"
 codesign --display --entitlements :- "$BIN"
 
-exec "$BIN" launch "$MANIFEST" --cow-root "$COW_ROOT"
+shift || true
+exec "$BIN" launch "$MANIFEST" --cow-root "$COW_ROOT" "$@"
