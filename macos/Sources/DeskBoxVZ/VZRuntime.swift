@@ -365,6 +365,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
         let delegate = VZControlSocketDelegate(
             onConnection: { [weak self, weak record] connection in
+                FileHandle.standardError.write(Data("dbx-vz: listener accepted connection\n".utf8))
+                try? FileHandle.standardError.synchronize()
+
                 guard let self, let record else { connection.close(); return }
                 let boxedConnection = UnsafeSendableBox(value: connection)
                 self.queue.async { [weak self, weak record] in
@@ -413,6 +416,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 socketDevice.setSocketListener(listener, forPort: record.request.controlChannelPort)
             }
         }
+        FileHandle.standardError.write(Data("dbx-vz: installed listener on port \(record.request.controlChannelPort)\n".utf8))
+        try? FileHandle.standardError.synchronize()
         record.socketDelegate = delegate
     }
 

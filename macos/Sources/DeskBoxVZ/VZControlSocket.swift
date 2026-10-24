@@ -104,6 +104,7 @@ final class VZControlSocketDelegate: NSObject, VZVirtioSocketListenerDelegate {
     ) {
         self.onConnection = onConnection
         self.onReject = onReject
+        super.init()
     }
 
     func listener(
@@ -111,6 +112,8 @@ final class VZControlSocketDelegate: NSObject, VZVirtioSocketListenerDelegate {
         shouldAcceptNewConnection connection: VZVirtioSocketConnection,
         from socketDevice: VZVirtioSocketDevice
     ) -> Bool {
+        FileHandle.standardError.write(Data("dbx-vz: incoming virtio-socket connection fd=\(connection.fileDescriptor)\n".utf8))
+        try? FileHandle.standardError.synchronize()
         guard connection.fileDescriptor >= 0 else {
             onReject("VZ control connection has invalid file descriptor")
             return false
