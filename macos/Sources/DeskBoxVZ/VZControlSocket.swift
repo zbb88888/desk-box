@@ -101,7 +101,7 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
             try? FileHandle.standardError.synchronize()
             let frames = try decoder.append(Data(bytes[0..<count]))
             if frames.isEmpty {
-                FileHandle.standardError.write(Data("dbx-vz: decoder yielded no frames\n".utf8))
+                FileHandle.standardError.write(Data("dbx-vz: decoder yielded no frames for count=\(count)\n".utf8))
                 try? FileHandle.standardError.synchronize()
             }
             for frame in frames {
