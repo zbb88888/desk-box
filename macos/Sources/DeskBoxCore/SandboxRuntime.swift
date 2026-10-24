@@ -28,6 +28,8 @@ public struct GuestAssetManifest: Sendable, Equatable, Codable {
     public let fileDigests: [String: String]
     /// 可信签名（M1-5）；发布面必须存在且可被宿主编译内嵌允许列表验证。
     public let signature: ManifestSignature?
+    /// 不对称性带下的 guest sbom digest（M3；发布时必须与签名一致共振）。
+    public let sbomDigest: String?
 
     public init(
         kernelURL: URL,
@@ -37,7 +39,8 @@ public struct GuestAssetManifest: Sendable, Equatable, Codable {
         guestAssetVersion: Int,
         manifestDigest: String,
         fileDigests: [String: String],
-        signature: ManifestSignature? = nil
+        signature: ManifestSignature? = nil,
+        sbomDigest: String? = nil
     ) {
         self.kernelURL = kernelURL
         self.initrdURL = initrdURL
@@ -45,8 +48,9 @@ public struct GuestAssetManifest: Sendable, Equatable, Codable {
         self.kernelCommandLine = kernelCommandLine
         self.guestAssetVersion = guestAssetVersion
         self.manifestDigest = manifestDigest
-        self.fileDigests = fileDigests
+            self.fileDigests = fileDigests
         self.signature = signature
+        self.sbomDigest = sbomDigest
     }
 }
 

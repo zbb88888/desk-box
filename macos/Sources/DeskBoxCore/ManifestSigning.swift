@@ -24,11 +24,13 @@ public struct ManifestSigningPayload: Sendable, Equatable, Codable {
     public let fileDigests: [String: String]
     public let guestAssetVersion: Int
     public let kernelCommandLine: String
+    public let sbomDigest: String?
 
-    public init(fileDigests: [String: String], guestAssetVersion: Int, kernelCommandLine: String) {
+    public init(fileDigests: [String: String], guestAssetVersion: Int, kernelCommandLine: String, sbomDigest: String? = nil) {
         self.fileDigests = fileDigests
         self.guestAssetVersion = guestAssetVersion
         self.kernelCommandLine = kernelCommandLine
+        self.sbomDigest = sbomDigest
     }
 
     /// Canonical JSON bytes（sortedKeys + no slashes escaping variance via UTF-8 raw).
@@ -44,7 +46,8 @@ public extension GuestAssetManifest {
         ManifestSigningPayload(
             fileDigests: fileDigests,
             guestAssetVersion: guestAssetVersion,
-            kernelCommandLine: kernelCommandLine
+            kernelCommandLine: kernelCommandLine,
+            sbomDigest: sbomDigest
         )
     }
 }

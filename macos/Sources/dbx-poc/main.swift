@@ -11,6 +11,10 @@ struct DBXPOC {
             case "capcheck", nil:
                 let report = VZCapabilityProbe.probe()
                 print(String(decoding: try JSONEncoder.pretty.encode(report), as: UTF8.self))
+            case "verify-sbom":
+                guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc verify-sbom <sbom.json>") }
+                let sbom = try GuestSbomVerifier.verify(sbomURL: URL(fileURLWithPath: first))
+                print("sbom verified assetVersion=\(sbom.assetVersion) inputs=\(sbom.inputs.count) outputs=\(sbom.outputs.count)")
             case "validate-assets":
                 guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest]") }
                 let manifest = try loadManifest(at: URL(fileURLWithPath: first))
@@ -65,7 +69,8 @@ struct DBXPOC {
                 guestAssetVersion: version,
                 manifestDigest: manifest.manifestDigest,
                 fileDigests: manifest.fileDigests,
-                signature: manifest.signature
+                signature: manifest.signature,
+                sbomDigest: manifest.sbomDigest
             )
         }
         let raw = try String(contentsOf: URL(fileURLWithPath: keyPath), encoding: .utf8)
@@ -79,7 +84,8 @@ struct DBXPOC {
             guestAssetVersion: manifest.guestAssetVersion,
             manifestDigest: manifest.manifestDigest,
             fileDigests: manifest.fileDigests,
-            signature: signature
+            signature: signature,
+            sbomDigest: manifest.sbomDigest
         )
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         try JSONEncoder.pretty.encode(signed).write(to: output, options: .atomic)
@@ -111,7 +117,8 @@ struct DBXPOC {
             guestAssetVersion: assetVersion,
             manifestDigest: "unsigned-local-manifest",
             fileDigests: digests,
-            signature: nil
+            signature: nil,
+            sbomDigest: try optionString("--sbom-digest", in: args)
         )
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -452,12 +459,13 @@ private struct ManifestFile: Codable {
     let manifestDigest: String
     var fileDigests: [String: String]
     var signature: ManifestSignature?
+    var sbomDigest: String?
 
     var asManifest: GuestAssetManifest {
         GuestAssetManifest(kernelURL: kernelURL, initrdURL: initrdURL, rootDiskURL: rootDiskURL,
                            kernelCommandLine: kernelCommandLine, guestAssetVersion: guestAssetVersion,
                            manifestDigest: manifestDigest, fileDigests: fileDigests,
-                           signature: signature)
+                           signature: signature, sbomDigest: sbomDigest)
     }
 
     mutating func resolveRelativeURLs(from base: URL) {
