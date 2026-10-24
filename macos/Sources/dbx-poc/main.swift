@@ -135,14 +135,20 @@ struct DBXPOC {
                 if status.bootstrap == .authenticated && status.state == .running {
                     print("state=running")
                     fflush(stdout)
-                    if let exec = try? await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 3)) {
-                        print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    let commands: [[String]] = [
+                        ["/bin/echo", "deskbox-mvp-first"],
+                        ["/bin/echo", "deskbox-mvp-second"]
+                    ]
+                    for (index, argv) in commands.enumerated() {
+                        guard let exec = try? await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: argv, timeoutSeconds: 3)) else {
+                            print("exec[\(index)]=-1 stdout= (response unavailable)")
+                            continue
+                        }
+                        print("exec[\(index)]=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
                         if !exec.stderr.isEmpty {
-                            fputs("exec-stderr=\(exec.stderr.trimmingCharacters(in: .whitespacesAndNewlines))\n", stderr)
+                            fputs("exec[\(index)]-stderr=\(exec.stderr.trimmingCharacters(in: .whitespacesAndNewlines))\n", stderr)
                             fflush(stderr)
                         }
-                    } else {
-                        print("exec=-1 stdout= (response unavailable)")
                     }
                     fflush(stdout)
                     break

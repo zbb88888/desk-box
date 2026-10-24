@@ -22,6 +22,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var controlSocket: VZControlSocket?
         var lastExecResponse: ControlFrame?
         var lastDecodedExecResponse: ControlResponse?
+        var pendingExecRequestID: UUID?
         var bootstrapState: BootstrapState = .notConnected
         var requestSequence: UInt64 = 1
 
@@ -277,7 +278,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
             }
             let payload = try JSONEncoder().encode(request)
-            let frame = try ControlFrame(kind: .request, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+            let requestID = UUID()
+            let frame = try ControlFrame(kind: .request, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
+            record.pendingExecRequestID = requestID
+            // Drop the previous response so a new request can never read stale output.
+            record.lastDecodedExecResponse = nil
+            record.lastExecResponse = nil
             do {
                 try self.sendFrameOnQueue(record, frame: frame)
                 self.recordAudit(record, action: .channelEvent, decision: .allow())
@@ -289,11 +295,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
         let deadline = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         while true {
-            let response = try await onQueue { () -> ControlResponse? in
+            let response = try await onQueue { () -> (payload: ControlResponse, requestID: UUID)? in
                 let record = try self.require(handle)
-                return record.lastDecodedExecResponse
+                guard let decoded = record.lastDecodedExecResponse,
+                      let responseFrame = record.lastExecResponse,
+                      responseFrame.requestID == record.pendingExecRequestID else { return nil }
+                return (decoded, responseFrame.requestID)
             }
-            if let response { return response }
+            if let response { return response.payload }
             if Date() >= deadline {
                 throw SandboxFailure(.bootstrapProofMismatch, "exec response timeout")
             }

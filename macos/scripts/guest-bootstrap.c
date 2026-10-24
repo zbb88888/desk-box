@@ -192,18 +192,25 @@ static int run_exec_request(const char *request_json, char *response, size_t res
         exit_code, esc_out, esc_err);
 }
 
-static int send_frame(int fd, uint16_t kind, uint64_t sequence, const char *payload, size_t len) {
+static int send_frame_ex(int fd, uint16_t kind, uint64_t sequence,
+                         const uint8_t *request_id,
+                         const char *payload, size_t len) {
     uint8_t frame[4096] = {0};
     size_t total = 36 + len;
     uint32_t magic = be32(0x44425831); memcpy(frame, &magic, 4);
     uint16_t version = be16(1), k = be16(kind);
     memcpy(frame + 4, &version, 2); memcpy(frame + 6, &k, 2);
     uint64_t seq = be64(sequence); memcpy(frame + 8, &seq, 8);
+    if (request_id) memcpy(frame + 16, request_id, 16);
     uint32_t plen = be32((uint32_t)len); memcpy(frame + 32, &plen, 4);
     memcpy(frame + 36, payload, len);
     size_t sent = 0;
     while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) return 7; sent += (size_t)n; }
     return 0;
+}
+
+static int send_frame(int fd, uint16_t kind, uint64_t sequence, const char *payload, size_t len) {
+    return send_frame_ex(fd, kind, sequence, NULL, payload, len);
 }
 
 #ifndef DBX_TEST_NO_MAIN
@@ -263,6 +270,7 @@ int main(void) {
     // MVP exec handling: stay on the authenticated VSOCK session and answer
     // simple request frames. This is not a full execd; TLS/authorization and
     // spawn/sandboxing land in the next phase.
+    uint64_t response_sequence = 2; // hello consumed sequence 1
     uint8_t incoming[4096];
     for (;;) {
         ssize_t got = read(fd, incoming, sizeof(incoming));
@@ -274,9 +282,13 @@ int main(void) {
         size_t paylen = be32(paylen_be);
         if (kind != 4 || paylen + 36 > sizeof(incoming)) continue;
         incoming[36 + paylen] = 0;
+        // Echo the request's requestID so the host can correlate responses,
+        // and use a per-session strictly increasing sequence for replay checks.
+        uint8_t request_id[16];
+        memcpy(request_id, incoming + 16, 16);
         char rjson[4096];
         int rlen = run_exec_request((const char *)(incoming + 36), rjson, sizeof(rjson));
-        if (rlen > 0) (void)send_frame(fd, 5, 2, rjson, (size_t)rlen);
+        if (rlen > 0) (void)send_frame_ex(fd, 5, response_sequence++, request_id, rjson, (size_t)rlen);
     }
     close(fd);
     return 0;
