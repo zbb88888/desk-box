@@ -424,7 +424,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     private func handleControlFrame(_ frame: ControlFrame, record: Record) {
         if frame.kind == .hello {
-            FileHandle.standardError.write(Data("dbx-vz: received hello frame payload=\(frame.payload.count)\n".utf8))
+            let preview = String(decoding: frame.payload.prefix(120), as: UTF8.self)
+            FileHandle.standardError.write(Data("dbx-vz: received hello frame payload=\(frame.payload.count) preview=\(preview)\n".utf8))
             try? FileHandle.standardError.synchronize()
         }
         guard frame.kind == .hello else {
