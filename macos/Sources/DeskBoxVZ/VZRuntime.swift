@@ -291,7 +291,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 let record = try self.require(handle)
                 let frames = try record.controlSocket?.pollRead() ?? []
                 for frame in frames { self.handleControlFrame(frame, record: record) }
-                return record.lastDecodedExecResponse
+                if let response = record.lastDecodedExecResponse { return response }
+                if let responseFrame = record.lastExecResponse,
+                   let response = try? JSONDecoder().decode(ControlResponse.self, from: responseFrame.payload) {
+                    return response
+                }
+                return nil
             }
             FileHandle.standardError.write(Data("dbx-vz: exec poll status=\(response == nil ? "waiting" : "received")\n".utf8))
             try? FileHandle.standardError.synchronize()
@@ -481,6 +486,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             if let response = try? JSONDecoder().decode(ControlResponse.self, from: frame.payload) {
                 record.lastExecResponse = frame
                 record.lastDecodedExecResponse = response
+                FileHandle.standardOutput.write(Data("exec=\(response.exitCode) stdout=\(response.stdout.trimmingCharacters(in: .whitespacesAndNewlines))\n".utf8))
+                try? FileHandle.standardOutput.synchronize()
             }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
             return
