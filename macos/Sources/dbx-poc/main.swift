@@ -129,10 +129,20 @@ struct DBXPOC {
                     }
                 }
             }
-            if let status = try? await runtime.inspect(handle), status.bootstrap == .authenticated, status.state == .running {
-                let exec = try await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 5))
-                print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
-                fflush(stdout)
+            let execDeadline = Date().addingTimeInterval(15)
+            while true {
+                let status = try await runtime.inspect(handle)
+                if status.bootstrap == .authenticated && status.state == .running {
+                    let exec = try await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: ["/bin/echo", "deskbox-mvp-ok"], timeoutSeconds: 5))
+                    print("exec=\(exec.exitCode) stdout=\(exec.stdout.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    fflush(stdout)
+                    break
+                }
+                if Date() >= execDeadline {
+                    fputs("dbx-poc: guest did not become authenticated before exec timeout\n", stderr)
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(250))
             }
             let lifetime = ProcessLifetime { data in
                 Task { try? await runtime.sendConsoleInput(handle, data: data) }
