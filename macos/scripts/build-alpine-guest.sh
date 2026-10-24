@@ -72,6 +72,11 @@ EOF
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
     cp /tmp/rootfs/bin/busybox /tmp/initrd/bin/busybox
+    # Alpine busybox is dynamically linked against musl; include its loader
+    # and runtime libraries in the initramfs or /init will fail before console.
+    mkdir -p /tmp/initrd/lib /tmp/initrd/usr/lib
+    cp -a /tmp/rootfs/lib/* /tmp/initrd/lib/ 2>/dev/null || true
+    cp -a /tmp/rootfs/usr/lib/* /tmp/initrd/usr/lib/ 2>/dev/null || true
     mkdir -p /tmp/initrd/sbin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
     ln -s busybox /tmp/initrd/bin/mount
