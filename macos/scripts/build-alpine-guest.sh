@@ -66,8 +66,11 @@ EOF
 export PATH=/sbin:/usr/sbin:/bin:/usr/bin
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
-mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /run /workspace
+mount -t devtmpfs dev /dev 2>/dev/null && printf "DBXDEV devtmpfs-ok\\n" > /dev/console 2>/dev/null || printf "DBXDEV devtmpfs-fail\\n" > /dev/console 2>/dev/null || true
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts 2>/dev/null && printf "DBXDEV devpts-ok\\n" > /dev/console 2>/dev/null || printf "DBXDEV devpts-fail\\n" > /dev/console 2>/dev/null || true
+[ -e /dev/ptmx ] && printf "DBXDEV ptmx-ok\\n" > /dev/console 2>/dev/null || printf "DBXDEV ptmx-missing\\n" > /dev/console 2>/dev/null || true
 if [ ! -e /run/deskbox-bootstrap-ok ]; then
   /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 fi

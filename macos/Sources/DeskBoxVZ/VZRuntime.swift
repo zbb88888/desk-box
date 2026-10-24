@@ -24,6 +24,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var lastExecResponse: ControlFrame?
         var lastDecodedExecResponse: ControlResponse?
         var pendingExecRequestID: UUID?
+        var pendingPtyOpenID: UUID?
+        var ptyEvents: [PtyEvent] = []
         var bootstrapState: BootstrapState = .notConnected
         var requestSequence: UInt64 = 1
 
@@ -355,6 +357,96 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
+    /// M1-4: open a PTY, stream optional stdin, and collect output until the
+    /// child exits. Encrypted channels are fully supported (record protection).
+    public struct PtySessionResult: Sendable, Equatable {
+        public let exitCode: Int32?
+        public let signal: Int32?
+        public let output: Data
+
+        /// Output decoded as UTF-8, useful for driving demo commands like `tty`.
+        public var stdoutText: String {
+            String(decoding: output, as: UTF8.self)
+        }
+    }
+
+    public func ptyRoundTrip(
+        _ handle: SandboxHandle,
+        argv: [String],
+        inputHex: String?,
+        timeoutSeconds: Int
+    ) async throws -> PtySessionResult {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        let requestID = UUID()
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running,
+                  record.controlSocket != nil else {
+                throw SandboxFailure(.bootstrapProofMissing, "PTY requires a running authenticated session")
+            }
+            record.pendingPtyOpenID = requestID
+            let payload = try JSONEncoder().encode(PtyOpenRequest(argv: argv))
+            let frame = try ControlFrame(kind: .ptyOpen, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+
+        // 1) Wait for `opened`.
+        while true {
+            let opened = try await onQueue { [requestID] () -> Int? in
+                let record = try self.require(handle)
+                guard let index = record.ptyEvents.firstIndex(where: {
+                    $0.type == .opened && $0.ptyId == 0
+                }) else { return nil }
+                let event = record.ptyEvents[index]
+                record.ptyEvents.remove(at: index)
+                _ = event
+                return 0
+            }
+            if let _ = opened { break }
+            if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "ptyOpen timeout") }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        // 2) Optional stdin injection.
+        if let inputHex, !inputHex.isEmpty {
+            try await onQueue {
+                let record = try self.require(handle)
+                let payload = try JSONEncoder().encode(PtyInputRequest(ptyId: 0, dataHex: inputHex))
+                let frame = try ControlFrame(kind: .ptyInput, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
+                try self.sendFrameOnQueue(record, frame: frame)
+            }
+        }
+
+        // 3) Collect outputs until `exit`.
+        var output = Data()
+        var exitCode: Int32?
+        var signal: Int32?
+        while true {
+            let events = try await onQueue { () -> [PtyEvent] in
+                let record = try self.require(handle)
+                let matched = record.ptyEvents.filter { $0.ptyId == 0 }
+                record.ptyEvents.removeAll { $0.ptyId == 0 }
+                return matched
+            }
+            for event in events {
+                switch event.type {
+                case .output:
+                    if let bytes = HexCoder.decode(event.dataHex) { output.append(bytes) }
+                case .exit:
+                    exitCode = event.exitCode
+                    signal = event.signal
+                    break
+                case .opened:
+                    continue
+                }
+            }
+            if exitCode != nil || signal != nil { break }
+            if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "pty session timeout") }
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        return PtySessionResult(exitCode: exitCode, signal: signal, output: output)
+    }
+
     /// Diagnostic-only serial input. It is intentionally not part of the
     /// trusted control plane and must never be used for authorization.
     public func sendConsoleInput(_ handle: SandboxHandle, data: Data) async throws {
@@ -545,6 +637,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             if let response = try? JSONDecoder().decode(ControlResponse.self, from: frame.payload) {
                 record.lastExecResponse = frame
                 record.lastDecodedExecResponse = response
+            }
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return
+        }
+        if frame.kind == .ptyEvent {
+            if let event = try? JSONDecoder().decode(PtyEvent.self, from: frame.payload) {
+                record.ptyEvents.append(event)
+            } else {
+                recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, "ptyEvent payload decode failed"))
             }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
             return

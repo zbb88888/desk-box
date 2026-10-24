@@ -156,6 +156,25 @@ struct DBXPOC {
                         ["/bin/echo", "deskbox-mvp-first"],
                         ["/bin/echo", "deskbox-mvp-second"]
                     ]
+                    // M1-4 mainstream PTY demo path: real shell inside a real
+                    // controlling terminal, output streamed back through the
+                    // encrypted record channel.
+                    do {
+                        let ttyProbe = try await runtime.ptyRoundTrip(
+                            handle, argv: ["/bin/sh", "-c", "echo DBX_PTY_MARKER; tty; id -u; exit"],
+                            inputHex: nil, timeoutSeconds: 8)
+                        print("pty[0]=exit\(ttyProbe.exitCode ?? -1) stdout=\(ttyProbe.stdoutText.replacingOccurrences(of: "\n", with: " | "))")
+                        fflush(stdout)
+                        let stdinProbe = try await runtime.ptyRoundTrip(
+                            handle,
+                            argv: ["/bin/sh", "-c", "read x; echo DBX_PTY_INPUT=$x; exit"],
+                            inputHex: "68656c6c6f2d7074790a", timeoutSeconds: 8)
+                        print("pty[1]=exit\(stdinProbe.exitCode ?? -1) stdout=\(stdinProbe.stdoutText.replacingOccurrences(of: "\n", with: " | "))")
+                        fflush(stdout)
+                    } catch {
+                        fputs("dbx-poc: pty demo failed: \(error)\n", stderr)
+                        fflush(stderr)
+                    }
                     for (index, argv) in commands.enumerated() {
                         guard let exec = try? await runtime.execute(handle, request: ControlRequest(kind: .exec, argv: argv, timeoutSeconds: 3)) else {
                             print("exec[\(index)]=-1 stdout= (response unavailable)")

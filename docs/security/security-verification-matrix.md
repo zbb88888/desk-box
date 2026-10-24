@@ -25,7 +25,7 @@
 | INV-05 | 宿主文件仅来自显式工作区授权 | Workspace Sync | 路径、链接、ADS、大小写、Unicode、TOCTOU、并发替换 | 两平台文件系统 corpus 结果 | 数据面负责人 | 未实现 |
 | INV-06 | OCI metadata 不能扩权 | OCI Service、WorkloadSpec Compiler、Guest Policy | 恶意 config/layer、privileged/device/mount/capability/BPF 拒绝、setuid/whiteout/路径与链接滥用、解压炸弹 | Parser fuzz、BPF 越权测试与拒绝审计 | OCI 负责人 | 未实现 |
 | INV-07 | 控制通道绑定具体 VM 身份 | Controller、`execd`、VZ Socket/HVSock Adapter | 串线、证书篡改、旧 nonce/token/snapshot、版本降级 | 协议测试和独立密码学评审 | 控制通道负责人 | **M1-2 已验证（macOS VZ）**——Hello/Ack boot 绑定 + X25519 ephemeral + HKDF-SHA256 + ChaChaPoly AEAD 加密 record channel；`bootstrap=tlsAuthenticated` → `running`；旧 boot 材料无法产生合法 `sessionID`；`--allow-plaintext` 仅在显式开发模式下。 |
-| INV-08 | 资源和生命周期由宿主强制 | Controller、Platform Adapter、guest cgroup | CPU/内存/磁盘/PID/日志耗尽、卡死关机、崩溃恢复 | 压力测试与孤儿资源清单 | Runtime 负责人 | **M1-3 部分**（guest exec exec hardening：nobody 65534、rlimit 256MB/CPU/进程禁/文件 64KiB/env-cwd 白名单、timeout kill 进程组；net 默认无网络；HOST cgroup v2/CPU 时间配额仍未实现 — M1-4），决定相位不变量8 后可发布表述融合。 |
+| INV-08 | 资源和生命周期由宿主强制 | Controller、Platform Adapter、guest cgroup | CPU/内存/磁盘/PID/日志耗尽、卡死关机、崩溃恢复 | 压力测试与孤儿资源清单 | Runtime 负责人 | **M1-3/M1-4 已验证（macOS）**——exec/PTY child 均为 nobody 65534 + rlimit 上限 + no_new_privs + env-cwd 白名单 + timeout kill 上线进程组；PTY child 的真实 stdin/输出通过加密 record channel 流式回传；HOST/VZ cgroup/CPU 时间配额仍是 M2 上游贡献。 |
 | INV-09 | 构建域与运行域隔离 | Builder Service、Artifact Import | Build secret canary、cache 跨构建、runtime 磁盘读取、产物篡改 | Builder 销毁和 artifact provenance | 构建供应链负责人 | 未实现 |
 | INV-10 | 更新、持久化和销毁不复活权限 | Updater、Snapshot、Controller | 签名失败、降级、旧 snapshot、撤销后恢复、清理失败 | 更新/回滚/销毁故障注入报告 | 发布安全负责人 | 未实现 |
 

@@ -59,6 +59,16 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     /// Guest -> host ephemeral X25519 public key share. Flows after HelloAck
     /// and before the channel upgrades to record protection (M1-2).
     case keyExchange = 8
+    /// Host -> guest: allocate a PTY and run argv attached to it (M1-4).
+    case ptyOpen = 9
+    /// Host -> guest: stream input bytes into the PTY master.
+    case ptyInput = 10
+    /// Host -> guest: resize the PTY window (TIOCSWINSZ).
+    case ptyResize = 11
+    /// Host -> guest: close the PTY (EOF + kill escalation path).
+    case ptyClose = 12
+    /// Guest -> host: PTY lifecycle/output event (opened/output/exit).
+    case ptyEvent = 13
 }
 
 public struct ControlRequest: Sendable, Codable, Equatable {
@@ -90,6 +100,73 @@ public struct ControlResponse: Sendable, Codable, Equatable {
         self.exitCode = exitCode
         self.stdout = stdout
         self.stderr = stderr
+    }
+}
+
+/// PTY request payloads (docs/design/m1-4-pty-support.md §3.1).
+public struct PtyOpenRequest: Sendable, Codable, Equatable {
+    public let ptyId: UInt32
+    public let argv: [String]
+    public let rows: UInt16
+    public let cols: UInt16
+
+    public init(ptyId: UInt32 = 0, argv: [String], rows: UInt16 = 24, cols: UInt16 = 80) {
+        self.ptyId = ptyId
+        self.argv = argv
+        self.rows = rows
+        self.cols = cols
+    }
+}
+
+public struct PtyInputRequest: Sendable, Codable, Equatable {
+    public let ptyId: UInt32
+    public let dataHex: String
+
+    public init(ptyId: UInt32, dataHex: String) {
+        self.ptyId = ptyId
+        self.dataHex = dataHex
+    }
+}
+
+public struct PtyResizeRequest: Sendable, Codable, Equatable {
+    public let ptyId: UInt32
+    public let rows: UInt16
+    public let cols: UInt16
+
+    public init(ptyId: UInt32, rows: UInt16, cols: UInt16) {
+        self.ptyId = ptyId
+        self.rows = rows
+        self.cols = cols
+    }
+}
+
+public struct PtyCloseRequest: Sendable, Codable, Equatable {
+    public let ptyId: UInt32
+
+    public init(ptyId: UInt32) { self.ptyId = ptyId }
+}
+
+/// Guest -> host PTY events. Data within `output` events is hex-encoded and
+/// capped to 512 bytes per frame to keep frames bounded.
+public struct PtyEvent: Sendable, Codable, Equatable {
+    public enum Kind: String, Sendable, Codable {
+        case opened
+        case output
+        case exit
+    }
+
+    public let ptyId: UInt32
+    public let type: Kind
+    public let dataHex: String
+    public let exitCode: Int32?
+    public let signal: Int32?
+
+    public init(ptyId: UInt32, type: Kind, dataHex: String = "", exitCode: Int32? = nil, signal: Int32? = nil) {
+        self.ptyId = ptyId
+        self.type = type
+        self.dataHex = dataHex
+        self.exitCode = exitCode
+        self.signal = signal
     }
 }
 

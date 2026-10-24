@@ -1,5 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
+#include <poll.h>
+#include <pty.h>
 #include <signal.h>
 #ifdef __linux__
 #include <sys/prctl.h>
@@ -7,6 +9,8 @@
 #endif
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -266,6 +270,146 @@ static int send_frame(int fd, uint16_t kind, uint64_t sequence, const char *payl
     return send_frame_ex(fd, kind, sequence, NULL, payload, len);
 }
 
+static size_t build_frame(uint8_t *out, size_t cap, uint16_t kind, uint64_t seq,
+                          const uint8_t *request_id, const void *payload, size_t len) {
+    if (cap < 36 + len) return 0;
+    memset(out, 0, 36 + len);
+    uint32_t magic = be32(0x44425831); memcpy(out, &magic, 4);
+    uint16_t version = be16(1), k = be16(kind);
+    memcpy(out + 4, &version, 2); memcpy(out + 6, &k, 2);
+    uint64_t s = be64(seq); memcpy(out + 8, &s, 8);
+    if (request_id) memcpy(out + 16, request_id, 16);
+    uint32_t plen = be32((uint32_t)len); memcpy(out + 32, &plen, 4);
+    if (len) memcpy(out + 36, payload, len);
+    return 36 + len;
+}
+
+static size_t bin_to_hex(const uint8_t *data, size_t len, char *out, size_t cap) {
+    static const char digest[] = "0123456789abcdef";
+    if (cap < len * 2 + 1) return 0;
+    for (size_t i = 0; i < len; i++) {
+        out[2 * i] = digest[data[i] >> 4];
+        out[2 * i + 1] = digest[data[i] & 0xf];
+    }
+    out[2 * len] = 0;
+    return 2 * len;
+}
+
+static unsigned parse_small_int(const char *json, const char *key, unsigned fallback) {
+    const char *p = strstr(json, key);
+    if (!p) return fallback;
+    const char *c = strchr(p, ':');
+    if (!c) return fallback;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    unsigned long value = 0;
+    int digits = 0;
+    while (*c >= '0' && *c <= '9' && digits < 5) { value = value * 10 + (unsigned)(*c - '0'); c++; digits++; }
+    if (digits == 0) return fallback;
+    return (unsigned)value;
+}
+
+static int hex_to_bin(const char *hex, size_t hex_digits, uint8_t *out, size_t out_cap);
+
+static int extract_hex_field(const char *json, const char *field, uint8_t *out, size_t cap) {
+    const char *p = strstr(json, field);
+    if (!p) return -1;
+    const char *c = strchr(p, ':');
+    if (!c) return -2;
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    if (*c != '"') return -3;
+    c++;
+    size_t span = strcspn(c, "\"");
+    if (span % 2 != 0) return -4;
+    if (span / 2 > cap) return -5;
+    if (hex_to_bin(c, span, out, cap) != 0) return -6;
+    return (int)(span / 2);
+}
+
+/* record_mode-aware frame send used by exec/PTY paths. */
+static size_t record_encrypt(int dir, uint8_t *out, size_t out_cap,
+                             const uint8_t *plaintext, size_t plaintext_len);
+static int send_any_frame(int fd, int encrypted,
+                          uint16_t kind, uint64_t seq,
+                          const uint8_t *request_id,
+                          const void *payload, size_t len) {
+    uint8_t frame[4096];
+    size_t total = build_frame(frame, sizeof(frame), kind, seq, request_id, payload, len);
+    if (total == 0) return -1;
+    if (!encrypted) {
+        size_t sent = 0;
+        while (sent < total) { ssize_t n = write(fd, frame + sent, total - sent); if (n <= 0) return -2; sent += (size_t)n; }
+        return 0;
+    }
+    uint8_t record[4096 + 64];
+    size_t rlen = record_encrypt(2, record, sizeof(record), frame, total);
+    if (rlen == 0) return -3;
+    size_t sent = 0;
+    while (sent < rlen) { ssize_t n = write(fd, record + sent, rlen - sent); if (n <= 0) return -4; sent += (size_t)n; }
+    return 0;
+}
+
+/* ---------------- PTY manager (M1-4) ---------------- */
+struct pty_session {
+    pid_t pid;
+    int master_fd;
+    unsigned int id;
+};
+
+static int pty_spawn(struct pty_session *s, char **argv, unsigned int rows, unsigned int cols, int timeout_seconds) {
+    int master = posix_openpt(O_RDWR | O_NOCTTY);
+    if (master < 0) return -1;
+    if (grantpt(master) != 0 || unlockpt(master) != 0) { close(master); return -2; }
+    char *slave_name = ptsname(master);
+    if (!slave_name) { close(master); return -3; }
+    pid_t pid = fork();
+    if (pid < 0) { close(master); return -4; }
+    if (pid == 0) {
+        close(master);
+        if (setsid() < 0) _exit(120);
+        int slave = open(slave_name, O_RDWR);
+        if (slave < 0) _exit(121);
+        if (ioctl(slave, TIOCSCTTY, 0) != 0) _exit(122);
+        struct winsize ws;
+        memset(&ws, 0, sizeof(ws));
+        ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+        (void)ioctl(slave, TIOCSWINSZ, &ws);
+        dup2(slave, STDIN_FILENO);
+        dup2(slave, STDOUT_FILENO);
+        dup2(slave, STDERR_FILENO);
+        if (slave > 2) close(slave);
+        if (install_exec_hardening(timeout_seconds) != 0) _exit(126);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    struct winsize ws;
+    memset(&ws, 0, sizeof(ws));
+    ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+    (void)ioctl(master, TIOCSWINSZ, &ws);
+    s->pid = pid;
+    s->master_fd = master;
+    s->id = 0;
+    return 0;
+}
+
+static int emit_pty_event(int fd, int encrypted, uint64_t *sequence,
+                          unsigned int pty_id, const char *type,
+                          const uint8_t *data, size_t data_len,
+                          long exit_code, long signal_code,
+                          const uint8_t *request_id) {
+    char json[2048];
+    char hexbuf[1100];
+    size_t hexlen = 0;
+    if (data_len > 0) hexlen = bin_to_hex(data, data_len, hexbuf, sizeof(hexbuf));
+    const char *hx = hexlen > 0 ? hexbuf : "";
+    int n = snprintf(json, sizeof(json),
+        "{\"ptyId\":%u,\"type\":\"%s\",\"dataHex\":\"%s\",\"exitCode\":%d,\"signal\":%d}",
+        pty_id, type, hx, (int)exit_code, (int)signal_code);
+    if (n <= 0 || (size_t)n >= sizeof(json)) return -1;
+    return send_any_frame(fd, encrypted, 13, (*sequence)++, request_id, json, (size_t)n);
+}
+
 /* ---- Record protection (X25519 + HKDF-SHA256 + ChaChaPoly AEAD) ---- */
 /* This mirrors the CryptoKit session on the host:
  *   - X25519 ephemeral key agreement (32-byte Montgomery keys)
@@ -416,6 +560,14 @@ int main(void) {
     const char *diag = "Desk Box bootstrap: starting\n";
     write(STDOUT_FILENO, diag, strlen(diag));
     fsync(STDOUT_FILENO);
+    {
+        // Deterministic PTY env setup: mount devtmpfs/devpts directly instead
+        // of relying on busybox mount behavior in the handoff init.
+        (void)mkdir("/dev", 0755);
+        (void)mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
+        (void)mkdir("/dev/pts", 0755);
+        (void)mount("devpts", "/dev/pts", "devpts", 0, NULL);
+    }
     char cmd[4096] = {0};
     FILE *f = fopen("/proc/cmdline", "r");
     if (!f || !fgets(cmd, sizeof(cmd), f)) return 2;
@@ -489,45 +641,113 @@ int main(void) {
     (void)mkdir("/run", 0755);
     int marker = open("/run/deskbox-bootstrap-ok", O_CREAT | O_WRONLY, 0644);
     if (marker >= 0) close(marker);
+    struct pty_session pty = {.pid = -1, .master_fd = -1, .id = 0};
     uint8_t incoming[4096];
     for (;;) {
-        ssize_t got = (record_mode ? recv_record(fd, incoming, sizeof(incoming))
-                                   : recv_frame(fd, incoming, sizeof(incoming)));
-        if (got <= 0) break;
-        if (got < 36) continue;
-        uint16_t kind; memcpy(&kind, incoming + 6, 2);
-        kind = be16(kind);
-        uint32_t paylen_be; memcpy(&paylen_be, incoming + 32, 4);
-        size_t paylen = be32(paylen_be);
-        if (kind != 4 || paylen + 36 > sizeof(incoming)) continue;
-        incoming[36 + paylen] = 0;
-        // Echo the request's requestID so the host can correlate responses,
-        // and use a per-session strictly increasing sequence for replay checks.
-        uint8_t request_id[16];
-        memcpy(request_id, incoming + 16, 16);
-        char rjson[4096];
-        int rlen = run_exec_request((const char *)(incoming + 36), rjson, sizeof(rjson));
-        if (rlen <= 0) continue;
-        if (!record_mode) {
-            (void)send_frame_ex(fd, 5, response_sequence++, request_id, rjson, (size_t)rlen);
-        } else {
-            uint8_t frame[4096] = {0};
-            size_t total = 36 + (size_t)rlen;
-            uint32_t magic = be32(0x44425831); memcpy(frame, &magic, 4);
-            uint16_t version = be16(1), k5 = be16(5);
-            memcpy(frame + 4, &version, 2); memcpy(frame + 6, &k5, 2);
-            uint64_t seq = be64(response_sequence++); memcpy(frame + 8, &seq, 8);
-            memcpy(frame + 16, request_id, 16);
-            uint32_t plen = be32((uint32_t)rlen); memcpy(frame + 32, &plen, 4);
-            memcpy(frame + 36, rjson, (size_t)rlen);
-            uint8_t record[4096 + 36];
-            size_t record_len = record_encrypt(2, record, sizeof(record), frame, total);
-            if (record_len == 0) continue;
-            size_t sent = 0;
-            while (sent < record_len) {
-                ssize_t n = write(fd, record + sent, record_len - sent);
-                if (n <= 0) { close(fd); return 11; }
-                sent += (size_t)n;
+        struct pollfd pfds[2];
+        pfds[0].fd = fd;
+        pfds[0].events = POLLIN;
+        pfds[0].revents = 0;
+        int nfds = 1;
+        if (pty.master_fd >= 0) {
+            pfds[1].fd = pty.master_fd;
+            pfds[1].events = POLLIN;
+            pfds[1].revents = 0;
+            nfds = 2;
+        }
+        int ready = poll(pfds, nfds, 250);
+        if (ready < 0 && errno != EINTR) break;
+
+        /* reap the current PTY child before reading more events */
+        if (pty.pid > 0) {
+            int status;
+            pid_t reaped = waitpid(pty.pid, &status, WNOHANG);
+            if (reaped == pty.pid) {
+                int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1);
+                int signal_code = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+                close(pty.master_fd);
+                pty.master_fd = -1;
+                pty.pid = -1;
+                (void)emit_pty_event(fd, record_mode, &response_sequence,
+                                     pty.id, "exit", NULL, 0, exit_code, signal_code, NULL);
+                continue;
+            }
+        }
+        if (ready <= 0) continue;
+
+        if (pfds[0].revents & POLLIN) {
+            ssize_t got = (record_mode ? recv_record(fd, incoming, sizeof(incoming))
+                                       : recv_frame(fd, incoming, sizeof(incoming)));
+            if (got <= 0) break;
+            if (got < 36) continue;
+            uint16_t kind; memcpy(&kind, incoming + 6, 2);
+            kind = be16(kind);
+            uint32_t paylen_be; memcpy(&paylen_be, incoming + 32, 4);
+            size_t paylen = be32(paylen_be);
+            incoming[36 + paylen] = 0;
+            uint8_t request_id[16];
+            memcpy(request_id, incoming + 16, 16);
+
+            if (kind == 4) {
+                char rjson[4096];
+                int rlen = run_exec_request((const char *)(incoming + 36), rjson, sizeof(rjson));
+                if (rlen <= 0) continue;
+                (void)send_any_frame(fd, record_mode, 5, response_sequence++, request_id, rjson, (size_t)rlen);
+            } else if (kind == 9) {
+                char argv_storage[1024];
+                char *argv[32];
+                int argc2 = parse_argv((const char *)(incoming + 36), argv, 32, argv_storage, sizeof(argv_storage));
+                unsigned rows = parse_small_int((const char *)(incoming + 36), "\"rows\"", 24);
+                unsigned cols = parse_small_int((const char *)(incoming + 36), "\"cols\"", 80);
+                if (argc2 > 0 && pty.master_fd < 0) {
+                    if (pty_spawn(&pty, argv, rows, cols, 10) == 0) {
+                        (void)emit_pty_event(fd, record_mode, &response_sequence, pty.id,
+                                             "opened", NULL, 0, 0, 0, request_id);
+                    }
+                }
+            } else if (kind == 10) {
+                uint8_t input[1024];
+                int bytes = extract_hex_field((const char *)(incoming + 36), "\"dataHex\"", input, sizeof(input));
+
+                if (bytes > 0 && pty.master_fd >= 0) {
+                    size_t written = 0;
+                    while (written < (size_t)bytes) {
+                        ssize_t n = write(pty.master_fd, input + written, (size_t)bytes - written);
+                        if (n <= 0) break;
+                        written += (size_t)n;
+                    }
+                }
+            } else if (kind == 11) {
+                if (pty.master_fd >= 0) {
+                    unsigned rows = parse_small_int((const char *)(incoming + 36), "\"rows\"", 24);
+                    unsigned cols = parse_small_int((const char *)(incoming + 36), "\"cols\"", 80);
+                    struct winsize ws;
+                    memset(&ws, 0, sizeof(ws));
+                    ws.ws_row = (unsigned short)rows; ws.ws_col = (unsigned short)cols;
+                    (void)ioctl(pty.master_fd, TIOCSWINSZ, &ws);
+                }
+            } else if (kind == 12) {
+                if (pty.master_fd >= 0) {
+                    close(pty.master_fd);
+                    pty.master_fd = -1;
+                    if (pty.pid > 0) {
+                        kill(pty.pid, SIGKILL);
+                        (void)waitpid(pty.pid, NULL, 0);
+                    }
+                    (void)emit_pty_event(fd, record_mode, &response_sequence, pty.id,
+                                         "exit", NULL, 0, 137, SIGKILL, request_id);
+                    pty.pid = -1;
+                    pty.id = 0;
+                }
+            }
+        }
+
+        if (nfds == 2 && (pfds[1].revents & POLLIN)) {
+            uint8_t outbuf[512];
+            ssize_t out = read(pty.master_fd, outbuf, sizeof(outbuf));
+            if (out > 0) {
+                (void)emit_pty_event(fd, record_mode, &response_sequence, pty.id,
+                                     "output", outbuf, (size_t)out, 0, 0, NULL);
             }
         }
     }
