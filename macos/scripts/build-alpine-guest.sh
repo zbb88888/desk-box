@@ -85,17 +85,21 @@ EOF
     ln -s busybox /tmp/initrd/bin/switch_root
     cat > /tmp/initrd/init <<EOF
 #!/bin/busybox sh
+# Emit to the kernel console before any mounts; this distinguishes kernel boot
+# from an initramfs execution failure.
+printf "Desk Box init entered\\n" > /dev/console 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 # Keep console usable even when the guest kernel lacks devtmpfs auto-population.
 [ -e /dev/console ] || /bin/busybox mknod -m 0600 /dev/console c 5 1 || true
 [ -e /dev/ttyS0 ] || /bin/busybox mknod -m 0600 /dev/ttyS0 c 4 64 || true
 [ -e /dev/hvc0 ] || /bin/busybox mknod -m 0600 /dev/hvc0 c 229 0 || true
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
 for c in /dev/console /dev/ttyS0 /dev/hvc0; do
   printf "Desk Box initramfs ready\\n" > "$c" 2>/dev/null || true
 done
 /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
+printf "Desk Box bootstrap completed\\n" > /dev/console 2>/dev/null || true
 while ! mount -t ext4 -o rw /dev/vda /newroot; do
   printf "Desk Box waiting for /dev/vda\\n" > /dev/console 2>/dev/null || true
   /bin/busybox sleep 1

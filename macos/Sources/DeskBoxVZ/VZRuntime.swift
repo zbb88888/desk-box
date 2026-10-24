@@ -275,7 +275,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         bootLoader.initialRamdiskURL = assets.initrdURL
         // These values are guest-visible bootstrap inputs, not attestation.
         // The host still validates the hello against its in-memory BootContext.
-        bootLoader.commandLine = assets.kernelCommandLine + " rdinit=/init console=hvc0 earlycon=hvc0 loglevel=7 panic=10 dbx.sandbox=\(boot.sandboxID.raw) dbx.boot=\(boot.bootID.raw) dbx.nonce=\(boot.bootNonce.uuidString) dbx.manifest=\(boot.guestManifestDigest) dbx.port=1024"
+        bootLoader.commandLine = assets.kernelCommandLine + " init=/init rdinit=/init console=hvc0 earlycon=hvc0 loglevel=7 panic=10 dbx.sandbox=\(boot.sandboxID.raw) dbx.boot=\(boot.bootID.raw) dbx.nonce=\(boot.bootNonce.uuidString) dbx.manifest=\(boot.guestManifestDigest) dbx.port=1024"
 
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
