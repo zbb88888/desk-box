@@ -85,7 +85,11 @@ EOF
     ln -s busybox /tmp/initrd/bin/switch_root
     cat > /tmp/initrd/init <<EOF
 #!/bin/busybox sh
-mount -t devtmpfs dev /dev
+mount -t devtmpfs dev /dev 2>/dev/null || true
+# Keep console usable even when the guest kernel lacks devtmpfs auto-population.
+[ -e /dev/console ] || /bin/busybox mknod -m 0600 /dev/console c 5 1 || true
+[ -e /dev/ttyS0 ] || /bin/busybox mknod -m 0600 /dev/ttyS0 c 4 64 || true
+[ -e /dev/hvc0 ] || /bin/busybox mknod -m 0600 /dev/hvc0 c 229 0 || true
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 for c in /dev/console /dev/ttyS0 /dev/hvc0; do
