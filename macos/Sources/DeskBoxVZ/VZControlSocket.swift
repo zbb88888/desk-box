@@ -109,6 +109,10 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         } catch {
             FileHandle.standardError.write(Data("dbx-vz: socket read error=\(error.localizedDescription)\n".utf8))
             try? FileHandle.standardError.synchronize()
+            if let failure = error as? SandboxFailure {
+                FileHandle.standardError.write(Data("dbx-vz: sandbox failure reason=\(failure.reason)\n".utf8))
+                try? FileHandle.standardError.synchronize()
+            }
             onFailure(error.localizedDescription)
             close()
         }
