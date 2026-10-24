@@ -295,7 +295,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         let console: VZSerialConsole?
         if enableConsole {
             let serialConsole = VZSerialConsole { data in
+                // Keep diagnostic output visible even when the parent process is
+                // line-buffered or the VM emits binary/partial lines.
                 FileHandle.standardError.write(data)
+                try? FileHandle.standardError.synchronize()
                 fflush(stderr)
             }
             let serial = VZVirtioConsoleDeviceConfiguration()
