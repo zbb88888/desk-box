@@ -19,6 +19,9 @@
 - [M1-2 控制通道 TLS 1.3 双向认证升级](design/m1-tls-channel-upgrade.md)：控制通道加密升级计划（ephemeral 密钥协商、session 绑定、libsodium guest、默认开启加密、fail-closed）。
 - [M1-4 Guest PTY 支撑](design/m1-4-pty-support.md)：交互式 Agent 场景所需的 pseudo-TTY 分配、流式 I/O、resize 与关闭的设计与实现参考。
 - [M1-5 Guest Manifest 签名与防降级](design/m1-5-manifest-signing.md)：Ed25519 信任根、canonical payload、显式允许列表与 `guestAssetVersion` 单调最低版本（fail-closed）。
+- [M2 路线](design/m2-roadmap.md)：workspace sync → containerd/runc → Broker → Windows 后段的推进计划与审核要求。
+- [M2-1 Workspace Sync](design/m2-1-workspace-sync.md)：显式授权 workspace 快照经加密 channel 推送，路径/符号链接/限额 fail-closed 与 guest 侧 SHA-256 终验。
+- [M2-2 OCI workload 语义与策略门禁](design/m2-2-oci-workload.md)：OCI config.json 白名单子集、扩权字段 fail-closed 拒收、guest exec 受限 env/cwd 实施。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。
