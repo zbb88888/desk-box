@@ -54,6 +54,37 @@ swift run dbx-poc launch ./guest/manifest.json --cow-root "$HOME/Library/Applica
 
 启动 POC 必须使用已签名的 `com.apple.security.virtualization` entitlement，并在真实 Apple Silicon Mac 上执行。正常 EOF、SIGINT、SIGTERM 都会尝试统一 stop/destroy 清理；SIGKILL、宿主崩溃和系统重启仍需孤儿资源回收 POC。没有 guest bootstrap proof 时，输出只能是 `pending-bootstrap`，不能宣称产品状态为 `Running`。
 
+## 当前 MVP 状态（真机验证）
+
+已在 Apple Silicon Mac 上连续多次验证以下最小闭环：
+
+```text
+签名 entitlement
+  → VZ Linux arm64 VM 启动
+  → 自定义 initramfs + virtio console（hvc0）可见
+  → virtio-blk /dev/vda 挂载与 switch_root
+  → AF_VSOCK 控制连接
+  → BootstrapHello 解析与 boot 绑定校验
+  → HelloAck 回复
+  → bootstrapState = authenticated
+  → LifecycleMachine = running（BootstrapProof 验证后）
+  → Host 发送 exec 请求，Guest 回复 exec 响应
+  → 打印 exec=0 stdout=Desk Box guest exec stub response
+  → stop → destroy → APFS COW cleanup
+  → 进程 exit 0
+```
+
+当前 MVP 边界（明确不算产品级能力）：
+
+- exec 是受限诊断命令（`/bin/echo`、`/bin/sh`），不是完整 `execd`；
+- 无 TLS 1.3 双向认证；hello/ack 是 boot 绑定 proof，而非 session 认证；
+- 无 PTY、无 workspace sync、无 containerd/runc；
+- 网络默认拒绝，无 Broker；
+- guest manifest 未签名，供应链与降级保护未完成；
+- SIGKILL、宿主崩溃与系统重启的孤儿资源回收未实现。
+
+后续 M1+ 工作：TLS 1.3 双向认证与 session 绑定、guest `execd`（fork/exec、stdin/stdout/stderr、exit code、资源限额）、PTY、多密码 CM 测试、孤儿资源回收。
+
 ## 验收门槛
 
 macOS 侧发布前必须通过[安全验证追踪矩阵](../docs/security/security-verification-matrix.md)中 INV-01/03/05/07/08/10 的 macOS 证据项，以及架构 §11 的发布门槛；模拟器结果不构成发布证据（矩阵 §4）。
