@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import DeskBoxVZ
 @testable import DeskBoxCore
 
@@ -77,6 +78,31 @@ final class CowDiskManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphanClone.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: liveClone.path))
         XCTAssertEqual(try registry.load().count, 1)
+    }
+
+    func testSecureRecordSessionRoundTrip() throws {
+        let sandbox = SandboxID.new()
+        let boot = BootContext(sandboxID: sandbox, protocolMajor: 1, guestManifestDigest: "digest")
+        let hostSession = SecureRecordSession(context: boot)
+        XCTAssertEqual(hostSession.hostPublicHex.count, 64)
+
+        // Simulate the guest side with a fresh ephemeral keypair shared through
+        // the same HKDF inputs the host uses.
+        let guestPrivate = Curve25519.KeyAgreement.PrivateKey()
+        let guestPublic = Data(guestPrivate.publicKey.rawRepresentation)
+        try hostSession.completeKeyExchange(guestPublicData: guestPublic, boot: boot)
+        guard let binding = hostSession.sessionBinding else {
+            XCTFail("expected session binding after key exchange")
+            return
+        }
+        XCTAssertEqual(binding.hostFingerprintHex, hostSession.hostPublicHex)
+        XCTAssertFalse(binding.sessionID.raw.isEmpty)
+
+        let frame = Data("frame-payload-test".utf8)
+        let sealed = try hostSession.encrypt(frameData: frame)
+        XCTAssertNotEqual(sealed, frame)
+        let opened = try hostSession.decrypt(record: sealed)
+        XCTAssertEqual(opened, frame)
     }
 
     func testRegistryRefusesClonesOutsideCowRoot() throws {

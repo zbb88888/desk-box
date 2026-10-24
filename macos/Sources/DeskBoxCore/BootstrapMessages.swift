@@ -84,11 +84,20 @@ public struct BootstrapHelloAck: Sendable, Codable, Equatable {
     public let sessionID: SessionID
     public let requiresTLS: Bool
     public let protocolMajor: Int
+    /// Optional host X25519 public key for the M1-2 record-protection upgrade.
+    /// Present only when the host intends to start the encrypted session.
+    public let hostKeyPublicHex: String?
 
-    public init(sessionID: SessionID, requiresTLS: Bool = true, protocolMajor: Int = ControlChannelProtocol.currentMajor) {
+    public init(
+        sessionID: SessionID,
+        requiresTLS: Bool = true,
+        protocolMajor: Int = ControlChannelProtocol.currentMajor,
+        hostKeyPublicHex: String? = nil
+    ) {
         self.sessionID = sessionID
         self.requiresTLS = requiresTLS
         self.protocolMajor = protocolMajor
+        self.hostKeyPublicHex = hostKeyPublicHex
     }
 }
 

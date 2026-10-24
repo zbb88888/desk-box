@@ -56,6 +56,9 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     case response = 5
     case event = 6
     case close = 7
+    /// Guest -> host ephemeral X25519 public key share. Flows after HelloAck
+    /// and before the channel upgrades to record protection (M1-2).
+    case keyExchange = 8
 }
 
 public struct ControlRequest: Sendable, Codable, Equatable {

@@ -20,6 +20,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var delegate: VZRuntimeDelegate?
         var socketDelegate: VZControlSocketDelegate?
         var controlSocket: VZControlSocket?
+        var secureSession: SecureRecordSession?
         var lastExecResponse: ControlFrame?
         var lastDecodedExecResponse: ControlResponse?
         var pendingExecRequestID: UUID?
@@ -548,6 +549,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             self.recordAudit(record, action: .channelEvent, decision: .allow())
             return
         }
+        if frame.kind == .keyExchange {
+            handleKeyExchange(frame: frame, record: record)
+            return
+        }
         guard frame.kind == .hello else {
             recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapProofMissing, "TLS/bootstrap 完成前只接受 hello"))
             return
@@ -565,10 +570,26 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 return
             }
             record.bootstrapState = .helloAcceptedTLSRequired
-            let ack = BootstrapHelloAck(sessionID: .new(), requiresTLS: true)
+            var ack = BootstrapHelloAck(sessionID: .new(), requiresTLS: true)
+            if self.securityPolicy.requiresTLSUpgrade {
+                // M1-2: arm the ephemeral X25519 host key share into the ACK;
+                // the session is only established once the guest replies with
+                // its own ephemeral key as a keyExchange frame.
+                let session = SecureRecordSession(context: record.boot)
+                record.secureSession = session
+                ack = BootstrapHelloAck(
+                    sessionID: .new(), requiresTLS: true,
+                    hostKeyPublicHex: session.hostPublicHex
+                )
+            }
             let payload = try BootstrapCodec.encodeAck(ack)
             let response = try ControlFrame(kind: .helloAck, sequence: frame.sequence + 1, requestID: frame.requestID, payload: payload)
             try self.sendFrameOnQueue(record, frame: response)
+            if self.securityPolicy.requiresTLSUpgrade {
+                record.bootstrapState = .helloAcceptedTLSRequired
+                self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "hello 绑定成功；等待 guest keyExchange 完成 TLS 升级"))
+                return
+            }
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "hello 绑定成功；仍需 TLS 1.3 双向认证后才能建立 session"))
             // MVP transport readiness: a bound hello/ack over the VSOCK control
             // channel proves this boot's guest agent is live. The TLS layer is
@@ -582,67 +603,53 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 guestManifestDigest: hello.guestManifestDigest,
                 sessionID: ack.sessionID
             )
-            if self.securityPolicy.requiresTLSUpgrade {
-                try self.upgradeToTLS(record: record, ack: ack)
-            } else {
-                try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
-                record.bootstrapState = .authenticated
-                self.recordAudit(record, action: .channelEvent, decision: .allow())
-            }
+            try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+            record.bootstrapState = .authenticated
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
         } catch {
             recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, error.localizedDescription))
             self.closeSocketOnQueue(record)
         }
     }
 
-    private func record(for sandboxID: SandboxID) -> Record? {
-        records[sandboxID]
-    }
-
-    /// M1-2 TLS upgrade: handshake over the accepted VSOCK fd, momentarily
-    /// suspending the read source; on success the session ID becomes the proof
-    /// material for `running`. Any failure fails closed.
-    private func upgradeToTLS(record: Record, ack: BootstrapHelloAck) throws {
-        guard let socket = record.controlSocket else {
-            throw SandboxFailure(.bootstrapTLSRequired, "TLS upgrade without control socket")
+    /// M1-2: complete the ephemeral X25519 key exchange, upgrade the transport
+    /// to record protection, then transition to `running` with the TLS-derived
+    /// session ID as proof material.
+    private func handleKeyExchange(frame: ControlFrame, record: Record) {
+        guard self.securityPolicy.requiresTLSUpgrade,
+              record.bootstrapState == .helloAcceptedTLSRequired,
+              let session = record.secureSession,
+              let socket = record.controlSocket else {
+            recordAudit(record, action: .channelEvent, decision: .deny(.bootstrapTLSRequired, "keyExchange 在 TLS 升级窗口外到达"))
+            return
         }
-        let identity = try DevelopmentTLSAssets.loadIdentity()
-        let session = SecureTransportSession(
-            fileDescriptor: socket.fileDescriptor,
-            queue: queue,
-            localIdentity: identity
-        )
-        socket.suspendEvents()
-        defer { socket.resumeEvents() }
-        record.bootstrapState = .tlsAuthenticating
         do {
-            try session.performHandshake(
-                as: .hostClient,
-                peerContext: record.boot,
-                deadline: Date().addingTimeInterval(10)
+            try session.completeKeyExchange(guestPublicData: frame.payload, boot: record.boot)
+            guard let binding = session.sessionBinding else {
+                throw SandboxFailure(.bootstrapTLSRequired, "key exchange did not yield a session binding")
+            }
+            socket.upgradeTransport(to: session)
+            record.bootstrapState = .tlsAuthenticating
+            let proof = BootstrapProof(
+                sandboxID: record.request.sandboxID,
+                bootID: record.boot.bootID,
+                bootNonce: record.boot.bootNonce,
+                protocolMajor: record.boot.protocolMajor,
+                guestManifestDigest: record.boot.guestManifestDigest,
+                sessionID: binding.sessionID
             )
+            try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+            record.bootstrapState = .tlsAuthenticated
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
         } catch {
             record.lifecycle.forceFail(reason: .bootstrapTLSRequired)
-            self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "TLS handshake failed: \(error.localizedDescription)"))
+            self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapTLSRequired, "keyExchange failed: \(error.localizedDescription)"))
             self.closeSocketOnQueue(record)
-            throw error
         }
-        guard let binding = session.sessionBinding else {
-            throw SandboxFailure(.bootstrapTLSRequired, "TLS handshake completed without session binding")
-        }
-        socket.upgradeTransport(to: session)
-        let proof = BootstrapProof(
-            sandboxID: record.request.sandboxID,
-            bootID: record.boot.bootID,
-            bootNonce: record.boot.bootNonce,
-            protocolMajor: record.boot.protocolMajor,
-            guestManifestDigest: record.boot.guestManifestDigest,
-            sessionID: binding.sessionID
-        )
-        try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
-        record.bootstrapState = .tlsAuthenticated
-        _ = ack
-        self.recordAudit(record, action: .channelEvent, decision: .allow())
+    }
+
+    private func record(for sandboxID: SandboxID) -> Record? {
+        records[sandboxID]
     }
 
     private func recordAudit(_ record: Record, action: AuditAction, decision: Decision) {

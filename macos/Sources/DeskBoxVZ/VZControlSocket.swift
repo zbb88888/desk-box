@@ -6,9 +6,11 @@ import DeskBoxCore
 /// by VZVirtioSocketConnection; this object keeps the connection alive and
 /// closes it on session teardown.
 ///
-/// Frame validation stays strict (magic/version/length/sequence). Malformed or
-/// replayed frames fail closed and the connection is dropped; failures are
-/// surfaced through `onFailure` for audit instead of debug printing.
+/// After the HelloAck exchange the channel may be upgraded to record
+/// protection (M1-2): frames then travel as AEAD-sealed records with an
+/// explicit 4-byte length prefix, while the underlying ControlFrame framing
+/// (magic/version/sequence) still applies inside the plaintext. Malformed or
+/// replayed frames fail closed in both modes.
 final class VZControlSocket: NSObject, @unchecked Sendable {
     private let connection: VZVirtioSocketConnection
     private let queue: DispatchQueue
@@ -19,30 +21,12 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     private var sequence = ControlSequenceGuard()
     private var writeLock = NSLock()
     private var closed = false
-    private var eventsSuspended = false
-    private var tlsSession: SecureTransportSession?
+
+    /// Record framing buffer (used after transport upgrade).
+    private var recordBuffer = Data()
+    private var secureSession: SecureRecordSession?
 
     var fileDescriptor: Int32 { connection.fileDescriptor }
-
-    /// Pause/readliner-free window while a TLS handshake consumes raw bytes on
-    /// the same fd; resumed by `resumeEvents` after the transport switches.
-    func suspendEvents() {
-        guard let source, !eventsSuspended else { return }
-        source.suspend()
-        eventsSuspended = true
-    }
-
-    func resumeEvents() {
-        guard let source, eventsSuspended else { return }
-        source.resume()
-        eventsSuspended = false
-    }
-
-    /// Switch to encrypted transport after `SecureTransportSession` completed a
-    /// handshake on this fd. All subsequent frames flow over TLS records.
-    func upgradeTransport(to session: SecureTransportSession) {
-        tlsSession = session
-    }
 
     init(
         connection: VZVirtioSocketConnection,
@@ -58,6 +42,13 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         startReading()
     }
 
+    /// Switch to the encrypted record transport. Requires guest-side framing to
+    /// match ([u32be length][sealed frame]); future frames continue to pass the
+    /// ControlFrame magic/sequence checks after decryption.
+    func upgradeTransport(to session: SecureRecordSession) {
+        secureSession = session
+    }
+
     func send(_ frame: ControlFrame) throws {
         try send(bytes: frame.encoded())
     }
@@ -68,14 +59,15 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         }
         writeLock.lock()
         defer { writeLock.unlock() }
-        if let tls = tlsSession {
-            try tls.write(data)
-            return
+        var outbound = data
+        if let session = secureSession {
+            let sealed = try session.encrypt(frameData: data)
+            outbound = Self.encodeRecordPayload(sealed)
         }
         var offset = 0
-        while offset < data.count {
-            let written = data.withUnsafeBytes { raw in
-                write(connection.fileDescriptor, raw.baseAddress!.advanced(by: offset), data.count - offset)
+        while offset < outbound.count {
+            let written = outbound.withUnsafeBytes { raw in
+                write(connection.fileDescriptor, raw.baseAddress!.advanced(by: offset), outbound.count - offset)
             }
             if written <= 0 {
                 throw SandboxFailure(.bootstrapProofMismatch, "VZ control socket 写入失败")
@@ -93,8 +85,8 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         closed = true
         source?.cancel()
         source = nil
-        tlsSession?.close()
-        tlsSession = nil
+        secureSession = nil
+        recordBuffer.removeAll()
         connection.close()
         writeLock.unlock()
     }
@@ -111,26 +103,7 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         source.resume()
     }
 
-    /// Synchronous read used by the runtime after sending a request frame.
-    /// It shares the same bounded decoder and sequence guard as the async
-    /// reader; replayed or malformed frames still fail closed.
-    func pollRead() throws -> [ControlFrame] {
-        var bytes = [UInt8](repeating: 0, count: 64 * 1024)
-        let capacity = bytes.capacity
-        let count = bytes.withUnsafeMutableBytes { raw in
-            read(connection.fileDescriptor, raw.baseAddress, capacity)
-        }
-        guard count > 0 else { return [] }
-        let frames = try decoder.append(Data(bytes[0..<count]))
-        for frame in frames { try sequence.accept(frame) }
-        return frames
-    }
-
     private func readAvailable() {
-        if let tls = tlsSession {
-            readTLSRecord(tls)
-            return
-        }
         var bytes = [UInt8](repeating: 0, count: 64 * 1024)
         let capacity = bytes.capacity
         // `read` needs the element storage, not the Swift array object pointer.
@@ -144,6 +117,10 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
             close()
             return
         }
+        if secureSession != nil {
+            handleEncryptedChunk(Data(bytes[0..<count]))
+            return
+        }
         do {
             let frames = try decoder.append(Data(bytes[0..<count]))
             for frame in frames { try sequence.accept(frame) }
@@ -154,20 +131,50 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Drain one TLS record event into the same frame pipeline as the raw path.
-    private func readTLSRecord(_ tls: SecureTransportSession) {
-        do {
-            guard let data = try tls.read() else {
-                onFailure("guest control socket closed")
+    private static func encodeRecordPayload(_ sealed: Data) -> Data {
+        var payload = Data(capacity: 4 + sealed.count)
+        var value = UInt32(sealed.count).bigEndian
+        payload.append(contentsOf: withUnsafeBytes(of: &value) { Array($0) })
+        payload.append(sealed)
+        return payload
+    }
+
+    private static func decodeRecordLength(from data: Data) -> (length: Int, offset: Int)? {
+        guard data.count >= 4 else { return nil }
+        let bytes = Array(data.prefix(4))
+        let length = Int(UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16
+            | UInt32(bytes[2]) << 8 | UInt32(bytes[3]))
+        return (length, 4)
+    }
+
+    private func handleEncryptedChunk(_ chunk: Data) {
+        recordBuffer.append(chunk)
+        guard let session = secureSession else { return }
+        // Bounded record framing: u32be length, then sealed bytes.
+        while recordBuffer.count >= 4,
+              let (recordLength, offset) = Self.decodeRecordLength(from: recordBuffer) {
+            guard recordLength >= 16, // AEAD tag
+                  recordLength <= 1 << 20 else {
+                onFailure("TLS record length out of bounds: \(recordLength)")
                 close()
                 return
             }
-            if data.isEmpty { return }
-            let frames = try decoder.append(data)
-            for frame in frames { try sequence.accept(frame) }
-            for frame in frames { onFrames([frame]) }
-        } catch {
-            onFailure(error.localizedDescription)
+            if recordBuffer.count < offset + recordLength { break }
+            let record = Data(recordBuffer[offset..<(offset + recordLength)])
+            recordBuffer = Data(recordBuffer.dropFirst(offset + recordLength))
+            do {
+                let plaintext = try session.decrypt(record: record)
+                let frames = try decoder.append(plaintext)
+                for frame in frames { try sequence.accept(frame) }
+                for frame in frames { onFrames([frame]) }
+            } catch {
+                onFailure("record protection failed: \(error.localizedDescription)")
+                close()
+                return
+            }
+        }
+        if recordBuffer.count > ControlFrame.headerSize + ControlFrame.defaultMaximumPayload + 256 {
+            onFailure("record buffer overflow")
             close()
         }
     }
