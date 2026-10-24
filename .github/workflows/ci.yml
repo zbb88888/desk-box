@@ -130,5 +130,8 @@ jobs:
             macos/guest/vmlinuz-virt
             macos/guest/initrd-deskbox.img
             macos/guest/root-disk.raw
+            macos/guest/debian-initrd.gz
+            macos/guest/guest-bootstrap.c
+            macos/guest/brokerreq.c
             macos/guest/sbom.json
           if-no-files-found: error
