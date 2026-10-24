@@ -40,6 +40,7 @@ public enum ManifestSignerError: Error, Equatable, CustomStringConvertible {
     case badAlgorithm(String)
     case unknownSigningKey(String)
     case signatureInvalid
+    case revokedKey(String)
     case downgradeRejected(current: Int, minimum: Int)
 
     public var description: String {
@@ -49,6 +50,7 @@ public enum ManifestSignerError: Error, Equatable, CustomStringConvertible {
         case .badAlgorithm(let a): return "不支持的签名算法: \(a)"
         case .unknownSigningKey(let k): return "签名 keyID 不在允许列表: \(k)"
         case .signatureInvalid: return "manifest 签名不可验证"
+        case .revokedKey(let k): return "签名 keyID 已 revoked: \(k)"
         case .downgradeRejected(let now, let min): return "guestAssetVersion \(now) 低于允许最低版本 \(min)"
         }
     }
@@ -89,6 +91,42 @@ public enum ManifestSigner {
             }
         }
         throw ManifestSignerError.unknownSigningKey(keyID)
+    }
+
+    /// M5 扩展：`chain` 参数都是 release-keys.json 内容（revoked/expired/notBefore 应用在 validated）。
+    public static func verify(manifest: GuestAssetManifest,
+                              chain: ReleaseKeysManifest,
+                              now: Date = Date(),
+                              allowUnsignedManifest: Bool) throws {
+        guard let signature = manifest.signature else {
+            if allowUnsignedManifest { return }
+            throw ManifestSignerError.unsignedManifest
+        }
+        guard signature.alg == "ed25519" else { throw ManifestSignerError.badAlgorithm(signature.alg) }
+        do {
+            _ = try chain.usablePublicHex(forKeyID: signature.keyID, at: now)
+        } catch let error as ReleaseSigningChainError {
+            switch error {
+            case .revokedKey(let kid): throw ManifestSignerError.revokedKey(kid)
+            case .unknownKey(let kid): throw ManifestSignerError.unknownSigningKey(kid)
+            case .malformed(let reason):
+                throw ManifestSignerError.signatureInvalid
+            case .notYetActive(let kid, _), .expired(let kid, _):
+                throw ManifestSignerError.revokedKey("\(kid) (not-yet-active or expired)")
+            }
+        }
+        guard manifest.guestAssetVersion >= 1 else {
+            throw ManifestSignerError.downgradeRejected(current: manifest.guestAssetVersion, minimum: 1)
+        }
+        // signature check using the chain-provided key
+        let pubHex = try chain.usablePublicHex(forKeyID: signature.keyID, at: now)
+        guard let data = Data(hexString: pubHex),
+              let key = try? Curve25519.Signing.PublicKey(rawRepresentation: data) else {
+            throw ManifestSignerError.signatureInvalid
+        }
+        guard let sig = Data(base64Encoded: signature.sig) else { throw ManifestSignerError.signatureInvalid }
+        let bytes = try manifest.signingPayload.canonicalBytes()
+        guard key.isValidSignature(sig, for: bytes) else { throw ManifestSignerError.signatureInvalid }
     }
 
     public static func verify(manifest: GuestAssetManifest,

@@ -16,17 +16,37 @@ struct DBXPOC {
                 let sbom = try GuestSbomVerifier.verify(sbomURL: URL(fileURLWithPath: first))
                 print("sbom verified assetVersion=\(sbom.assetVersion) inputs=\(sbom.inputs.count) outputs=\(sbom.outputs.count)")
             case "validate-assets":
-                guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest]") }
+                guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest] [--release-keys <json>]") }
                 let manifest = try loadManifest(at: URL(fileURLWithPath: first))
-                let result = try GuestAssetValidator.validate(manifest.asManifest,
-                                                              allowUnsignedManifest: args.contains("--allow-unsigned-manifest"))
-                print("validated manifest \(result.manifestDigest)")
+                if let chainPath = try optionString("--release-keys", in: args) {
+                    let chainData = try Data(contentsOf: URL(fileURLWithPath: chainPath))
+                    let raw = try JSONDecoder().decode(ReleaseKeyFile.self, from: chainData)
+                    let chain = ReleaseKeysManifest(schema: raw.schema, generatedAtUtc: raw.generatedAtUtc, keys: raw.keys)
+                    do {
+                        try ManifestSigner.verify(manifest: manifest.asManifest,
+                                                 chain: chain,
+                                                 allowUnsignedManifest: args.contains("--allow-unsigned-manifest"))
+                    } catch let error as ManifestSignerError {
+                        throw SandboxFailure(.platformAssetDigestMismatch, error.description)
+                    }
+                    print("validated manifest \(manifest.manifestDigest) against release-keys （\(chain.keys.count) keys）")
+                } else {
+                    let result = try GuestAssetValidator.validate(manifest.asManifest,
+                                                                  allowUnsignedManifest: args.contains("--allow-unsigned-manifest"))
+                    print("validated manifest \(result.manifestDigest)")
+                }
             case "make-manifest":
                 try makeManifest(args: Array(args.dropFirst()))
             case "gen-guest-sign-key":
                 try genGuestSignKey(args: Array(args.dropFirst()))
             case "sign-manifest":
                 try signManifest(args: Array(args.dropFirst()))
+            case "gen-release-key":
+                try genReleaseKey(args: Array(args.dropFirst()))
+            case "rotate-release-key":
+                try rotateReleaseKey(args: Array(args.dropFirst()))
+            case "revoke-release-key":
+                try revokeReleaseKey(args: Array(args.dropFirst()))
             case "launch":
                 try await launch(args: Array(args.dropFirst()))
             case "sweep":
@@ -90,6 +110,113 @@ struct DBXPOC {
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         try JSONEncoder.pretty.encode(signed).write(to: output, options: .atomic)
         print("signed manifest \(output.path) keyID=\(signature.keyID)")
+    }
+
+    private struct ReleaseKeyFile: Codable {
+        var schema: String
+        var generatedAtUtc: String
+        var keys: [ReleaseKeysManifest.Key]
+    }
+
+    private static func loadReleaseKeys(at path: String) throws -> ReleaseKeysManifest {
+        let url = URL(fileURLWithPath: path)
+        let data = try Data(contentsOf: url)
+        let raw = try JSONDecoder().decode(ReleaseKeyFile.self, from: data)
+        return ReleaseKeysManifest(schema: raw.schema, generatedAtUtc: raw.generatedAtUtc, keys: raw.keys)
+    }
+
+    private static func writeReleaseKeys(_ manifest: ReleaseKeysManifest, to path: String) throws {
+        let raw = ReleaseKeyFile(schema: manifest.schema, generatedAtUtc: manifest.generatedAtUtc, keys: manifest.keys)
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder.pretty.encode(raw).write(to: url, options: .atomic)
+    }
+
+    private static func genReleaseKey(args: [String]) throws {
+        guard let outputPath = try optionString("--output-key", in: args) else {
+            throw CLIError.usage("dbx-poc gen-release-key --output-key <path>")
+        }
+        let pair = ManifestSigner.generateKeypairHex()
+        let keyID = String(pair.publicHex.prefix(16))
+        let starter = ReleaseKeysManifest(
+            schema: ReleaseKeysManifest.schemaValue,
+            generatedAtUtc: ISO8601DateFormatter().string(from: Date()),
+            keys: [ReleaseKeysManifest.Key(
+                keyID: keyID,
+                publicHex: pair.publicHex,
+                status: .active,
+                notBefore: ISO8601DateFormatter().string(from: Date()),
+                notAfter: nil,
+                note: "generated locally (dev chain)"
+            )]
+        )
+        try ("private:\(pair.privateHex)\n").write(to: URL(fileURLWithPath: outputPath), atomically: true, encoding: .utf8)
+        let starterURL = URL(fileURLWithPath: outputPath).deletingLastPathComponent()
+            .appendingPathComponent("release-keys.json")
+        if !FileManager.default.fileExists(atPath: starterURL.path) {
+            try writeReleaseKeys(starter, to: starterURL.path)
+            print("public:\(pair.publicHex)")
+            print("keyID=\(keyID) wrote starter release-keys.json at \(starterURL.path)")
+        } else {
+            print("public:\(pair.publicHex)")
+            print("keyID=\(keyID) (release-keys.json exists; update manually via rotate-release-key/revoke-release-key)")
+        }
+    }
+
+    private static func rotateReleaseKey(args: [String]) throws {
+        guard let base = try optionString("--base", in: args),
+              let newKeyPath = try optionString("--new-key", in: args)
+        else { throw CLIError.usage("dbx-poc rotate-release-key --base <release-keys.json> --new-key <path> [--output <out>]") }
+        let outPath = try optionString("--output", in: args) ?? base
+        var manifest = try loadReleaseKeys(at: base)
+        let raw = try String(contentsOf: URL(fileURLWithPath: newKeyPath), encoding: .utf8)
+        guard let privateHex = raw.components(separatedBy: "private:").last?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let pubHex = try? ManifestSigner.publicKeyHex(fromPrivateHex: privateHex) else {
+            throw CLIError.usage("new key file missing private material")
+        }
+        let keyID = String(pubHex.prefix(16))
+        // 所有 active 降级为 retired；新 key 以 active 双话领开始。
+        for idx in manifest.keys.indices where manifest.keys[idx].status == .active {
+            manifest.keys[idx] = ReleaseKeysManifest.Key(
+                keyID: manifest.keys[idx].keyID,
+                publicHex: manifest.keys[idx].publicHex,
+                status: .retired,
+                notBefore: manifest.keys[idx].notBefore,
+                notAfter: manifest.keys[idx].notAfter,
+                note: manifest.keys[idx].note
+            )
+        }
+        manifest.keys.append(ReleaseKeysManifest.Key(
+            keyID: keyID,
+            publicHex: pubHex,
+            status: .active,
+            notBefore: ISO8601DateFormatter().string(from: Date()),
+            notAfter: nil,
+            note: "rotated in"
+        ))
+        try writeReleaseKeys(manifest, to: outPath)
+        print("rotated release keys: new keyID=\(keyID); total=\(manifest.keys.count)")
+    }
+
+    private static func revokeReleaseKey(args: [String]) throws {
+        guard let base = try optionString("--base", in: args),
+              let keyID = try optionString("--key-id", in: args)
+        else { throw CLIError.usage("dbx-poc revoke-release-key --base <release-keys.json> --key-id <id> [--output <out>]") }
+        let outPath = try optionString("--output", in: args) ?? base
+        var manifest = try loadReleaseKeys(at: base)
+        guard let idx = manifest.keys.firstIndex(where: { $0.keyID == keyID }) else {
+            throw CLIError.usage("keyID not in manifest: \(keyID)")
+        }
+        manifest.keys[idx] = ReleaseKeysManifest.Key(
+            keyID: manifest.keys[idx].keyID,
+            publicHex: manifest.keys[idx].publicHex,
+            status: .revoked,
+            notBefore: manifest.keys[idx].notBefore,
+            notAfter: manifest.keys[idx].notAfter,
+            note: manifest.keys[idx].note
+        )
+        try writeReleaseKeys(manifest, to: outPath)
+        print("revoked keyID=\(keyID)")
     }
 
     private static func makeManifest(args: [String]) throws {
