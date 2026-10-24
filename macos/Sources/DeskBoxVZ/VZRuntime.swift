@@ -21,6 +21,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var socketDelegate: VZControlSocketDelegate?
         var controlSocket: VZControlSocket?
         var lastExecResponse: ControlFrame?
+        var lastDecodedExecResponse: ControlResponse?
         var bootstrapState: BootstrapState = .notConnected
         let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
@@ -279,13 +280,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         let timeout = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
         while true {
             await Task.yield()
-            let response = try await onQueue { () -> ControlFrame? in
+            let response = try await onQueue { () -> ControlResponse? in
                 let record = try self.require(handle)
-                return record.lifecycle.state == .stopped ? nil : record.lastExecResponse
+                return record.lastDecodedExecResponse ?? (record.lastExecResponse.flatMap { try? JSONDecoder().decode(ControlResponse.self, from: $0.payload) })
             }
             FileHandle.standardError.write(Data("dbx-vz: exec poll status=\(response == nil ? "waiting" : "received")\n".utf8))
             try? FileHandle.standardError.synchronize()
-            if let response { return try JSONDecoder().decode(ControlResponse.self, from: response.payload) }
+            if let response { return response }
             if Date() >= timeout { throw SandboxFailure(.bootstrapProofMismatch, "control response timeout") }
         }
     }
@@ -468,7 +469,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             let preview = String(decoding: frame.payload.prefix(120), as: UTF8.self)
             FileHandle.standardError.write(Data("dbx-vz: received response payload=\(preview)\n".utf8))
             try? FileHandle.standardError.synchronize()
-            record.lastExecResponse = frame
+            if let response = try? JSONDecoder().decode(ControlResponse.self, from: frame.payload) {
+                record.lastExecResponse = frame
+                record.lastDecodedExecResponse = response
+            }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
             return
         }
