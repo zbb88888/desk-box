@@ -88,8 +88,10 @@ EOF
 mount -t devtmpfs dev /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-printf "Desk Box initramfs ready\\n" > /dev/console 2>/dev/null || true
-/sbin/deskbox-bootstrap > /dev/console 2>&1 || true
+for c in /dev/console /dev/ttyS0 /dev/hvc0; do
+  printf "Desk Box initramfs ready\\n" > "$c" 2>/dev/null || true
+done
+/sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 while ! mount -t ext4 -o rw /dev/vda /newroot; do
   printf "Desk Box waiting for /dev/vda\\n" > /dev/console 2>/dev/null || true
   /bin/busybox sleep 1
