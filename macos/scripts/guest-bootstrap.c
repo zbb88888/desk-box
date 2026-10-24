@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <pty.h>
+#include <sched.h>
 #include <signal.h>
 #ifdef __linux__
 #include <sys/prctl.h>
@@ -218,7 +219,102 @@ static int extract_env_object(const char *json, char keys[][32], char vals[][160
     return count;
 }
 
-/** Run argv via fork/exec with pipes; fill an exitCode/stdout/stderr JSON. */
+/* ---- 第二道硬化（M2-2b）：cgroup v2 限额 + namespace 隔离 ---- */
+static int cgroup2_ready = 0;
+static int cgroup_counter = 0;
+static char cgroup_dir[128];
+
+static int cgroup_prepare(void) {
+#ifdef __linux__
+    if (!cgroup2_ready) {
+        if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, NULL) != 0 && errno != EBUSY) {
+            char dbgm[96];
+            int dn = snprintf(dbgm, sizeof(dbgm), "Desk Box cg: mount err=%d\n", errno);
+            if (dn > 0) { write(STDOUT_FILENO, dbgm, (size_t)dn); fsync(STDOUT_FILENO); }
+            return -1;
+        }
+        int sc = open("/sys/fs/cgroup/cgroup.subtree_control", O_WRONLY);
+        if (sc >= 0) {
+            static const char v[] = "+cpu +memory +pids";
+            ssize_t w = write(sc, v, sizeof(v) - 1);
+            (void)w;
+            close(sc);
+        }
+        cgroup2_ready = 1;
+    }
+    int id = ++cgroup_counter;
+    int n = snprintf(cgroup_dir, sizeof(cgroup_dir), "/sys/fs/cgroup/dbx-exec-%d", id);
+    if (n <= 0 || mkdir(cgroup_dir, 0755) != 0) return -2;
+    char file[160];
+    int ok = 1;
+    snprintf(file, sizeof(file), "%s/cpu.max", cgroup_dir);
+    int f = open(file, O_WRONLY);
+    if (f < 0) ok = 0; else { if (write(f, "50000 100000", 12) != 12) ok = 0; close(f); }
+    snprintf(file, sizeof(file), "%s/memory.max", cgroup_dir);
+    f = open(file, O_WRONLY);
+    if (f < 0) ok = 0; else { if (write(f, "268435456", 9) != 9) ok = 0; close(f); }
+    snprintf(file, sizeof(file), "%s/pids.max", cgroup_dir);
+    f = open(file, O_WRONLY);
+    if (f < 0) ok = 0; else { if (write(f, "64", 2) != 2) ok = 0; close(f); }
+    if (!ok) { rmdir(cgroup_dir); return -3; }
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+static int cgroup_add(pid_t pid) {
+#ifdef __linux__
+    char file[160];
+    char buf[16];
+    snprintf(file, sizeof(file), "%s/cgroup.procs", cgroup_dir);
+    int f = open(file, O_WRONLY);
+    if (f < 0) return -1;
+    int n = snprintf(buf, sizeof(buf), "%d", (int)pid);
+    int w = (int)write(f, buf, (size_t)n);
+    close(f);
+    return w == n ? 0 : -2;
+#else
+    (void)pid; return 0;
+#endif
+}
+
+static void cgroup_cleanup(void) {
+#ifdef __linux__
+    /* 等待收死后透需 rmdir；如果还在未出安全不动 fail-soft。 */
+    (void)rmdir(cgroup_dir);
+#endif
+}
+
+struct exec_child_ctx {
+    char **argv;
+    int out_r;
+    int out_w;
+    int err_r;
+    int err_w;
+    int timeout_seconds;
+    const char *cwd;
+    char **envp;
+};
+
+static int exec_child_main(void *argp) {
+    struct exec_child_ctx *ctx = (struct exec_child_ctx *)argp;
+    (void)setpgid(0, 0);
+    (void)dup2(ctx->out_w, STDOUT_FILENO);
+    (void)dup2(ctx->err_w, STDERR_FILENO);
+    close(ctx->out_r); close(ctx->out_w);
+    close(ctx->err_r); close(ctx->err_w);
+    if (install_exec_hardening(ctx->timeout_seconds) != 0) _exit(126);
+    if (ctx->envp) {
+        extern char **environ;
+        environ = ctx->envp;
+    }
+    if (ctx->cwd && chdir(ctx->cwd) != 0) _exit(125);
+    execvp(ctx->argv[0], ctx->argv);
+    _exit(127);
+}
+
+/** Run argv via clone/exec with pipes; fill an exitCode/stdout/stderr JSON. */
 static int run_exec_request(const char *request_json, char *response, size_t response_cap) {
     enum { MAX_ARGV = 32 };
     char storage[1024];
@@ -256,43 +352,65 @@ static int run_exec_request(const char *request_json, char *response, size_t res
             "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"cwd must be under /workspace\"}");
     }
 
+    /* 第二道保障（M2-2b）：cgroup v2 限额文件先为每 exec 付备（fail-closed）。 */
+    if (cgroup_prepare() != 0) {
+        return snprintf(response, response_cap,
+            "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"cgroup prepare failed\"}");
+    }
+
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
     if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+        cgroup_cleanup();
         return snprintf(response, response_cap,
             "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"pipe failed\"}");
     }
     int timeout_seconds = parse_timeout_seconds(request_json);
-    pid_t pid = fork();
+
+    /* 组装 OCI 派生 env（白名单已验证） */
+    extern char **environ;
+    static char *const base_env[] = {
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME=/workspace",
+        "USER=sandbox",
+        NULL
+    };
+    int ei = 0;
+    for (int i = 0; base_env[i]; i++) child_env[ei++] = (char *)base_env[i];
+    for (int i = 0; i < env_count && ei < 15; i++) child_env[ei++] = (char *)env_pairs[i];
+    child_env[ei] = NULL;
+
+    struct exec_child_ctx ctx = {
+        .argv = argv,
+        .out_r = out_pipe[0],
+        .out_w = out_pipe[1],
+        .err_r = err_pipe[0],
+        .err_w = err_pipe[1],
+        .timeout_seconds = timeout_seconds,
+        .cwd = has_cwd ? cwd_buf : NULL,
+        .envp = (env_count > 0) ? child_env : NULL,
+    };
+
+    static char child_stack[64 * 1024];
+    int clone_flags = SIGCHLD;
+#ifdef __linux__
+    clone_flags |= CLONE_NEWNS | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWPID;
+#endif
+    pid_t pid = clone(exec_child_main, child_stack + sizeof(child_stack), clone_flags, &ctx);
     if (pid < 0) {
-        return snprintf(response, response_cap,
-            "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"fork failed\"}");
-    }
-    if (pid == 0) {
-        // Child hardening (M1-3): non-privileged execution with resource
-        // ceilings. Order is important: limits are installed before privilege
-        // drop so rlimit survives setuid.
-        setpgid(0, 0);
-        dup2(out_pipe[1], STDOUT_FILENO);
-        dup2(err_pipe[1], STDERR_FILENO);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
-        if (install_exec_hardening(timeout_seconds) != 0) _exit(126);
-        /* M2-2: 应用 OCI 派生 env/cwd（白名单持有者已验证） */
-        extern char **environ;
-        static char *const base_env[] = {
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "HOME=/workspace",
-            "USER=sandbox",
-            NULL
-        };
-        int ei = 0;
-        for (int i = 0; base_env[i]; i++) child_env[ei++] = (char *)base_env[i];
-        for (int i = 0; i < env_count && ei < 15; i++) child_env[ei++] = (char *)env_pairs[i];
-        child_env[ei] = NULL;
-        environ = child_env;
-        if (has_cwd) { if (chdir(cwd_buf) != 0) _exit(125); }
-        execvp(argv[0], argv);
-        _exit(127);
+        cgroup_cleanup();
+        return snprintf(response, response_cap,
+            "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"clone failed\"}");
+    }
+    if (cgroup_add(pid) != 0) {
+        kill(pid, SIGKILL);
+        (void)waitpid(pid, NULL, 0);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        cgroup_cleanup();
+        return snprintf(response, response_cap,
+            "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"cgroup attach failed\"}");
     }
     close(out_pipe[1]); out_pipe[1] = -1;
     close(err_pipe[1]); err_pipe[1] = -1;
@@ -315,6 +433,7 @@ static int run_exec_request(const char *request_json, char *response, size_t res
         kill(-pid, SIGKILL);
         (void)waitpid(pid, &status, 0);
     }
+    cgroup_cleanup();
 
     for (;;) {
         ssize_t n = read(out_pipe[0], out_buf + out_len, sizeof(out_buf) - out_len - 1);
