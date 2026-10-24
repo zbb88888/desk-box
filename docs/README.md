@@ -31,6 +31,7 @@
 - [M5 Release 签名链](design/m5-release-signing-chain.md)：release-keys.json + key rotation/revocation，revoked 立即拒收。
 - [M6 CI pipeline](design/m6-ci-pipeline.md)：GitHub Actions：swift test + fuzz + guest build + 负人 regression + evidence。
 - [M7 Release 发布渠道骨架](design/m7-release-channel.md)：channel.json + 多 key 声明 + minGuestAssetVersionFloor + publish/verify-channel CLI。
+- [M8 CI 发布管道](design/m8-ci-release-pipeline.md)：GitHub Actions 上 tag 触发 M7 发布 pipeline 生成 release assets。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。

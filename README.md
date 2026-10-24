@@ -1,5 +1,8 @@
 # Desk Box
 
+[![CI](https://github.com/zbb88888/desk-box/actions/workflows/ci.yml/badge.svg)](https://github.com/zbb88888/desk-box/actions/workflows/ci.yml)
+[![Release](https://github.com/zbb88888/desk-box/actions/workflows/release.yml/badge.svg)](https://github.com/zbb88888/desk-box/actions/workflows/release.yml)
+
 用于运行 AI 编程 Agent 和不可信开发工作负载的桌面安全沙箱。
 
 Desk Box 使用 OCI 镜像作为工作负载格式，以独立 Linux 虚拟机作为强隔离边界：Apple Silicon macOS 使用 Apple `Virtualization.framework`，Windows 11 Pro/Enterprise 使用 Hyper-V Generation 2。
