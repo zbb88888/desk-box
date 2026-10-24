@@ -32,7 +32,8 @@ jobs:
       - name: swift build (CLI)
         run: |
           cd macos
-          swift build 2>&1 | tail -3
+          set -o pipefail
+          swift build 2>&1 | tail -5
       - name: Generate CI signing key and policy anchor
         run: |
           cd macos
@@ -46,7 +47,8 @@ jobs:
       - name: Build validated bundle
         run: |
           cd macos
-          swift build 2>&1 | tail -3
+          set -o pipefail
+          swift build 2>&1 | tail -5
           SBOM_SHA=$(shasum -a 256 ./guest/sbom.json | awk '{print $1}')
           ./.build/debug/dbx-poc make-manifest \
             --kernel ./guest/vmlinuz-virt \
