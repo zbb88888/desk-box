@@ -81,10 +81,13 @@ EOF
 mount -t devtmpfs dev /dev
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-printf "Desk Box initramfs ready\\n"
-/sbin/deskbox-bootstrap || true
-until mount -t ext4 -o rw /dev/vda /newroot; do sleep 1; done
-exec /bin/switch_root /newroot /sbin/init
+printf "Desk Box initramfs ready\\n" > /dev/console 2>/dev/null || true
+/sbin/deskbox-bootstrap > /dev/console 2>&1 || true
+while ! mount -t ext4 -o rw /dev/vda /newroot; do
+  printf "Desk Box waiting for /dev/vda\\n" > /dev/console 2>/dev/null || true
+  /bin/busybox sleep 1
+done
+exec /bin/busybox switch_root /newroot /sbin/init
 EOF
     chmod 0755 /tmp/initrd/init
     (cd /tmp/initrd && find . -print | cpio -o -H newc 2>/dev/null | gzip -9 > /out/initrd-deskbox.img)

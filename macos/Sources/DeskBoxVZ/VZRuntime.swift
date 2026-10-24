@@ -287,6 +287,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         if enableConsole {
             let serialConsole = VZSerialConsole { data in
                 FileHandle.standardError.write(data)
+                fflush(stderr)
             }
             let serial = VZVirtioConsoleDeviceConfiguration()
             let consolePort = VZVirtioConsolePortConfiguration()
