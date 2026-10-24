@@ -31,6 +31,8 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
     }
 
     func send(_ frame: ControlFrame) throws {
+        FileHandle.standardError.write(Data("dbx-vz: socket send kind=\(frame.kind) seq=\(frame.sequence)\n".utf8))
+        try? FileHandle.standardError.synchronize()
         try send(bytes: frame.encoded())
     }
 
