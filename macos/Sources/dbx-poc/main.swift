@@ -113,12 +113,19 @@ struct DBXPOC {
             print("bootstrap=notConnected")
             let statusTask = Task {
                 var last: BootstrapState = .notConnected
+                var elapsed = 0
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(500))
-                    if let status = try? await runtime.inspect(handle), status.bootstrap != last {
-                        last = status.bootstrap
-                        print("bootstrap=\(status.bootstrap.rawValue)")
-                        fflush(stdout)
+                    elapsed += 500
+                    if let status = try? await runtime.inspect(handle) {
+                        if status.bootstrap != last {
+                            last = status.bootstrap
+                            print("bootstrap=\(status.bootstrap.rawValue)")
+                            fflush(stdout)
+                        }
+                        if elapsed % 5000 == 0 && status.bootstrap == .notConnected {
+                            fputs("dbx-poc: guest bootstrap not connected after \(elapsed / 1000)s; inspect serial console and guest initramfs\n", stderr)
+                        }
                     }
                 }
             }
