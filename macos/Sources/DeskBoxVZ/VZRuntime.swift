@@ -415,11 +415,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                         queue: self.queue,
                         onFrames: { [weak self, weak record] frames in
                             guard let self, let record else { return }
-                            self.queue.async { [weak self, weak record] in
-                                guard let self, let record else { return }
-                                for frame in frames {
-                                    self.handleControlFrame(frame, record: record)
-                                }
+                            for frame in frames {
+                                FileHandle.standardError.write(Data("dbx-vz: onFrames callback kind=\(frame.kind) seq=\(frame.sequence)\n".utf8))
+                                try? FileHandle.standardError.synchronize()
+                                self.handleControlFrame(frame, record: record)
                             }
                         },
                         onFailure: { [weak self, weak record] message in
