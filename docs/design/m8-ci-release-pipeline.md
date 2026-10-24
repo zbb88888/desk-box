@@ -1,6 +1,16 @@
 # M8：CI 上的发布管道（GitHub Releases + channel.json）
 
-状态：进行中；关联 `docs/design/m6-ci-pipeline.md`、`docs/design/m7-release-channel.md`、`docs/security/security-verification-matrix.md` INV-09。
+状态：已完成（GitHub Actions 上 tag 发布已验证）；关联 `docs/design/m6-ci-pipeline.md`、`docs/design/m7-release-channel.md`、`docs/security/security-verification-matrix.md` INV-09。
+
+## 进度
+
+- ✅ `.github/workflows/release.yml`：tag push (`v*-alpha*`) 触发；
+  - `guest-build` (ubuntu-latest)：guest assets 构建 + artifact 上传；
+  - `publish` (macos-latest, needs=guest-build)：CI tmp key 生成、写 generated policy anchor、再生swi build、make-manifest/sign、validate-assets（signed accept + unsigned 预期 regress 拒）、verify-sbom、生成 channel.json（M7）、上传 GitHub Release（manifest.json/sbom.json/channel.json/checksums.txt）；
+- ✅ 演示发布：`v0.1.0-alpha.1` 已上传 Shuangzi release assets；本机 verify-channel 以 network-streamed 资产验证出同 tag；
+- ✅ README 增 CI/Release badge；并跟进 docs/README.md 的 M8 项；
+- ✅ 与 M6/M7 的发布路径衔接依然一致；
+- 下一步（M9+）：补充 `guest.tar.gz` / 多 key 同步声明 / 发布 URL 分发目录入仓证据，使外部用户可本地一键 substitute verification。
 
 ## 1. 目标
 
