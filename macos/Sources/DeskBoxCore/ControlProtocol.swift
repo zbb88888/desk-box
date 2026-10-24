@@ -77,6 +77,46 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     case wsEnd = 16
     /// Guest -> host: workspace sync result (success or fail-closed reason).
     case wsAck = 17
+    /// Guest -> host: 在线 broker 拉取请求（M2-3b，例：\"https://example.com\"）。
+    case brokerFetch = 21
+    /// Host -> guest: 按 reqId 交付数据块的 hex 实体（≤512 bytes/块）。
+    case brokerData = 22
+    /// Host -> guest: 拉取终报（status/ok/error）。
+    case brokerEnd = 23
+}
+
+// MARK: - Broker online channel messages (M2-3b)
+
+public struct BrokerFetchRequest: Sendable, Codable, Equatable {
+    public let reqId: UInt32
+    public let url: String
+    public let savePath: String   // /workspace/inbound/xxx （由 guest 验证）
+
+    public init(reqId: UInt32, url: String, savePath: String) {
+        self.reqId = reqId
+        self.url = url
+        self.savePath = savePath
+    }
+}
+
+public struct BrokerDataChunk: Sendable, Codable, Equatable {
+    public let reqId: UInt32
+    public let dataHex: String
+    public init(reqId: UInt32, dataHex: String) { self.reqId = reqId; self.dataHex = dataHex }
+}
+
+public struct BrokerFetchEnd: Sendable, Codable, Equatable {
+    public let reqId: UInt32
+    public let status: Int32
+    public let ok: Bool
+    public let error: String?
+
+    public init(reqId: UInt32, status: Int32, ok: Bool, error: String? = nil) {
+        self.reqId = reqId
+        self.status = status
+        self.ok = ok
+        self.error = error
+    }
 }
 
 // MARK: - Workspace Sync messages (M2-1)

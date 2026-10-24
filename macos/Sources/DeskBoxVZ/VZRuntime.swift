@@ -63,6 +63,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private let enableControlSocket: Bool
     private let securityPolicy: ControlSecurityPolicy
     private let allowUnsignedManifest: Bool
+    /// M2-3b：在线 broker 凭据/策略根目录（内含 broker-policy.json 与 broker-credentials.local，gitignored）。
+    public var brokerConfigDir: URL?
 
     public init(
         cowRoot: URL,
@@ -81,6 +83,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         self.enableControlSocket = enableControlSocket
         self.securityPolicy = securityPolicy
         self.allowUnsignedManifest = allowUnsignedManifest
+        self.brokerConfigDir = nil
     }
 
     /// Recover orphan resources left by SIGKILL/host crash before accepting
@@ -432,7 +435,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
         }
 
-        // 3) Collect outputs until `exit`.
+        // 3) Collect outputs until `exit`；给予一个额外 drain 周期收集尾随输出。
         var output = Data()
         var exitCode: Int32?
         var signal: Int32?
@@ -455,7 +458,20 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                     continue
                 }
             }
-            if exitCode != nil || signal != nil { break }
+            if exitCode != nil || signal != nil {
+                // 再扫一轮：exit 与最后一批 output 可能在同一 poll burst 。 
+                try await Task.sleep(for: .milliseconds(120))
+                let trailing = try await onQueue { () -> [PtyEvent] in
+                    let record = try self.require(handle)
+                    let matched = record.ptyEvents.filter { $0.ptyId == 0 }
+                    record.ptyEvents.removeAll { $0.ptyId == 0 }
+                    return matched
+                }
+                for event in trailing where event.type == .output {
+                    if let bytes = HexCoder.decode(event.dataHex) { output.append(bytes) }
+                }
+                break
+            }
             if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "pty session timeout") }
             try await Task.sleep(for: .milliseconds(40))
         }
@@ -719,6 +735,66 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         record.socketDelegate = delegate
     }
 
+    private func handleBrokerFetch(_ request: BrokerFetchRequest, record: Record) {
+        guard let configDir = brokerConfigDir else {
+            self.sendBrokerEnd(record, request: request, status: 0, ok: false, error: "broker not configured")
+            return
+        }
+        guard let url = URL(string: request.url) else {
+            self.sendBrokerEnd(record, request: request, status: 0, ok: false, error: "bad url")
+            return
+        }
+        let policyURL = configDir.appendingPathComponent("broker-policy.json")
+        let credsURL = configDir.appendingPathComponent("broker-credentials.local")
+        let handle = SandboxHandle(sandboxID: record.request.sandboxID, bootID: record.boot.bootID)
+        Task {
+            do {
+                let policy = try BrokerPolicy.load(from: policyURL)
+                let credentials = CredentialBroker.load(from: credsURL)
+                let broker = BrokerService(policy: policy, credentials: credentials)
+                let (data, report) = try await broker.fetch(url)
+                try await self.pushBrokerChunks(handle: handle, request: request, data: data,
+                                                status: Int32(report.statusCode))
+            } catch {
+                try? await self.sendBrokerEndAsync(handle: handle, request: request,
+                                                   status: 0, ok: false,
+                                                   error: String(describing: error))
+            }
+        }
+    }
+
+    private func sendBrokerEnd(_ record: Record, request: BrokerFetchRequest, status: Int32, ok: Bool, error: String?) {
+        do {
+            let payload = try JSONEncoder().encode(BrokerFetchEnd(reqId: request.reqId, status: status, ok: ok, error: error))
+            let frame = try ControlFrame(kind: .brokerEnd, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+            try self.sendFrameOnQueue(record, frame: frame)
+        } catch { _ = () }
+    }
+
+    private func sendBrokerEndAsync(handle: SandboxHandle, request: BrokerFetchRequest, status: Int32, ok: Bool, error: String?) async throws {
+        try await onQueue {
+            let record = try self.require(handle)
+            self.sendBrokerEnd(record, request: request, status: status, ok: ok, error: error)
+        }
+    }
+
+    private func pushBrokerChunks(handle: SandboxHandle, request: BrokerFetchRequest, data: Data, status: Int32) async throws {
+        let chunkSize = 512
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + chunkSize, data.count)
+            let slice = data[offset..<end]
+            let payload = try JSONEncoder().encode(BrokerDataChunk(reqId: request.reqId, dataHex: HexCoder.encode(Data(slice))))
+            try await onQueue {
+                let record = try self.require(handle)
+                let frame = try ControlFrame(kind: .brokerData, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
+                try self.sendFrameOnQueue(record, frame: frame)
+            }
+            offset = end
+        }
+        try await self.sendBrokerEndAsync(handle: handle, request: request, status: status, ok: true, error: nil)
+    }
+
     private func handleControlFrame(_ frame: ControlFrame, record: Record) {
         // Response frames carry the guest exec result; decode and retain the
         // structured value for `execute` callers.
@@ -746,6 +822,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, "wsAck payload decode failed"))
             }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return
+        }
+        if frame.kind == .brokerFetch {
+            do {
+                let request = try JSONDecoder().decode(BrokerFetchRequest.self, from: frame.payload)
+                self.handleBrokerFetch(request, record: record)
+            } catch {
+                recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, "brokerFetch decode failed"))
+            }
             return
         }
         if frame.kind == .keyExchange {

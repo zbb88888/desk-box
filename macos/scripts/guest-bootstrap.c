@@ -9,6 +9,7 @@
 #endif
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -71,7 +72,14 @@ static int parse_argv(const char *json, char **argv, int max_argv, char *storage
     if (!key) return -1;
     const char *open = strchr(key, '[');
     if (!open) return -1;
-    const char *close = strchr(open, ']');
+    /* quote-aware 扫描：只接受不在字符串 内部的 ']' */
+    const char *close = NULL;
+    int in_quote = 0;
+    for (const char *q = open; *q; q++) {
+        if (*q == '\\' && q[1]) { q++; continue; }
+        if (*q == '"') { in_quote = !in_quote; continue; }
+        if (*q == ']' && !in_quote) { close = q; break; }
+    }
     if (!close) return -1;
 
     int argc = 0;
@@ -159,6 +167,8 @@ static int install_exec_hardening(int timeout_seconds) {
 }
 
 /* ws_extract_string 定义在文件后面；在前前向声明。 */
+static int env_key_ok(const char *k);
+static int extract_env_object(const char *json, char keys[][32], char vals[][160], int max_pairs);
 static int ws_extract_string(const char *json, const char *field, char *out, size_t cap);
 
 /* env 键名合规：[A-Z0-9_]，首字符非数字；禁 DBX_/PATH/HOME/USER。 */
@@ -819,11 +829,36 @@ int main(void) {
     (void)mkdir("/run", 0755);
     int marker = open("/run/deskbox-bootstrap-ok", O_CREAT | O_WRONLY, 0644);
     if (marker >= 0) close(marker);
+    /* M2-3b：guest→host 在线 broker 通道。
+     * 监听 /run/deskbox-broker.sock，受 guest 工作负载（默认 nobody）请求；
+     * 转发 kind==21 至宿主，接受 kind==22/23 落位到 /workspace/inbound。
+     */
+    int broker_listen_fd = -1;
+    {
+        int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (lfd >= 0) {
+            struct sockaddr_un su;
+            memset(&su, 0, sizeof(su));
+            su.sun_family = AF_UNIX;
+            strncpy(su.sun_path, "/run/deskbox-broker.sock", sizeof(su.sun_path) - 1);
+            (void)unlink(su.sun_path);
+            if (bind(lfd, (struct sockaddr *)&su, sizeof(su)) == 0 && listen(lfd, 8) == 0) {
+                (void)chmod(su.sun_path, 0666);
+                broker_listen_fd = lfd;
+            } else {
+                close(lfd);
+            }
+        }
+    }
+
     struct pty_session pty = {.pid = -1, .master_fd = -1, .id = 0};
     struct ws_session ws = {.active = 0, .ws_id = {0}, .declared_files = 0, .declared_bytes = 0, .received_files = 0, .received_bytes = 0};
+    uint32_t next_broker_req_id = 1;
+    int broker_open_fd[4] = {-1, -1, -1, -1};
+    uint32_t broker_open_id[4] = {0, 0, 0, 0};
     uint8_t incoming[4096];
     for (;;) {
-        struct pollfd pfds[2];
+        struct pollfd pfds[3];
         pfds[0].fd = fd;
         pfds[0].events = POLLIN;
         pfds[0].revents = 0;
@@ -833,6 +868,13 @@ int main(void) {
             pfds[1].events = POLLIN;
             pfds[1].revents = 0;
             nfds = 2;
+        }
+        int broker_slot = nfds;
+        if (broker_listen_fd >= 0) {
+            pfds[broker_slot].fd = broker_listen_fd;
+            pfds[broker_slot].events = POLLIN;
+            pfds[broker_slot].revents = 0;
+            nfds++;
         }
         int ready = poll(pfds, nfds, 250);
         if (ready < 0 && errno != EINTR) break;
@@ -852,6 +894,70 @@ int main(void) {
                 continue;
             }
         }
+
+        /* guest→host 在线 broker（M2-3b）：UNIX socket 连接进来的 URL 请求。 */
+        if (broker_listen_fd >= 0 && (pfds[broker_slot].revents & POLLIN)) {
+            int cfd = accept(broker_listen_fd, NULL, NULL);
+            if (cfd >= 0) {
+                char line[768];
+                ssize_t n = recv(cfd, line, sizeof(line) - 1, 0);
+                if (n > 0) {
+                    line[n] = 0;
+                    char *nl = strchr(line, '\n');
+                    if (nl) *nl = 0;
+                    /* 格式：GET <url>（savePath 在 guest 侧由 /workspace/inbound/ + basename(url) 决定）*/
+                    if (strncmp(line, "GET ", 4) == 0 && strncmp(line + 4, "http", 4) == 0 && strlen(line + 4) <= 480) {
+                        const char *url = line + 4;
+                        /* savePath: /workspace/inbound/<url basename> */
+                        const char *base = strrchr(url, '/');
+                        base = base ? base + 1 : url;
+                        if (!*base || strstr(base, "..")) base = "index.html";
+                        char save[256];
+                        int sn = snprintf(save, sizeof(save), "/workspace/inbound/%s", base);
+                        /* savePath 仅在 ws_path_ok 检查之下；inbound 目录用 mkdir -p 防御父目录缺失 */
+                        if (sn > 0 && (size_t)sn < sizeof(save)) {
+                            uint32_t req_id = next_broker_req_id++;
+                            char body[768];
+                            int bn = snprintf(body, sizeof(body),
+                                              "{\"reqId\":%u,\"url\":\"%s\",\"savePath\":\"%s\"}",
+                                              req_id, url, save);
+                            if (bn > 0) {
+                                (void)send_any_frame(fd, record_mode, 21, response_sequence++,
+                                                     NULL, body, (size_t)bn);
+                                /* guest 侧 immediately 以 in-place fd 预开（待 brokerData 逐块写） */
+                                char mkdir_line[256];
+                                int mn = snprintf(mkdir_line, sizeof(mkdir_line), "/workspace/inbound/%s", base);
+                                if (mn > 0) { (void)mkdir("/workspace/inbound", 0755); }
+                                int ofd = open(save, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                if (ofd >= 0) {
+                                    (void)fchown(ofd, 65534, 65534);
+                                    int placed = 0;
+                                    for (int i = 0; i < 4 && !placed; i++) {
+                                        if (broker_open_fd[i] < 0) {
+                                            broker_open_fd[i] = ofd;
+                                            broker_open_id[i] = req_id;
+                                            placed = 1;
+                                        }
+                                    }
+                                    if (!placed) close(ofd);
+                                }
+                                /* 立即答复 client OK（拉取异步；完成事件以 brokerEnd 反映），简化 client 流程 */
+                                const char *ok = "OK\n";
+                                (void)send(cfd, ok, 3, 0);
+                            }
+                        } else {
+                            const char *err = "ERR bad-savepath\n";
+                            (void)send(cfd, err, strlen(err), 0);
+                        }
+                    } else {
+                        const char *err = "ERR bad-request\n";
+                        (void)send(cfd, err, strlen(err), 0);
+                    }
+                }
+                close(cfd);
+            }
+        }
+
         if (ready <= 0) continue;
 
         if (pfds[0].revents & POLLIN) {
@@ -978,10 +1084,35 @@ int main(void) {
                     }
                     memset(&ws, 0, sizeof(ws));
                 }
+            } else if (kind == 22) { /* brokerData：宿主响应块 ，写入口径 broker_open_fd */
+                uint32_t rid = (uint32_t)ws_extract_u64((const char *)(incoming + 36), "\"reqId\"", 0);
+                int found = -1;
+                for (int i = 0; i < 4; i++) if (broker_open_fd[i] >= 0 && broker_open_id[i] == rid) { found = i; break; }
+                if (found >= 0) {
+                    uint8_t bytes[1024];
+                    int blen = extract_hex_field((const char *)(incoming + 36), "\"dataHex\"", bytes, sizeof(bytes));
+                    if (blen > 0) {
+                        size_t w = 0;
+                        while (w < (size_t)blen) {
+                            ssize_t n = write(broker_open_fd[found], bytes + w, (size_t)blen - w);
+                            if (n <= 0) break;
+                            w += (size_t)n;
+                        }
+                    }
+                }
+            } else if (kind == 23) { /* brokerEnd */
+                uint32_t rid = (uint32_t)ws_extract_u64((const char *)(incoming + 36), "\"reqId\"", 0);
+                for (int i = 0; i < 4; i++) if (broker_open_fd[i] >= 0 && broker_open_id[i] == rid) {
+                    (void)fsync(broker_open_fd[i]);
+                    close(broker_open_fd[i]);
+                    broker_open_fd[i] = -1;
+                    broker_open_id[i] = 0;
+                    break;
+                }
             }
         }
 
-        if (nfds == 2 && (pfds[1].revents & POLLIN)) {
+        if (nfds >= 2 && pty.master_fd >= 0 && (pfds[1].revents & POLLIN)) {
             uint8_t outbuf[512];
             ssize_t out = read(pty.master_fd, outbuf, sizeof(outbuf));
             if (out > 0) {

@@ -152,6 +152,7 @@ struct DBXPOC {
             securityPolicy: plaintextAllowed ? ControlSecurityPolicy() : .strict,
             allowUnsignedManifest: unsignedAllowed
         )
+        runtime.brokerConfigDir = URL(fileURLWithPath: "./guest")
         do {
             let sweep = try runtime.sweepOrphans()
             if !sweep.isEmpty {
@@ -242,6 +243,28 @@ struct DBXPOC {
                             try? FileManager.default.removeItem(at: staging)
                         } catch {
                             fputs("dbx-poc: broker preload failed: \(error)\n", stderr)
+                            fflush(stderr)
+                        }
+                    }
+                    // M2-3b: guest 侧请求 broker（经由 AF_UNIX + vsock + 加密 record channel）。
+                    if let guestBrokerURL = try optionString("--broker-guest-url", in: args) {
+                        do {
+                            // guest savePath 语义：basename(url)，空路径段取 host，保 guest 端一致。
+                            let parsed = URL(string: guestBrokerURL)
+                            let tail = parsed?.path.split(separator: "/").last.map(String.init)
+                                ?? parsed?.host
+                                ?? "index.html"
+                            let fname = tail.isEmpty ? "index.html" : tail
+                            let execResult = try await runtime.ptyRoundTrip(
+                                handle,
+                                argv: ["/bin/sh", "-c",
+                                       "brokerreq \(guestBrokerURL) && for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; if [ -s /workspace/inbound/\(fname) ]; then busybox sha256sum /workspace/inbound/\(fname); exit 0; fi; done; exit 1"],
+                                inputHex: nil, timeoutSeconds: 25
+                            )
+                            print("broker-guest outbound=\(guestBrokerURL) exit=\(execResult.exitCode ?? -1) stdout=\(execResult.stdoutText.replacingOccurrences(of: "\n", with: " | "))")
+                            fflush(stdout)
+                        } catch {
+                            fputs("dbx-poc: broker guest flow failed: \(error)\n", stderr)
                             fflush(stderr)
                         }
                     }

@@ -17,6 +17,7 @@ MINIROOT_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releas
 
 mkdir -p "$OUT_DIR"
 cp "$(dirname "$0")/guest-bootstrap.c" "$OUT_DIR/guest-bootstrap.c"
+cp "$(dirname "$0")/brokerreq.c" "$OUT_DIR/brokerreq.c"
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v docker >/dev/null || { echo "docker is required to build the ext4 image" >&2; exit 1; }
 
@@ -53,7 +54,10 @@ docker run --rm \
     mkdir -p /tmp/rootfs
     curl --fail --location --retry 3 "$MINIROOT_URL" | tar -xz -C /tmp/rootfs
     mkdir -p /tmp/rootfs/root /tmp/rootfs/workspace /tmp/rootfs/run
+    # 顺手装个 brokerreq 小客户端（M2-3b：guest 进程通过 AF_UNIX 请求宿主 broker）
+    gcc -static -O2 -Wall -Wextra -o /tmp/brokerreq /out/brokerreq.c
     install -m 0755 /tmp/deskbox-bootstrap /tmp/rootfs/sbin/deskbox-bootstrap
+    install -m 0755 /tmp/brokerreq /tmp/rootfs/bin/brokerreq
     cat > /tmp/rootfs/etc/motd <<EOF
 Desk Box Alpine guest POC
 Network is intentionally disabled by the host VZ configuration.
@@ -103,8 +107,9 @@ EOF
     mkdir -p /tmp/initrd/lib/modules
     cp -a /tmp/deb-modules/lib/modules/* /tmp/initrd/lib/modules/
     depmod -b /tmp/initrd 6.1.0-50-arm64
-    mkdir -p /tmp/initrd/sbin
+    mkdir -p /tmp/initrd/sbin /tmp/initrd/bin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
+    cp /tmp/brokerreq /tmp/initrd/bin/brokerreq
     chmod 0755 /tmp/initrd/bin/busybox
     rm -f /tmp/initrd/bin/mount /tmp/initrd/bin/switch_root
     ln -s busybox /tmp/initrd/bin/mount
