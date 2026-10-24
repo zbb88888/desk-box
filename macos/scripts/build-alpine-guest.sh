@@ -39,7 +39,7 @@ docker run --rm \
   -v "$OUT_DIR:/out" \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
-    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers >/dev/null
+    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static >/dev/null
     gcc -static -O2 -Wall -Wextra -o /tmp/deskbox-bootstrap /out/guest-bootstrap.c
     rm -rf /tmp/rootfs
     mkdir -p /tmp/rootfs
@@ -72,7 +72,7 @@ EOF
 
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot
-    cp /tmp/rootfs/bin/busybox /tmp/initrd/bin/busybox
+    cp /bin/busybox.static /tmp/initrd/bin/busybox
     # Alpine busybox is dynamically linked against musl; include its loader
     # and runtime libraries in the initramfs or /init will fail before console.
     mkdir -p /tmp/initrd/lib /tmp/initrd/usr/lib
@@ -80,6 +80,7 @@ EOF
     cp -a /tmp/rootfs/usr/lib/* /tmp/initrd/usr/lib/ 2>/dev/null || true
     mkdir -p /tmp/initrd/sbin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
+    chmod 0755 /tmp/initrd/bin/busybox
     ln -s busybox /tmp/initrd/bin/mount
     ln -s busybox /tmp/initrd/bin/switch_root
     cat > /tmp/initrd/init <<EOF
