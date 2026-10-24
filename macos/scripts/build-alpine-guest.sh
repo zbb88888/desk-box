@@ -68,13 +68,13 @@ mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 mkdir -p /run /workspace
-/sbin/deskbox-bootstrap >/dev/null 2>&1 || true
+/sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
 # Keep the diagnostic guest alive for the launch POC. Production will replace
 # this shell with the authenticated execd supervisor.
 while true; do
   /bin/busybox sleep 3600
-done -l < /dev/console > /dev/console 2>&1
+done
 EOF
     chmod 0755 /tmp/rootfs/sbin/init
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw

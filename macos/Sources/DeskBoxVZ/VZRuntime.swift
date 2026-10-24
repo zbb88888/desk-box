@@ -116,15 +116,16 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             )
             record.delegate = delegate
             machine.delegate = delegate
+            self.records[request.sandboxID] = record
             if self.enableControlSocket {
                 do {
                     try self.installControlListener(record)
                 } catch {
+                    self.records.removeValue(forKey: request.sandboxID)
                     try? self.cow.removeClone(cowLease)
                     throw error
                 }
             }
-            self.records[request.sandboxID] = record
             self.recordAudit(record, action: .create, decision: .allow())
             return SandboxHandle(sandboxID: request.sandboxID, bootID: boot.bootID)
         }
