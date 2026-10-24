@@ -23,6 +23,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var lastExecResponse: ControlFrame?
         var lastDecodedExecResponse: ControlResponse?
         var bootstrapState: BootstrapState = .notConnected
+        var requestSequence: UInt64 = 1
+
+        func nextRequestSequence() -> UInt64 {
+            let value = requestSequence
+            requestSequence += 1
+            return value
+        }
         let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
 
@@ -267,7 +274,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before exec")
             }
             let payload = try JSONEncoder().encode(request)
-            let frame = try ControlFrame(kind: .request, sequence: 1, requestID: UUID(), payload: payload)
+            let frame = try ControlFrame(kind: .request, sequence: record.nextRequestSequence(), requestID: UUID(), payload: payload)
             do {
                 try socket.send(frame)
                 self.recordAudit(record, action: .channelEvent, decision: .allow())
