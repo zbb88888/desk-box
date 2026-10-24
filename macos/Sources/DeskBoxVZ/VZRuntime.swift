@@ -266,7 +266,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         bootLoader.initialRamdiskURL = assets.initrdURL
         // These values are guest-visible bootstrap inputs, not attestation.
         // The host still validates the hello against its in-memory BootContext.
-        bootLoader.commandLine = assets.kernelCommandLine + " dbx.sandbox=\(boot.sandboxID.raw) dbx.boot=\(boot.bootID.raw) dbx.nonce=\(boot.bootNonce.uuidString) dbx.manifest=\(boot.guestManifestDigest) dbx.port=1024"
+        bootLoader.commandLine = assets.kernelCommandLine + " console=hvc0 earlycon=hvc0 loglevel=7 dbx.sandbox=\(boot.sandboxID.raw) dbx.boot=\(boot.bootID.raw) dbx.nonce=\(boot.bootNonce.uuidString) dbx.manifest=\(boot.guestManifestDigest) dbx.port=1024"
 
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
@@ -291,7 +291,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             let serial = VZVirtioConsoleDeviceConfiguration()
             let consolePort = VZVirtioConsolePortConfiguration()
-            consolePort.name = "org.deskbox.console"
+            // The primary VZ virtio console port is exposed as hvc0. A named
+            // non-console port would not receive Linux kernel console output.
+            consolePort.name = nil
             consolePort.isConsole = true
             consolePort.attachment = serialConsole.attachment
             serial.ports[0] = consolePort

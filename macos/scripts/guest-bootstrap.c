@@ -25,6 +25,7 @@ static const char *arg(const char *cmd, const char *key) {
 int main(void) {
     const char *diag = "Desk Box bootstrap: starting\\n";
     write(STDOUT_FILENO, diag, strlen(diag));
+    fsync(STDOUT_FILENO);
     char cmd[4096] = {0};
     FILE *f = fopen("/proc/cmdline", "r");
     if (!f || !fgets(cmd, sizeof(cmd), f)) return 2;
@@ -37,6 +38,7 @@ int main(void) {
     if (!sandbox || !boot || !nonce || !manifest) {
         const char *msg = "Desk Box bootstrap: missing cmdline identity\\n";
         write(STDOUT_FILENO, msg, strlen(msg));
+        fsync(STDOUT_FILENO);
         return 3;
     }
     int port = port_s ? atoi(port_s) : 1024;
@@ -49,7 +51,7 @@ int main(void) {
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (fd < 0) {
         char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: socket errno=%d\\n", errno);
-        write(STDOUT_FILENO, msg, (size_t)n); return 5;
+        write(STDOUT_FILENO, msg, (size_t)n); fsync(STDOUT_FILENO); return 5;
     }
     struct sockaddr_vm address = {0};
     address.svm_family = AF_VSOCK;
@@ -59,7 +61,7 @@ int main(void) {
         if (connect(fd, (struct sockaddr *)&address, sizeof(address)) == 0) break;
         if (attempt == 29) {
             char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: connect errno=%d\\n", errno);
-            write(STDOUT_FILENO, msg, (size_t)n); close(fd); return 6;
+            write(STDOUT_FILENO, msg, (size_t)n); fsync(STDOUT_FILENO); close(fd); return 6;
         }
         sleep(1);
     }
@@ -77,6 +79,7 @@ int main(void) {
     uint8_t response[4096]; (void)read(fd, response, sizeof(response));
     const char *done = "Desk Box bootstrap: hello sent\\n";
     write(STDOUT_FILENO, done, strlen(done));
+    fsync(STDOUT_FILENO);
     close(fd);
     return 0;
 }
