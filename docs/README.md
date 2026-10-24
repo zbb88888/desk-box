@@ -22,6 +22,7 @@
 - [M2 路线](design/m2-roadmap.md)：workspace sync → containerd/runc → Broker → Windows 后段的推进计划与审核要求。
 - [M2-1 Workspace Sync](design/m2-1-workspace-sync.md)：显式授权 workspace 快照经加密 channel 推送，路径/符号链接/限额 fail-closed 与 guest 侧 SHA-256 终验。
 - [M2-2 OCI workload 语义与策略门禁](design/m2-2-oci-workload.md)：OCI config.json 白名单子集、扩权字段 fail-closed 拒收、guest exec 受限 env/cwd 实施。
+- [M2-3 网络与凭据 Broker](design/m2-3-network-credential-broker.md)：默认零网络下的宿主 broker、outbound policy allowlist、凭据不进 worker 与审计决策链。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。

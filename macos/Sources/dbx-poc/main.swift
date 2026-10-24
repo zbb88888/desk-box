@@ -216,6 +216,35 @@ struct DBXPOC {
                         ["/bin/echo", "deskbox-mvp-first"],
                         ["/bin/echo", "deskbox-mvp-second"]
                     ]
+                    // M2-3a: 凭据/网络 Broker —— 宿主拉取 allowlisted URL 并同步进 guest。
+                    if let brokerURLString = try optionString("--broker-preload", in: args),
+                       let brokerURL = URL(string: brokerURLString) {
+                        do {
+                            let policyPath = URL(fileURLWithPath: "./guest/broker-policy.json").standardizedFileURL
+                            let policy = try BrokerPolicy.load(from: policyPath)
+                            let credentials = CredentialBroker.load(from: URL(fileURLWithPath: "./guest/broker-credentials.local"))
+                            let broker = BrokerService(policy: policy, credentials: credentials)
+                            let (data, report) = try await broker.fetch(brokerURL)
+                            print("broker-fetch ok status=\(report.statusCode) bytes=\(report.bytes) truncated=\(report.truncated) sha256=\(report.sha256Hex.prefix(16))…")
+                            fflush(stdout)
+                            // 送 bundled snapshot 一致落位。
+                            let staging = FileManager.default.temporaryDirectory
+                                .appendingPathComponent("deskbox-broker-\(UUID().uuidString)", isDirectory: true)
+                            try FileManager.default.createDirectory(at: staging.appendingPathComponent("inbound"), withIntermediateDirectories: true)
+                            let basename = brokerURL.lastPathComponent.isEmpty ? "index.html" : brokerURL.lastPathComponent
+                            let fname = "\(report.sha256Hex.prefix(16))-\(basename)"
+                            let target = staging.appendingPathComponent("inbound/").appendingPathComponent(fname)
+                            try data.write(to: target)
+                            let snapshot = try WorkspaceSyncService.buildSnapshot(root: staging)
+                            let ack = try await runtime.pushWorkspace(handle, snapshot: snapshot)
+                            print("broker-sync ok wsId=\(ack.wsId) files=\(snapshot.files.count) bytes=\(snapshot.totalBytes)")
+                            fflush(stdout)
+                            try? FileManager.default.removeItem(at: staging)
+                        } catch {
+                            fputs("dbx-poc: broker preload failed: \(error)\n", stderr)
+                            fflush(stderr)
+                        }
+                    }
                     // M2-2: OCI bundle 入口：policy 审核 → 同步 rootfs → OCI 语义执行。
                     if let bundlePath = try optionString("--oci-bundle", in: args) {
                         do {
