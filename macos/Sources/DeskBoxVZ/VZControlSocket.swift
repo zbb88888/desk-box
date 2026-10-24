@@ -100,6 +100,8 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
             for frame in frames { try sequence.accept(frame) }
             if !frames.isEmpty { onFrames(frames) }
         } catch {
+            FileHandle.standardError.write(Data("dbx-vz: socket read error=\(error.localizedDescription)\n".utf8))
+            try? FileHandle.standardError.synchronize()
             onFailure(error.localizedDescription)
             close()
         }
