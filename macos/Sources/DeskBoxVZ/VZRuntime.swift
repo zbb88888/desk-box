@@ -289,7 +289,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             await Task.yield()
             let response = try await onQueue { () -> ControlResponse? in
                 let record = try self.require(handle)
-                return record.lastDecodedExecResponse ?? (record.lastExecResponse.flatMap { try? JSONDecoder().decode(ControlResponse.self, from: $0.payload) })
+                let frames = try record.controlSocket?.pollRead() ?? []
+                for frame in frames { self.handleControlFrame(frame, record: record) }
+                return record.lastDecodedExecResponse
             }
             FileHandle.standardError.write(Data("dbx-vz: exec poll status=\(response == nil ? "waiting" : "received")\n".utf8))
             try? FileHandle.standardError.synchronize()
