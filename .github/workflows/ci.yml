@@ -267,7 +267,7 @@ jobs:
           for f in manifest.json sbom.json channel.json; do
             if ! cmp -s "/tmp/idem-channel-1/$f" "/tmp/idem-channel-2/$f"; then
               echo "DIFF $f:"
-              python3 -c "import difflib;a=open('/tmp/idem-channel-1/manifest.json').read().splitlines();b=open('/tmp/idem-channel-2/manifest.json').read().splitlines();import sys;sys.stdout.write('\n'.join(difflib.unified_diff(a,b,lineterm='')[:40]))"
+              python3 -c "import difflib,sys;d=list(difflib.unified_diff(open('/tmp/idem-channel-1/manifest.json').read().splitlines(),open('/tmp/idem-channel-2/manifest.json').read().splitlines(),lineterm=''));sys.stdout.write('\n'.join(d[:40]))"
               FAIL=1
             fi
           done
