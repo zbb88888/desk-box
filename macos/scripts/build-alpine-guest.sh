@@ -23,9 +23,21 @@ command -v docker >/dev/null || { echo "docker is required to build the ext4 ima
 
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 
+# M10：SOURCE_DATE_EPOCH 统一起点。可选（默认取 HEAD 提交时间戳）。
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH=$(git log -1 --format=%ct 2>/dev/null || echo 1700000000)
+fi
+export SOURCE_DATE_EPOCH
+echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+# M10：所有发布的内置时间戳都与源 commit 同步。
+NOW_UTC=$(date -u -r "$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+
 echo "Downloading Alpine rootfs and direct-boot Linux arm64 kernel..."
 curl --fail --location --retry 3 --output "$OUT_DIR/vmlinuz-virt" "$KERNEL_URL"
 curl --fail --location --retry 3 --output "$OUT_DIR/debian-initrd.gz" "$DEBIAN_INITRD_URL"
+# 复构一致：下载文件的 mtime 以 SOURCE_DATE_EPOCH 为准（— BSD/GNU touch 均支持 -t [[CC]YY]MMDDhhmm[.ss]）。
+TS_FMT=$(date -u -r "$SOURCE_DATE_EPOCH" +%Y%m%d%H%M.%S 2>/dev/null || date -u -d "@$SOURCE_DATE_EPOCH" +%Y%m%d%H%M.%S)
+touch -t "$TS_FMT" "$OUT_DIR/vmlinuz-virt" "$OUT_DIR/debian-initrd.gz"
 KERNEL_SHA256=$(sha256_file "$OUT_DIR/vmlinuz-virt")
 DEBIAN_INITRD_SHA256=$(sha256_file "$OUT_DIR/debian-initrd.gz")
 file "$OUT_DIR/vmlinuz-virt" | tee "$OUT_DIR/kernel-format.txt"
@@ -42,6 +54,8 @@ docker run --rm \
   -e ALPINE_VERSION="$ALPINE_VERSION" \
   -e ROOT_SIZE_MB="$ROOT_SIZE_MB" \
   -e MINIROOT_URL="$MINIROOT_URL" \
+  -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+  -e TS_TOUCH="$TS_FMT" \
   -v "$OUT_DIR:/out" \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
@@ -88,8 +102,26 @@ printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
 exec /bin/busybox sh -c "while :; do /bin/busybox sleep 3600; done"
 EOF
     chmod 0755 /tmp/rootfs/sbin/init
+    # M10：ext4 / timestamp deterministic：mtime 归一 + fixed UUID + hash_seed 统一。
+    find /tmp/rootfs -exec touch -h -t "$TS_TOUCH" {} +
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw
-    mke2fs -q -t ext4 -F -d /tmp/rootfs /out/root-disk.raw
+    # e2fsprogs deterministic variant：无 journal + 无 metadata_csum + test_fs。
+    mke2fs -q -t ext4 -F -d /tmp/rootfs \
+      -O ^has_journal,^metadata_csum \
+      -E test_fs \
+      -U 00000000-0000-0000-0000-000000000000 \
+      /out/root-disk.raw
+    # 确定性后处理（e2fsprogs journal-salt 与 few-byte timestamps）：
+    # 1) superblock 随机盐区/jnl_blocks (1248..1315, 无 journal 下无意义)；
+    # 2) s_mtime/s_wtime/lastcheck 等时间戳字段 (1068..1079)。
+    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1248 count=68 conv=notrunc status=none
+    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1068 count=12 conv=notrunc status=none
+    # 备份 superblock 清零：4KiB block / 512MB 磁盘时备份位于 group = 1 & 3 (sparse_super)：
+    for blk in 32768 98304; do
+      start=$((blk * 4096))
+      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 224)) count=68 conv=notrunc status=none 2>/dev/null || true
+      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 44)) count=12 conv=notrunc status=none 2>/dev/null || true
+    done
 
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd
@@ -152,7 +184,9 @@ done
 exec /bin/busybox switch_root /newroot /sbin/init
 EOF
     chmod 0755 /tmp/initrd/init
-    (cd /tmp/initrd && find . -print | cpio -o -H newc 2>/dev/null | gzip -9 > /out/initrd-deskbox.img)
+    # M10 deterministic：initrd 的 mtime 也归一（gzip -n 无 mtime = 但 cpio header 里仍有）。
+    find /tmp/initrd -exec touch -h -t "$TS_TOUCH" {} +
+    (cd /tmp/initrd && find . -print | LC_ALL=C sort | cpio -o -H newc 2>/dev/null | gzip -n9 > /out/initrd-deskbox.img)
   '
 
 cd "$(dirname "$0")/.."
@@ -174,10 +208,10 @@ EOGEN
     cat > "$OUT_DIR/release-keys.json" <<EORK
 {
   "schema": "deskbox-release-keys/v1",
-  "generatedAtUtc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "generatedAtUtc": "$NOW_UTC",
   "keys": [
     {"keyID":"$KEY_ID","publicHex":"$DEV_PUB","status":"active",
-     "notBefore":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","notAfter":null,
+     "notBefore":"$NOW_UTC","notAfter":null,
      "note":"dev workstation key; M5 rotation demo base"}
   ]
 }
@@ -194,7 +228,7 @@ BUILD_SCRIPT_SHA=$(sha256_file "scripts/build-alpine-guest.sh")
 cat > "$OUT_DIR/sbom.json" <<EOSBOM
 {
   "schema": "deskbox-guest-sbom/v1",
-  "builtAtUtc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "builtAtUtc": "$NOW_UTC",
   "assetVersion": 1,
   "inputs": [
     {"name":"debian/linux-arm64-kernel","url":"$KERNEL_URL","file":"vmlinuz-virt","sha256":"$KERNEL_SHA256"},
