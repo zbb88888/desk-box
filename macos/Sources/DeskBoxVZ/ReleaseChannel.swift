@@ -89,7 +89,21 @@ public enum ReleaseChannelVerifier {
         let dir = channelURL.deletingLastPathComponent()
         let manifestURL = dir.appendingPathComponent(channel.manifest.files.manifest)
         let sbomURL = dir.appendingPathComponent(channel.manifest.files.sbom)
-        let manifestActual = try DigestVerifier.sha256Hex(of: manifestURL.standardizedFileURL)
+        /// M11：manifestDigest 是 canonical payload digest（不签名挂钩），与发布致性验证。
+        struct MinimalManifest: Decodable {
+            let fileDigests: [String: String]
+            let guestAssetVersion: Int
+            let kernelCommandLine: String
+            let sbomDigest: String?
+        }
+        let decoded = try JSONDecoder().decode(MinimalManifest.self, from: Data(contentsOf: manifestURL.standardizedFileURL))
+        let payload = ManifestSigningPayload(
+            fileDigests: decoded.fileDigests,
+            guestAssetVersion: decoded.guestAssetVersion,
+            kernelCommandLine: decoded.kernelCommandLine,
+            sbomDigest: decoded.sbomDigest
+        )
+        let manifestActual = try ManifestSigner.payloadDigestHex(payload: payload)
         guard manifestActual == channel.manifest.manifestDigest else {
             throw ReleaseChannelError.manifestDigestMismatch(computed: manifestActual,
                                                              declared: channel.manifest.manifestDigest)

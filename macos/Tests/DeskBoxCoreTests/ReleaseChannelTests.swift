@@ -9,9 +9,23 @@ final class ReleaseChannelTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("deskbox-channel-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try "manifest-body".write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
+        // M11：manifestDigest 是 payload digest；测试 fixture 需要提供真实 minimal JSON manifest。
+        let manifestJson = """
+        {"fileDigests":{"root-disk.raw":"aa"},"guestAssetVersion":2,"kernelCommandLine":"console=hvc0","sbomDigest":null}
+        """
+        try manifestJson.write(to: dir.appendingPathComponent("manifest.json"), atomically: true, encoding: .utf8)
         try "sbom-body".write(to: dir.appendingPathComponent("sbom.json"), atomically: true, encoding: .utf8)
         return dir
+    }
+
+    private func manifestPayloadDigest() throws -> String {
+        let payload = ManifestSigningPayload(
+            fileDigests: ["root-disk.raw": "aa"],
+            guestAssetVersion: 2,
+            kernelCommandLine: "console=hvc0",
+            sbomDigest: nil
+        )
+        return try ManifestSigner.payloadDigestHex(payload: payload)
     }
 
     private func sha(_ s: String) -> String {
@@ -44,7 +58,7 @@ final class ReleaseChannelTests: XCTestCase {
     func testVerifyAcceptsConsistentChannel() throws {
         let dir = try makeChannelDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try writeChannel(to: dir, manifestDigest: sha("manifest-body"), sbomDigest: sha("sbom-body"))
+        try writeChannel(to: dir, manifestDigest: try manifestPayloadDigest(), sbomDigest: sha("sbom-body"))
         let result = try ReleaseChannelVerifier.verify(channelURL: dir.appendingPathComponent("channel.json"))
         XCTAssertTrue(result.manifestFilesVerified)
         XCTAssertEqual(result.channel.manifest.assetVersion, 2)
@@ -65,7 +79,7 @@ final class ReleaseChannelTests: XCTestCase {
     func testVerifyRejectsLowAssetVersion() throws {
         let dir = try makeChannelDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        try writeChannel(to: dir, manifestDigest: sha("manifest-body"), sbomDigest: sha("sbom-body"),
+        try writeChannel(to: dir, manifestDigest: try manifestPayloadDigest(), sbomDigest: sha("sbom-body"),
                          floor: 3, assetVersion: 2)
         XCTAssertThrowsError(try ReleaseChannelVerifier.verify(channelURL: dir.appendingPathComponent("channel.json"))) { error in
             guard case .assetVersionTooLow(let cur, let floor) = error as? ReleaseChannelError else {

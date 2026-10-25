@@ -63,6 +63,11 @@ public enum ManifestSigner {
         return (key.publicKey.rawRepresentation.toHex(), key.rawRepresentation.toHex())
     }
 
+    /// M11：payload digest，用于 release channel manifestDigest 的 deterministic 字段。
+    public static func payloadDigestHex(payload: ManifestSigningPayload) throws -> String {
+        try CryptoKit.SHA256.hash(data: payload.canonicalBytes()).map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func publicKeyHex(fromPrivateHex privateHex: String) throws -> String {
         guard let privData = Data(hexString: privateHex), privData.count == 32 else {
             throw ManifestSignerError.invalidKeyMaterial

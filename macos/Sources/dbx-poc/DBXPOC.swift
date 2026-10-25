@@ -258,7 +258,10 @@ struct DBXPOC {
         let channelSbomURL = channelDir.appendingPathComponent("sbom.json")
         try Data(contentsOf: URL(fileURLWithPath: manifestPath)).write(to: channelManifestURL, options: .atomic)
         try Data(contentsOf: URL(fileURLWithPath: sbomPath)).write(to: channelSbomURL, options: .atomic)
-        let manifestDigest = try AssetDigest.sha256Hex(of: channelManifestURL)
+        /// M11：digest 覆盖 payload 而非 signature 字节（签名本身不 deterministic，证龄签证不易构）。
+        let manifestFile = try loadSignedManifestPreservingURLs(at: channelManifestURL)
+        let payloadDigest = try ManifestSigner.payloadDigestHex(payload: manifestFile.asManifest.signingPayload)
+        let manifestDigest = payloadDigest
         let sbomDigest = try AssetDigest.sha256Hex(of: channelSbomURL)
         struct ChannelFile: Codable {
             let schema: String; let generatedAtUtc: String; let releaseTag: String
