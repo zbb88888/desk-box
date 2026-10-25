@@ -1,6 +1,6 @@
 # M9：发布 bundle 与用户操作文档
 
-状态：进行中；关联 `docs/design/m6-ci-pipeline.md`、`m7-release-channel.md`、`m8-ci-release-pipeline.md`、`docs/security/security-verification-matrix.md` INV-09。
+状态：已完成（GitHub Release bundle 本机 shasum/verify-channel/verify-sbom 全部上线）；关联 `docs/design/m6-ci-pipeline.md`、`m7-release-channel.md`、`m8-ci-release-pipeline.md`、`docs/security/security-verification-matrix.md` INV-09。
 
 ## 1. 目标
 
@@ -10,6 +10,17 @@
 - `checksums.txt`：包含 bundle、manifest、sbom、channel.json 四项的 sha256（ `verify-channel` / `verify-sbom`）；
 - README 增加 quick-start：一次拉 CI/Release URL + verify + canal关闭的 scaffold launch（dbx-poc launch --broker-guest-url 的 演示）；
 - 不目标：不引入下载 manager 或自动更新器——本阶段是发布面与文档的耦合。
+
+## 进度
+
+- ✅ CI：publish job 在 GitHub Release 提供 `guest-bundle-<tag>.tar.gz`（客资产 + manifest + sbom + channel.json + 发布 key 记录 + 附属的 guest 客户端所需文件列表）
+  和 `checksums.txt`；
+- ✅ README quick-start：下载 → shasum -c → 解包 → verify-channel → verify-sbom → 触发表雍望；
+- ✅ 踩坑记录：
+  - actions/upload-artifact 的 common-ancestor 剥离规律：加入 `macos/scripts/...` 工件把共父从 `macos/guest` 推到 `macos`，artifact 下载路径应随之调到 `macos/`；
+  - sbom normalize：publish 时把 `build-alpine-guest.sh` 监命 bundle 内容排（进 bundle 到时一份放到 `guest/`）；
+  - 验证解析顺序调整优先 `file`（bundle 内同目录文件，不借 repo 结构）；
+- ✅ 本端到端验证：`gh release download` → `shasum -c` → `tar` → `verify-channel` → `verify-sbom` 起起返回 OK。
 
 ## 2. 实施参考
 
