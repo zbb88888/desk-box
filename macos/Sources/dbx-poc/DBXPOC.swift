@@ -55,6 +55,15 @@ struct DBXPOC {
                 try await launch(args: Array(args.dropFirst()))
             case "sweep":
                 try sweep(args: Array(args.dropFirst()))
+            case "daemon":
+                let sockPath = (try? optionString("--daemon-sock", in: args)) ?? SandboxDaemon.defaultSockPath()
+                try SandboxDaemon(sockPath: sockPath).serve()
+            case "run":   try daemonRunCli(args: Array(args.dropFirst()))
+            case "ps":    try daemonPsCli(args: Array(args.dropFirst()))
+            case "exec":  try daemonExecCli(args: Array(args.dropFirst()))
+            case "stop":  try daemonStopCli(args: Array(args.dropFirst()))
+            case "rm":    try daemonRmCli(args: Array(args.dropFirst()))
+            case "shutdown": try daemonShutdownCli(args: Array(args.dropFirst()))
             case "help", "-h", "--help":
                 printUsage()
             default:
@@ -598,7 +607,7 @@ struct DBXPOC {
     }
 
     /// M11：仅 launch 需要绝对路径，签名/publish 保留原 manifest 里的相对 URL 以保证 byte-identical 幂等。
-    private static func loadManifest(at url: URL) throws -> ManifestFile {
+    static func loadManifest(at url: URL) throws -> ManifestFile {
         var manifest = try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: url))
         manifest.resolveRelativeURLs(from: url.deletingLastPathComponent())
         return manifest
@@ -648,9 +657,10 @@ struct DBXPOC {
     }
 }
 
-private enum CLIError: Error, CustomStringConvertible {
+enum CLIError: Error, CustomStringConvertible {
     case usage(String)
-    var description: String { if case .usage(let value) = self { return value }; return "usage error" }
+    case exit(Int)
+    var description: String { switch self { case .usage(let value): return value; case .exit(let code): return "exit code \(code)" } }
 }
 
 private extension JSONEncoder {
@@ -659,7 +669,7 @@ private extension JSONEncoder {
     }
 }
 
-private struct ManifestFile: Codable {
+struct ManifestFile: Codable {
     var kernelURL: URL
     var initrdURL: URL?
     var rootDiskURL: URL
@@ -696,4 +706,153 @@ private struct LaunchOutput: Codable {
     let state: String
     let boot: BootContext
     let message: String
+}
+
+// MARK: - M12 daemon CLI glue
+
+private extension DBXPOC {
+    static func daemonRunCli(args: [String]) throws {
+        let cleaned = try dropSockOption(from: args)
+        guard let manifestPath = cleaned.first else {
+            throw CLIError.usage("dbx-poc run <manifest.json> [--workspace dir] [--oci-bundle b] [--daemon-sock p] [--allow-plaintext] [--allow-unsigned-manifest] [--release-keys f] [--memory-mib N] [--cpus N] [--cow-root d]")
+        }
+        var request = DaemonRequest(kind: "run")
+        request.manifestPath = manifestPath
+        request.workspaceDir = try? optionString("--workspace", in: args)
+        request.ociBundlePath = try? optionString("--oci-bundle", in: args)
+        request.allowPlaintext = args.contains("--allow-plaintext")
+        request.allowUnsignedManifest = args.contains("--allow-unsigned-manifest")
+        request.releaseKeysPath = try? optionString("--release-keys", in: args)
+        request.memoryMiB = try? optionInt("--memory-mib", in: args)
+        request.cpus = try? optionInt("--cpus", in: args)
+        request.cowRoot = try? optionString("--cow-root", in: args)
+        let sock = try? optionString("--daemon-sock", in: args)
+        let response = try DaemonClient.send(request: request, sockPath: sock)
+        print("run ok sandboxId=\(response.sandboxId ?? "?") state=\(response.state ?? "?")")
+    }
+
+    static func daemonPsCli(args: [String]) throws {
+        let sock = try? optionString("--daemon-sock", in: args)
+        let response = try DaemonClient.send(request: DaemonRequest(kind: "ps"), sockPath: sock)
+        for info in response.sandboxes ?? [] {
+            print("\(info.sandboxId)\t\(info.state)\t\(info.bootedAtUtc)\t\(info.manifestPath)")
+        }
+    }
+
+    static func daemonExecCli(args: [String]) throws {
+        let cleaned = try dropSockOption(from: args)
+        guard let sandboxId = cleaned.first else {
+            throw CLIError.usage("dbx-poc exec <sandbox-id> [--cwd d] [--timeout N] -- <argv...>")
+        }
+        var rest = Array(args.dropFirst())
+        var timeout: Int? = nil
+        var cwd: String? = nil
+        var envPairs: [String] = []
+        rest = try parseFlags(rest, "--timeout", &timeout)
+        rest = try parseFlags(rest, "--cwd", &cwd)
+        rest = try parseFlagsMulti(rest, "--env", &envPairs)
+        var argv = rest
+        if let dashIdx = argv.firstIndex(of: "--") { argv = Array(argv.dropFirst(dashIdx + 1)) }
+        guard !argv.isEmpty else { throw CLIError.usage("exec requires argv via '-- ...'") }
+        var envDict: [String: String]? = nil
+        for pair in envPairs {
+            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2 { envDict = (envDict ?? [:]).merging([parts[0]: parts[1]]) { $1 } }
+        }
+        var request = DaemonRequest(kind: "exec")
+        request.sandboxId = sandboxId
+        request.argv = argv
+        request.cwd = cwd
+        request.timeoutSeconds = timeout
+        request.env = envDict
+        let sock = try? optionString("--daemon-sock", in: args)
+        let response = try DaemonClient.send(request: request, sockPath: sock)
+        if let out = response.stdout { print(out, terminator: "") }
+        if let err = response.stderr, !err.isEmpty { fputs(err + "\n", stderr) }
+        if response.exitCode ?? 1 != 0 {
+            throw CLIError.exit(Int(response.exitCode ?? 1))
+        }
+    }
+
+    static func daemonStopCli(args: [String]) throws {
+        let cleaned = try dropSockOption(from: args)
+        guard let sandboxId = cleaned.first else { throw CLIError.usage("dbx-poc stop <sandbox-id> [--daemon-sock p]") }
+        var request = DaemonRequest(kind: "stop")
+        request.sandboxId = sandboxId
+        let sock = try? optionString("--daemon-sock", in: args)
+        _ = try DaemonClient.send(request: request, sockPath: sock)
+        print("stopped \(sandboxId)")
+    }
+
+    static func daemonRmCli(args: [String]) throws {
+        let cleaned = try dropSockOption(from: args)
+        guard let sandboxId = cleaned.first else { throw CLIError.usage("dbx-poc rm <sandbox-id> [--force] [--daemon-sock p]") }
+        var request = DaemonRequest(kind: "rm")
+        request.sandboxId = sandboxId
+        request.force = args.contains("--force")
+        let sock = try? optionString("--daemon-sock", in: args)
+        _ = try DaemonClient.send(request: request, sockPath: sock)
+        print("removed \(sandboxId)")
+    }
+
+    static func daemonShutdownCli(args: [String]) throws {
+        let sock = try? optionString("--daemon-sock", in: args)
+        let response = try DaemonClient.send(request: DaemonRequest(kind: "shutdown"), sockPath: sock)
+        print("shutdown ack pid=\(response.pid ?? 0)")
+    }
+
+    static func parseFlags(_ args: [String], _ name: String, _ out: inout Int?) throws -> [String] {
+        var result: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == name {
+                guard i + 1 < args.count, let v = Int(args[i + 1]) else { throw CLIError.usage("missing value for \(name)") }
+                out = v; i += 2
+            } else if args[i] == "--daemon-sock" {
+                i += 2
+            } else { result.append(args[i]); i += 1 }
+        }
+        return result
+    }
+
+    static func parseFlags(_ args: [String], _ name: String, _ out: inout String?) throws -> [String] {
+        var result: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == name {
+                guard i + 1 < args.count else { throw CLIError.usage("missing value for \(name)") }
+                out = args[i + 1]; i += 2
+            } else if args[i] == "--daemon-sock" {
+                i += 2
+            } else { result.append(args[i]); i += 1 }
+        }
+        return result
+    }
+
+    static func parseFlagsMulti(_ args: [String], _ name: String, _ out: inout [String]) throws -> [String] {
+        var result: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == name {
+                guard i + 1 < args.count else { throw CLIError.usage("missing value for \(name)") }
+                out.append(args[i + 1]); i += 2
+            } else { result.append(args[i]); i += 1 }
+        }
+        return result
+    }
+}
+
+
+private extension DBXPOC {
+    static func dropSockOption(from args: [String]) throws -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == "--daemon-sock" {
+                guard i + 1 < args.count else { throw CLIError.usage("missing --daemon-sock value") }
+                i += 2
+            } else { out.append(args[i]); i += 1 }
+        }
+        return out
+    }
 }
