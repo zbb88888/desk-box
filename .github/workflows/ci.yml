@@ -263,10 +263,23 @@ jobs:
             --release-keys /tmp/idem-release-keys.json \
             --release-tag idempotent-test \
             --min-version-floor 1
+          FAIL=0
           for f in manifest.json sbom.json channel.json; do
-            cmp "/tmp/idem-channel-1/$f" "/tmp/idem-channel-2/$f"
+            if ! cmp -s "/tmp/idem-channel-1/$f" "/tmp/idem-channel-2/$f"; then
+              echo "DIFF $f:"
+              python3 - << "PYF"
+import sys
+a=open('/tmp/idem-channel-1/manifest.json').read().splitlines()
+b=open('/tmp/idem-channel-2/manifest.json').read().splitlines()
+import difflib
+print('
+'.join(difflib.unified_diff(a,b,lineterm='')[:40]))
+PYF
+              FAIL=1
+            fi
           done
-          echo "IDEMPOTENT-RELEASE OK"
+          [ "$FAIL" -eq 0 ] && echo "IDEMPOTENT-RELEASE OK"
+          exit "$FAIL"
   guest-build:
     runs-on: ubuntu-latest
     steps:
