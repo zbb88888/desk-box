@@ -126,14 +126,25 @@ jobs:
           cd macos
           rm -rf /tmp/r2 && mkdir -p /tmp/r2
           SKIP_SWIFT_SIGN=1 ALPINE_VERSION=$ALPINE_VERSION ./scripts/build-alpine-guest.sh /tmp/r2
+          MISMATCH=""
           for f in vmlinuz-virt initrd-deskbox.img root-disk.raw sbom.json; do
             a=$(shasum -a 256 "/tmp/r1/$f" | awk '{print $1}'); b=$(shasum -a 256 "/tmp/r2/$f" | awk '{print $1}')
             echo "$f: $a vs $b"
             if [ "$a" != "$b" ]; then
-              echo "MISMATCH on $f"; cmp -l "/tmp/r1/$f" "/tmp/r2/$f" | head -4 || true
-              exit 1
+              echo "MISMATCH on $f (sizes: $(stat -c %s /tmp/r1/$f) vs $(stat -c %s /tmp/r2/$f))"
+              MISMATCH=1
             fi
           done
+          if [ -n "$MISMATCH" ]; then
+            echo "--- full diff dump (first 20 lines of cmp) ---"
+            for f in vmlinuz-virt initrd-deskbox.img root-disk.raw sbom.json; do
+              cmp -l "/tmp/r1/$f" "/tmp/r2/$f" 2>&1 | head -20 || true
+            done
+            echo "--- gzip headers ---"
+            xxd /tmp/r1/initrd-deskbox.img | head -1
+            xxd /tmp/r2/initrd-deskbox.img | head -1
+            exit 1
+          fi
       - name: Upload repro pass 1 artifacts
         uses: actions/upload-artifact@v4
         with:
