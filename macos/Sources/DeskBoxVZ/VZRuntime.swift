@@ -65,6 +65,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private let allowUnsignedManifest: Bool
     /// M2-3b：在线 broker 凭据/策略根目录（内含 broker-policy.json 与 broker-credentials.local，gitignored）。
     public var brokerConfigDir: URL?
+    /// M14：启用 virtio-gpu 设备（guest 必须内置 virtio_gpu 驱动才会出现 framebuffer）。
+    public var enableGraphics: Bool = false
 
     public init(
         cowRoot: URL,
@@ -711,6 +713,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         // 管理通道设备存在，但没有普通网络设备；网络默认拒绝。
         if enableControlSocket {
             configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        }
+
+        // M14：可选 virtio-gpu。此阶段无 host 视频窗；配置与 guest 探测模式仅作 spike。
+        if self.enableGraphics {
+            let gfx = VZVirtioGraphicsDeviceConfiguration()
+            gfx.scanouts = [VZVirtioGraphicsScanoutConfiguration(widthInPixels: 1280, heightInPixels: 800)]
+            configuration.graphicsDevices = [gfx]
         }
 
         let attachment = try VZDiskImageStorageDeviceAttachment(

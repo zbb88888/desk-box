@@ -25,6 +25,7 @@ struct DaemonRequest: Codable {
     var ptySessionId: String? = nil
     var dataHex: String? = nil
     var waitMillis: Int? = nil
+    var graphics: Bool? = nil
 }
 
 struct DaemonResponse: Codable {
@@ -210,6 +211,7 @@ final class SandboxDaemon {
             allowUnsignedManifest: unsignedAllowed
         )
         runtime.brokerConfigDir = manifestDir
+        runtime.enableGraphics = request.graphics ?? false  // M14：virtio-gpu（对应额外 spike 配置）
         let sweep = try runtime.sweepOrphans()
         if !sweep.isEmpty {
             fputs("daemon: swept orphaned sandboxes=\(sweep.orphanedSandboxes.count)\n", stderr)
