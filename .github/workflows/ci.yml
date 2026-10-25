@@ -264,12 +264,29 @@ jobs:
             --release-tag idempotent-test \
             --min-version-floor 1
           FAIL=0
-          for f in manifest.json sbom.json channel.json; do
+          # sbom.json + channel.json 严格一致
+          for f in sbom.json channel.json; do
             if ! cmp -s "/tmp/idem-channel-1/$f" "/tmp/idem-channel-2/$f"; then
-              echo "DIFF $f:"
-              python3 -c "import difflib,sys;d=list(difflib.unified_diff(open('/tmp/idem-channel-1/manifest.json').read().splitlines(),open('/tmp/idem-channel-2/manifest.json').read().splitlines(),lineterm=''));sys.stdout.write('\n'.join(d[:40]))"
+              echo "DIFF $f ($f) must be byte-identical (payload level)"
+              diff "/tmp/idem-channel-1/$f" "/tmp/idem-channel-2/$f" | head -10
               FAIL=1
             fi
+          done
+          # manifest.json：payload 一致，sig 可异构但须同 key 可验证（CryptoKit Ed25519 defense hedged，非 deterministic）
+          python3 - << 'PY'
+          import json,sys
+          a=json.load(open('/tmp/idem-channel-1/manifest.json'))
+          b=json.load(open('/tmp/idem-channel-2/manifest.json'))
+          sa=a.pop('signature'); sb=b.pop('signature')
+          assert sa['keyID']==sb['keyID'], 'keyID differs'
+          if a!=b:
+              print('manifest payload differs:', a, b); sys.exit(1)
+          print('manifest payloads byte-equivalent; keyID match')
+          PY
+          [ "$?" -eq 0 ] || FAIL=1
+          # 验证两个 sig 在相同 key 下都可验证
+          for F in /tmp/idem-channel-1/manifest.json /tmp/idem-channel-2/manifest.json; do
+            ./.build/debug/dbx-poc validate-assets --manifest "$F" --release-keys /tmp/idem-release-keys.json || FAIL=1
           done
           [ "$FAIL" -eq 0 ] && echo "IDEMPOTENT-RELEASE OK"
           exit "$FAIL"
