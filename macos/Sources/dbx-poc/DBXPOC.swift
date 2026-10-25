@@ -373,6 +373,7 @@ struct DBXPOC {
             allowUnsignedManifest: unsignedAllowed
         )
         runtime.brokerConfigDir = URL(fileURLWithPath: "./guest")
+        if args.contains("--graphics") { runtime.enableGraphics = true }
         do {
             let sweep = try runtime.sweepOrphans()
             if !sweep.isEmpty {

@@ -135,11 +135,14 @@ final class SandboxDaemon {
             if data.count > 1_048_576 { break }
         }
         var response: DaemonResponse
+        var requestKind = "?"
         do {
             let request = try JSONDecoder().decode(DaemonRequest.self, from: data)
+            requestKind = request.kind
             response = try self.dispatch(request)
         } catch {
-            response = DaemonResponse(ok: false, error: "request rejected: \(error.localizedDescription)")
+            response = DaemonResponse(ok: false, error: "request rejected (kind=\(requestKind)): \(error)")
+            fputs("daemon error (kind=\(requestKind)): \(error)\n", stderr)
         }
         if let out = try? JSONEncoder().encode(response) {
             _ = out.withUnsafeBytes { raw in
@@ -229,12 +232,19 @@ final class SandboxDaemon {
             resources: ResourceHints(cpuCount: request.cpus ?? 2, memoryMiB: request.memoryMiB ?? 2048),
             networking: .none
         )
+        fputs("daemon create manifest=\(manifestPath) kernel=\(manifest.asManifest.kernelURL.lastPathComponent) digest=\(manifest.asManifest.manifestDigest.prefix(16)) gfx=\(runtime.enableGraphics)\n", stderr)
         let handle = try runBlocking { try await runtime.create(create) }
         do {
             _ = try runBlocking { try await runtime.start(handle) }
-            let deadline = Date().addingTimeInterval(30)
+            let deadline = Date().addingTimeInterval(90)
+            var lastBootstrapPrinted = ""
             while Date() < deadline {
                 let status = try runBlocking { try await runtime.inspect(handle) }
+                let bstr = "\(status.state)/\(status.bootstrap)"
+                if bstr != lastBootstrapPrinted {
+                    fputs("daemon boot-watch sandbox=\(sandboxID.description) status=\(bstr)\n", stderr)
+                    lastBootstrapPrinted = bstr
+                }
                 if status.state == .running && (status.bootstrap == .authenticated || status.bootstrap == .tlsAuthenticated) {
                     let session = SandboxSession(id: sandboxID.description, runtime: runtime, handle: handle, manifestPath: manifestPath)
                     self.sessions[sandboxID.description] = session
@@ -242,7 +252,7 @@ final class SandboxDaemon {
                 }
                 Thread.sleep(forTimeInterval: 0.2)
             }
-            throw CLIError.usage("run: bootstrap did not reach running within 30s")
+            throw CLIError.usage("run: bootstrap did not reach running within 90s")
         } catch {
             _ = try? runBlocking { try await runtime.destroy(handle) }
             auditFlush()

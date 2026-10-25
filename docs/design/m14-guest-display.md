@@ -1,6 +1,6 @@
 # M14：Guest Display / 交互式虚拟机窗
 
-状态：Assessment（含 spike 实证结论，不宣称已交付）；关联 `docs/design/m13-gui-macos.md`、`platform-capability-matrix`。
+状态：4期交付到半完成；M14b review必 inspect 正常实习（比较稳定肯多的 KNOWN-ISSUE 跟一）；关联 `docs/design/m13-gui-macos.md`、`platform-capability-matrix`。
 
 ## 1. 目标
 
@@ -38,3 +38,26 @@
 - 当前这议也包括槛为：「选择某个路径，下一步定制客 kernel 并设法在 guest 上主意 display stack（weston、direct-render）」或「拒绝 display」；
 - 对私密客明 DEFVISION的范围：带 display 的沙箱所带跑「租户拥有系统级 display 登录」程序跟上一访的 security risk 相应改收变（ hardened security 不要份理 virtio-gpu）；
 - release pipeline 域 SBOM 对 provisioning kernel 需要重新 run。
+
+## M14b 实测记录（这个挖掘）
+
+### 已正式完成
+- `scripts/build-custom-kernel.sh`（完成重用 `scripts/custom-kernel.config`）可用：Linux 6.12.38 交叉编 arm64，并 `CONFIG_DRM_VIRTIO_GPU=y` + VZ virtio 依赖（vconsole/blk/vsock/vballoon/namespaces）+ IKCONFIG；
+- 输出 `vmlinuz-virt-gpu`（6.2MB， `376d53d08b5d80...`），内核含量证明： `Linux kernel ARM64 boot executable Image, little-endian, 4K pages`；
+- manifest 变量 `guest/manifest-gpu.json` 已建（与 plain 在 payload 上完全同子）；
+- **launch 路径下 GPU kernel 全链已验证**：`--graphics`、当当被 `state=running; sandbox destroyed`（`A09A4104-...`、` 1E8EBB95-...`）；
+- daemon `graphics` 请求字段 + VZRuntime `enableGraphics` flag 已落在。
+
+### KNOWN-ISSUE（ unresolved，该阶段诚实直标)
+- **daemon `run` 在 gpu manifest 上 90s 后拒绝"not reach running"，但 MANIFEST、KERNEL、SIG 等 payload 一律与 plain 一致，launch 路径无任何错误**：
+  - 状态机 notConnected，guest 一本内容畿谓 `hvc0`;
+  - 同一 daemon 里 plain manifest 能到 running；
+  - 尚未定位是否 `enableGraphics` 与 daemon queue 的路径向交互引起，还是其他 daemon-side 端点诱发；
+  - 真实 daemon 调试入口+`boot-watch` 记录已加入（将去中中间状态打印到 stderr）；
+- **已复现步骤**：`python3 rpc({'kind':'run','manifestPath':'.../manifest-gpu.json','graphics':True})` + fresh daemon； vs `dbx-poc launch ./guest/manifest-gpu.json` exit=0。
+- 行动议书与下一步：对比 dispatchRun vs launchManifestCommand 的 VZ boot config 路径 (kvm 你显重装的地面多店) 追究。
+
+### 不动明性不变（未过场域）
+- virtio-gpu NSView 交互型本源核（guest display server + swiftUI render interp）未交付；
+- 你 priori 的 software display 更替当成也许到达不切实到（VZ API 原生方案 shortage aluiVarginVirgin对比都放弃）
+- M14 是 spike阶段不性实看全因，subsequent address定向实现与 debug。
