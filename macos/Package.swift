@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "DeskBoxCore", targets: ["DeskBoxCore"]),
         .library(name: "DeskBoxVZ", targets: ["DeskBoxVZ"]),
         .executable(name: "dbx-poc", targets: ["dbx-poc"]),
+        .executable(name: "DeskBoxGUI", targets: ["DeskBoxGUI"]),
     ],
     targets: [
         .target(name: "DeskBoxCore"),
@@ -20,6 +21,11 @@ let package = Package(
         .executableTarget(
             name: "dbx-poc",
             dependencies: ["DeskBoxCore", "DeskBoxVZ"]
+        ),
+        .executableTarget(
+            name: "DeskBoxGUI",
+            dependencies: [],
+            path: "gui/DeskBoxGUI/Sources/DesktopBoxGUI"
         ),
         .testTarget(name: "DeskBoxCoreTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),
         .testTarget(name: "ConformanceTests", dependencies: ["DeskBoxCore"]),
