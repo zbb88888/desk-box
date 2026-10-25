@@ -1,6 +1,6 @@
 # M11：幂等发布管道
 
-状态：进行中；关联 `docs/design/m10-reproducible-build.md`、`m5-release-signing-chain.md`、`m7-release-channel.md`、`m9-release-bundle.md`、`docs/security/security-verification-matrix.md` INV-09。
+状态：已完成（CI 全绿，idempotent-release job 过关）；关联 `docs/design/m10-reproducible-build.md`、`m5-release-signing-chain.md`、`m7-release-channel.md`、`m9-release-bundle.md`、`docs/security/security-verification-matrix.md` INV-09。
 
 ## 1. 目标
 
@@ -45,3 +45,13 @@
 ## 4. 安全决策
 - 幂等发布是发布工作水平模型：：绝对不要出现“同一 tag 被不同内容覆盖”的局面；本阶段让这信念变成了可验证 fact（tag push 多一次，内容必须相对）；
 - 临时测试用 key 仅用于 CI 不认建模。
+
+# 进展
+- ✅ build 里所有的 timestamp 以 `SOURCE_DATE_EPOCH`(=commit) 驱动（M10）；
+- ✅ `publish` 以 SOURCE_DATE_EPOCH 为索的 generatedAtUtc 一致性；
+- ✅ **关键发现**：Apple CryptoKit `Curve25519.Signing` Ed25519 为 hedged/非 deterministic（同 key+同 payload 两次签名不同）；
+- ✅ 幂等定义终稿：payload（fileDigests+guestAssetVersion+kernelCommandLine+sbomDigest+manifest URLs/sign-keyID + channel）byte-identical，**签名只保证同 key 可验证**，sig bytes 不纳入幂等断言；
+- ✅ payload-canonical manifestDigest（`ManifestSigner.payloadDigestHex`）落入 channel.json 与 `ReleaseChannelVerifier` 验证锚点；
+- ✅ Manifest URLs / fileDigests 都私人 basename（可跨 build/download 目录迁移）;
+- ✅ 本机双跑：payloads byte-equivalent / keyID match / channel & sbom strict-equal；
+- ✅ CI job `idempotent-release`（双人 commit 反复行+下载产物) 全部失败缸已实现。

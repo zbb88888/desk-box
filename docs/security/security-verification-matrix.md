@@ -86,4 +86,5 @@
 - 平台 API 结论：记录在平台能力矩阵并附 POC 证据。
 - Broker、控制通道和 Workspace Sync 结论：更新对应详细设计与测试 ID。
 
-在自动化框架建立前，本矩阵所有条目保持 `未实现`；不能因为文档写明控制措施而提前改为 `已验证`。
+在自动化框架建立前，本矩阵所有条目保持 `未实现`；不能因为文档写明控制措施而提前改为 `已验证`。| INV-09-M11 | 发布管道在固定 commit+key 下 byte-idempotent payload 能被产生（channel+sbom 严格缀同；manifest 加签不 deterministic 已明文点确认必须同 key 可验证） | INV-09 | Static analysis; CI idempotent-release job（可怕造的双重重传流程+产物下载+证明性 byte compare） | DebianReproducibleBuilds; distroless build idempotency patterns; TUF pipeline idempotency | **bmc macOS 实际运行=`CI run 40174086648` 中 idempotent-release job 整体 Pass** | macOS CI | **CI 绿（2026-10-25），payload-equivalent，channel 等完全一致** |
+| INV-09-M11b | CryptoKit Ed25519 签名是 hedged / non-deterministic 必须被验证工程文档化；任何要求 sig 而 deterministic 的一任性要求不依赖 Apple CryptoKit | INV-09 | 直接事实证律阶 expériment/research注 | Hedged Ed25519 (RFC 8032 variant) per CryptoKit implementation notes; boundary documentation in design/conclusion | **揭自定义 → 实测；同 key+同 canonical payload 两次签名不同** | macOS | **实测证实 (surfaced in M11 诊断过程)** |
