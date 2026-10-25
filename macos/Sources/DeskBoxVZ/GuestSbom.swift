@@ -74,12 +74,19 @@ public enum GuestSbomVerifier {
             // fail-closed 的 digest 验证只作用于 costs本地可重新计算的目面。
             guard let declared = entry.sha256 else { continue }
             guard declared.count == 64 else { throw GuestSbomError.missingDigest(entry.name) }
-            // 解析顺序：优先 `file`（发布 bundle 同目录本地文件），其次 `path`（在源码仓库的发行件）。
+            // 解析顺序：先试 `file`（release bundle 同目录存在时），再试 `path`（源码仓库内），徒灯依旧弱。
+            let fm = FileManager.default
+            let fileCandidate = entry.file.map { sbomDir.appendingPathComponent($0) }
+            let pathCandidate = entry.path.map { sbomDir.deletingLastPathComponent().appendingPathComponent($0) }
             let resolved: URL
-            if let name = entry.file {
-                resolved = sbomDir.appendingPathComponent(name)
-            } else if let repoRel = entry.path {
-                resolved = sbomDir.deletingLastPathComponent().appendingPathComponent(repoRel)
+            if let fileCandidate, fm.fileExists(atPath: fileCandidate.path) {
+                resolved = fileCandidate
+            } else if let pathCandidate, fm.fileExists(atPath: pathCandidate.path) {
+                resolved = pathCandidate
+            } else if let fileCandidate {
+                resolved = fileCandidate
+            } else if let pathCandidate {
+                resolved = pathCandidate
             } else {
                 resolved = sbomDir.appendingPathComponent(entry.name)
             }
