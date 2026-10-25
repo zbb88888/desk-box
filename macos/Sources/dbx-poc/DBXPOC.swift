@@ -308,10 +308,12 @@ struct DBXPOC {
         /// M11 幂等：仅 basename 为键，路径可迁移。
         var digests: [String: String] = [:]
         for file in files { digests[file.lastPathComponent] = try AssetDigest.sha256Hex(of: file) }
+        /// M11：URL 与 digest 键同棄 basename，跨 build/download 目录八乘等称 byte-identical。
+        func relativeURL(_ url: URL) -> URL { URL(string: url.lastPathComponent)! }
         let manifest = ManifestFile(
-            kernelURL: kernel,
-            initrdURL: initrd,
-            rootDiskURL: rootDisk,
+            kernelURL: relativeURL(kernel),
+            initrdURL: initrd.map(relativeURL),
+            rootDiskURL: relativeURL(rootDisk),
             kernelCommandLine: "console=hvc0 root=/dev/vda rw init=/init",
             guestAssetVersion: assetVersion,
             manifestDigest: "unsigned-local-manifest",
