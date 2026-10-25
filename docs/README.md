@@ -34,6 +34,7 @@
 - [M8 CI 发布管道](design/m8-ci-release-pipeline.md)：GitHub Actions 上 tag 触发 M7 发布 pipeline 生成 release assets。
 - [M9 发布 bundle](design/m9-release-bundle.md)：guest-bundle-<tag>.tar.gz + checksums.txt + README quick-start。
 - [M10 可复构建](design/m10-reproducible-build.md)：SOURCE_DATE_EPOCH 驱动 bit-for-bit 可复构建 + CI 双跑一致性。
+- [M11 幂等发布管道](design/m11-idempotent-release.md)：commit+key 固定时 build→sign→publish 输出 byte-identical。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。

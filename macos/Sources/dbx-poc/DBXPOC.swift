@@ -231,8 +231,16 @@ struct DBXPOC {
               let sbomPath = try optionString("--sbom", in: args),
               let releaseKeysPath = try optionString("--release-keys", in: args)
         else { throw CLIError.usage("dbx-poc publish 需 manifest/sbom/release-keys") }
+        /// M11：`SOURCE_DATE_EPOCH` 如来，generatedAtUtc 顺从于它（幂等发布）。
+        let releaseNow: Date = {
+            if let sec = ProcessInfo.processInfo.environment["SOURCE_DATE_EPOCH"],
+               let epoch = TimeInterval(sec) {
+                return Date(timeIntervalSince1970: epoch)
+            }
+            return Date()
+        }()
         let releaseTag = try optionString("--release-tag", in: args)
-            ?? ISO8601DateFormatter().string(from: Date())
+            ?? ISO8601DateFormatter().string(from: releaseNow)
         let floor = try optionInt("--min-version-floor", in: args) ?? 1
         let manifestRaw = try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: URL(fileURLWithPath: manifestPath)))
         guard let sig = manifestRaw.signature else { throw CLIError.usage("publish 要求已签名 manifest") }
@@ -259,7 +267,7 @@ struct DBXPOC {
         }
         let channel = ChannelFile(
             schema: ReleaseChannelManifest.schemaValue,
-            generatedAtUtc: ISO8601DateFormatter().string(from: Date()),
+            generatedAtUtc: ISO8601DateFormatter().string(from: releaseNow),
             releaseTag: releaseTag,
             minGuestAssetVersionFloor: floor,
             keys: releaseKeys.keys,
