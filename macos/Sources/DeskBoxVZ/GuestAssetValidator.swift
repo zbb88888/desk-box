@@ -43,7 +43,8 @@ public enum GuestAssetValidator {
             guard FileManager.default.isReadableFile(atPath: url.path) else {
                 throw SandboxFailure(.platformAssetDigestMismatch, "boot asset 不可读：\(url.path)")
             }
-            guard let expected = manifest.fileDigests[url.standardizedFileURL.path]?.lowercased(),
+            /// M11：fileDigests 键为 basename，保证 manifest 可迁移到任意 build/download 目录。
+            guard let expected = manifest.fileDigests[url.lastPathComponent]?.lowercased(),
                   expected.count == 64,
                   expected.allSatisfy({ $0.isHexDigit }) else {
                 throw SandboxFailure(.platformAssetDigestMismatch, "缺少或非法 digest：\(url.path)")

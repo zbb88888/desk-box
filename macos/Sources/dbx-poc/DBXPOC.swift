@@ -305,8 +305,9 @@ struct DBXPOC {
         for file in files where !FileManager.default.isReadableFile(atPath: file.path) {
             throw CLIError.usage("asset is not readable: \(file.path)")
         }
+        /// M11 幂等：仅 basename 为键，路径可迁移。
         var digests: [String: String] = [:]
-        for file in files { digests[file.path] = try AssetDigest.sha256Hex(of: file) }
+        for file in files { digests[file.lastPathComponent] = try AssetDigest.sha256Hex(of: file) }
         let manifest = ManifestFile(
             kernelURL: kernel,
             initrdURL: initrd,
@@ -670,9 +671,8 @@ private struct ManifestFile: Codable {
         kernelURL = resolve(kernelURL, from: base)
         initrdURL = initrdURL.map { resolve($0, from: base) }
         rootDiskURL = resolve(rootDiskURL, from: base)
-        var normalized: [String: String] = [:]
-        for (path, digest) in fileDigests { normalized[resolve(URL(fileURLWithPath: path), from: base).path] = digest }
-        fileDigests = normalized
+        // M11：fileDigests 保留以 basename 为键（ManifestFile 签名 payload 可迁移目录）；
+        // GuestAssetValidator 会用 basename 查键，不再需要转为绝对路径。
     }
 
     private func resolve(_ value: URL, from base: URL) -> URL {
