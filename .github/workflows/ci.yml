@@ -286,7 +286,7 @@ jobs:
           [ "$?" -eq 0 ] || FAIL=1
           # 验证两个 sig 在相同 key 下都可验证
           for F in /tmp/idem-channel-1/manifest.json /tmp/idem-channel-2/manifest.json; do
-            ./.build/debug/dbx-poc validate-assets --manifest "$F" --release-keys /tmp/idem-release-keys.json || FAIL=1
+            ./.build/debug/dbx-poc validate-assets "$F" --release-keys /tmp/idem-release-keys.json || FAIL=1
           done
           [ "$FAIL" -eq 0 ] && echo "IDEMPOTENT-RELEASE OK"
           exit "$FAIL"
