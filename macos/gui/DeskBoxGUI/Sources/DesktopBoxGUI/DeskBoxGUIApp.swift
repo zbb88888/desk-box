@@ -16,6 +16,15 @@ struct DeskBoxGUIApp: App {
                 Button("Quit Desk Box") { NSApplication.shared.terminate(nil) }
             }
         }
+        MenuBarExtra("Desk Box", systemImage: "shippingbox") {
+            Text("Sandboxes: \(viewModel.sandboxes.count)")
+            Divider()
+            Button("Open Desk Box") {
+                NSApp.activate(ignoringOtherApps: true)
+                if let window = NSApp.windows.first { window.makeKeyAndOrderFront(nil) }
+            }
+            Button("Quit") { NSApplication.shared.terminate(nil) }
+        }
     }
 }
 
@@ -65,6 +74,7 @@ struct MainView: View {
     @State private var execCommand: String = ""
     @State private var execOutput: String = ""
     @State private var terminalSandboxId: String? = nil
+    @State private var settingsPresented: Bool = false
 
     var body: some View {
         VStack(spacing: 12) {
@@ -102,6 +112,7 @@ struct MainView: View {
                 Button("Refresh") { refresh() }
                 Button("Run New Sandbox") { run() }.disabled(daemonManager.status != .connected)
                 Button("Shutdown Daemon") { stopDaemon() }.disabled(daemonManager.status != .connected)
+                Button("Settings") { settingsPresented = true }
             }
             .padding(.horizontal)
 
@@ -185,6 +196,9 @@ struct MainView: View {
             set: { if !$0 { terminalSandboxId = nil } }
         )) {
             terminalSheet
+        }
+        .sheet(isPresented: $settingsPresented) {
+            SettingsPanel(client: viewModel.client, log: LogStore.shared)
         }
         .sheet(isPresented: Binding(get: { terminalSandboxId != nil }, set: { if !$0 { terminalSandboxId = nil } })) {
             terminalSheet

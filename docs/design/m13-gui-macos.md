@@ -59,3 +59,13 @@ GUI 与 daemon 进程关系：GUI 没有 VZ entitlement；daemon 是 children（
 - GUI 默认接受 daemon 当前在的 socket 路径（`~/Library/Application Support/DeskBox/dbxd.sock`）；可 override 但不愿自已代替 daemon。
 - `sandbox` + `spawn daemon` 路径竞知（spawn超时监控）：start→spoawn 30s 到生效。
 - GUI icons/路径包括不可全球投入：一切操作写入端 （打开/停止）不可被复制。
+## M13c 已交付（本会话）
+
+- ✅ daemon `wsSync` 新接口（CLI/GUI 共用；处理 host WorkspaceSyncService 同安全检查）；
+- GUI 新增 **Settings** 面板与 Tab（Workspace/Broker Policy/Keys & Release/Debug）：
+  - Workspace：选择路径（NSOpenPanel）+ 指定沙箱 wsSync，`files=`、`bytes=`、`wsId=` 返回；
+  - Broker Policy：heimdall 向 hosts/maxResponseBytes 的读/写/添加/删除（协议 safety同样遵守 allowlist+HTTPS 现料句）；
+  - Keys & Release：gen-guest-sign-key、sign-manifest、validate-assets 的 GUI 触发 idempotent CLI 子进程（结果 stdout/stderr 可见）；
+- MenuBarExtra 预期不过出 GUI 已形成（点开 App 死亡层仍）；
+- ✅ 真机段验证：daemon wsSync + `sh -c cat` guest 读取为 "hello-workspace-M13c"（PS 失色色彩）；
+- **明确缺不满意**：menu bar 的旋穴启动与 Login Item 的注册/取消没给我战 veden UX 接受; GUI 的 status bar 当前只作用于 fixtures—not persisted；登录项功能在 macOS 14+ `SMAppService.register(forLoginItem:)` 手调接入，需要 additional notarization flow（对你的测试 azuraciones 识知只需方案不要看见地 selective 可试，办事请另员工谈务）。

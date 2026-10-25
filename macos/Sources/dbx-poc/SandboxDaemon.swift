@@ -170,6 +170,8 @@ final class SandboxDaemon {
             return try self.dispatchPtyPoll(request)
         case "ptyClose":
             return try self.dispatchPtyClose(request)
+        case "wsSync":
+            return try self.dispatchWsSync(request)
         case "shutdown":
             for (_, session) in self.sessions {
                 try? runBlocking { try await session.runtime.destroy(session.handle) }
@@ -337,6 +339,21 @@ final class SandboxDaemon {
         self.ptySessions.removeValue(forKey: sid)
         // 客端进程不可控制关闭——发 exit 信号让其自然退出；后续无态扔清
         return DaemonResponse(ok: true, running: false, sandboxId: request.sandboxId)
+    }
+
+    private func dispatchWsSync(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("wsSync: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        guard let workspacePath = request.workspaceDir else {
+            throw CLIError.usage("wsSync: workspaceDir required")
+        }
+        let root = URL(fileURLWithPath: workspacePath).standardizedFileURL
+        let snapshot = try WorkspaceSyncService.buildSnapshot(root: root)
+        let ack = try runBlocking { try await session.runtime.pushWorkspace(session.handle, snapshot: snapshot) }
+        var response = DaemonResponse(ok: true, sandboxId: sandboxId, state: "running")
+        response.stdout = "ws-sync ok wsId=\(ack.wsId) files=\(snapshot.files.count) bytes=\(snapshot.totalBytes)"
+        return response
     }
 
     private func dispatchStop(_ request: DaemonRequest) throws -> DaemonResponse {
