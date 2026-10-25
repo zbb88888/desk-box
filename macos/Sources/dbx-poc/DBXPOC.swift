@@ -85,7 +85,7 @@ struct DBXPOC {
         else {
             throw CLIError.usage("dbx-poc sign-manifest --manifest <in> --key <path> --output <out> [--asset-version N]")
         }
-        var manifest = try loadManifest(at: URL(fileURLWithPath: inputPath))
+        var manifest = try loadSignedManifestPreservingURLs(at: URL(fileURLWithPath: inputPath))
         if let version = try optionInt("--asset-version", in: args) {
             manifest = ManifestFile(
                 kernelURL: manifest.kernelURL, initrdURL: manifest.initrdURL, rootDiskURL: manifest.rootDiskURL,
@@ -594,10 +594,15 @@ struct DBXPOC {
         print("sandbox destroyed \(handle.sandboxID)")
     }
 
+    /// M11：仅 launch 需要绝对路径，签名/publish 保留原 manifest 里的相对 URL 以保证 byte-identical 幂等。
     private static func loadManifest(at url: URL) throws -> ManifestFile {
         var manifest = try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: url))
         manifest.resolveRelativeURLs(from: url.deletingLastPathComponent())
         return manifest
+    }
+
+    private static func loadSignedManifestPreservingURLs(at url: URL) throws -> ManifestFile {
+        try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: url))
     }
 
     private static func optionString(_ name: String, in args: [String]) throws -> String? {
