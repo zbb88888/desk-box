@@ -388,6 +388,102 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
+    public struct PtyStreamSession: Sendable {
+        public let requestID: UUID
+        public init(requestID: UUID) { self.requestID = requestID }
+    }
+
+    public struct PtyPollResult: Sendable {
+        public let output: Data
+        public let running: Bool
+        public let exitCode: Int32?
+        public let signal: Int32?
+    }
+
+    /// M13b：流式 PTY 会话（同一负责 sandbox 只允许一个活跃会话，与客协议一致）。
+    public func ptyOpenSession(_ handle: SandboxHandle, argv: [String], timeoutSeconds: Int = 10) async throws -> PtyStreamSession {
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        let requestID = UUID()
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running,
+                  record.controlSocket != nil else {
+                throw SandboxFailure(.bootstrapProofMissing, "PTY requires a running authenticated session")
+            }
+            record.pendingPtyOpenID = requestID
+            let payload = try JSONEncoder().encode(PtyOpenRequest(argv: argv))
+            let frame = try ControlFrame(kind: .ptyOpen, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+        while true {
+            let opened = try await onQueue { () -> Bool in
+                let record = try self.require(handle)
+                guard let index = record.ptyEvents.firstIndex(where: {
+                    $0.type == .opened && $0.ptyId == 0
+                }) else { return false }
+                record.ptyEvents.remove(at: index)
+                return true
+            }
+            if opened { break }
+            if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "ptyOpen timeout") }
+            try await Task.sleep(for: .milliseconds(40))
+        }
+        return PtyStreamSession(requestID: requestID)
+    }
+
+    public func ptyWriteSession(_ handle: SandboxHandle, session: PtyStreamSession, data: Data) async throws {
+        try await onQueue {
+            let record = try self.require(handle)
+            let hex = data.map { String(format: "%02x", $0) }.joined()
+            let payload = try JSONEncoder().encode(PtyInputRequest(ptyId: 0, dataHex: hex))
+            let frame = try ControlFrame(kind: .ptyInput, sequence: record.nextRequestSequence(), requestID: session.requestID, payload: payload)
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+    }
+
+    public func ptyPollSession(_ handle: SandboxHandle, session: PtyStreamSession, waitMillis: Int = 50) async throws -> PtyPollResult {
+        var output = Data()
+        var exitCode: Int32?
+        var signal: Int32?
+        let deadline = Date().addingTimeInterval(TimeInterval(waitMillis) / 1000.0)
+        while true {
+            let events = try await onQueue { () -> [PtyEvent] in
+                let record = try self.require(handle)
+                let matched = record.ptyEvents.filter { $0.ptyId == 0 }
+                record.ptyEvents.removeAll { $0.ptyId == 0 }
+                return matched
+            }
+            for event in events {
+                switch event.type {
+                case .output:
+                    if let bytes = HexCoder.decode(event.dataHex) { output.append(bytes) }
+                case .exit:
+                    exitCode = event.exitCode
+                    signal = event.signal
+                case .opened:
+                    continue
+                }
+            }
+            if exitCode != nil || signal != nil {
+                try await Task.sleep(for: .milliseconds(60))
+                let trailing = try await onQueue { () -> [PtyEvent] in
+                    let record = try self.require(handle)
+                    let matched = record.ptyEvents.filter { $0.ptyId == 0 }
+                    record.ptyEvents.removeAll { $0.ptyId == 0 }
+                    return matched
+                }
+                for event in trailing where event.type == .output {
+                    if let bytes = HexCoder.decode(event.dataHex) { output.append(bytes) }
+                }
+                return PtyPollResult(output: output, running: false, exitCode: exitCode, signal: signal)
+            }
+            if !output.isEmpty || Date() >= deadline {
+                return PtyPollResult(output: output, running: true, exitCode: nil, signal: nil)
+            }
+            try await Task.sleep(for: .milliseconds(40))
+        }
+    }
+
     public func ptyRoundTrip(
         _ handle: SandboxHandle,
         argv: [String],

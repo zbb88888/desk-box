@@ -64,6 +64,7 @@ struct MainView: View {
     @State private var execSandboxId: String = ""
     @State private var execCommand: String = ""
     @State private var execOutput: String = ""
+    @State private var terminalSandboxId: String? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -114,7 +115,8 @@ struct MainView: View {
                             onExecSelect: {
                                 execSandboxId = sb.sandboxId
                                 NSApp.keyWindow?.makeFirstResponder(nil)
-                            }
+                            },
+                            onTerminal: { terminalSandboxId = sb.sandboxId }
                         )
                     }
                 }
@@ -178,8 +180,23 @@ struct MainView: View {
         }
         .padding(.vertical)
         .onAppear { refresh() }
+        .sheet(isPresented: Binding(
+            get: { terminalSandboxId != nil },
+            set: { if !$0 { terminalSandboxId = nil } }
+        )) {
+            terminalSheet
+        }
+        .sheet(isPresented: Binding(get: { terminalSandboxId != nil }, set: { if !$0 { terminalSandboxId = nil } })) {
+            terminalSheet
+        }
     }
 
+    @ViewBuilder private var terminalSheet: some View {
+        if let sid = terminalSandboxId {
+            TerminalView(sandboxId: sid, client: viewModel.client)
+                .frame(minWidth: 640, minHeight: 420)
+        }
+    }
     private var statusBadge: some View {
         HStack {
             Circle().fill(daemonManager.status == .connected ? Color.green : Color.orange)
@@ -256,6 +273,7 @@ struct SandboxRow: View {
     let onStop: () -> Void
     let onRm: () -> Void
     let onExecSelect: () -> Void
+    let onTerminal: () -> Void
     var body: some View {
         HStack {
             Text(info.sandboxId).font(.system(.body, design: .monospaced))
@@ -263,6 +281,7 @@ struct SandboxRow: View {
             Spacer()
             Text(info.bootedAtUtc).font(.caption).foregroundColor(.secondary)
             Button("Select Exec") { onExecSelect() }
+            Button("Terminal") { onTerminal() }
             Button("Stop") { onStop() }
             Button("Rm") { onRm() }.foregroundColor(.red)
         }

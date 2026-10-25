@@ -16,7 +16,7 @@
 | 阶段 | 范围 |
 |---|---|
 | M13a ✅ | App skeleton（SwiftUI window）+ daemon 苦备探访（socket failing status 显示）+ 沙箱列表（run/stop/rm）+ daemon launch/stop 按钮 + exec 一次性命令行窗口； |
-| M13b | Terminal VT100 交互（SwiftTerm 或 NSTextView 全文件以 vsock->pty） |
+| M13b ✅ | Terminal 交互窗：PTU 类型（open/写/合取输出/exit）+ daemon 流式会话 + GUI `TerminalView`（注意本阶段仅滚动文本渲染，未 VT100 全色号）；|
 | M13c | workspace sync UI / broker allowlist / keyring 配置/保存验证 envelope |
 
 ## 3. 架构
@@ -49,7 +49,9 @@ GUI 与 daemon 进程关系：GUI 没有 VZ entitlement；daemon 是 children（
 - [x] M13a 架构与文档
 - [x] GUI skeleton + daemon 管理 + 交互
 - [x] build-gui.sh 可复构建（产 gui/dist/DeskBox.app）
-- [⚠️] 真机 GUI 运行验证：进程活=已验证（pid=52062）；按钮交互手动验证_OPENDEVINUE 与建立的好习惯未批肿大（本机无屏幕录制权限，个人差别人按按钮）
+- [x] M13b：流式 PTY（ptyOopen/ptyInput/ptyPoll/ptyClose）与真实测证：`echo EQ_MARKER; id -u` 输出 `EQ_MARKER/65534`，`exit` 后 running=false、exitCode=0；
+- [x] GUI Terminal 窗（`TerminalView`）假设 apply Sanitize ANSI / CR 和 `pty 被拒绝 ×1 per sandbox` fail-closed 同代码；
+- [⚠️] GUI 进行手术 UI click 个人验证需手动 open（本机无屏幕录制权限）
 
 ## 6. 安全备注
 

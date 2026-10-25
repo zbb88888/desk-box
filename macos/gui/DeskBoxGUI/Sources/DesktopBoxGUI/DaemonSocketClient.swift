@@ -18,10 +18,16 @@ struct DaemonRequest: Codable {
     var cwd: String? = nil
     var timeoutSeconds: Int? = nil
     var force: Bool? = nil
+    var ptySessionId: String? = nil
+    var dataHex: String? = nil
+    var waitMillis: Int? = nil
 }
 
 struct DaemonResponse: Codable {
     let ok: Bool
+    var ptySessionId: String? = nil
+    var outputHex: String? = nil
+    var running: Bool? = nil
     var error: String? = nil
     var sandboxId: String? = nil
     var state: String? = nil

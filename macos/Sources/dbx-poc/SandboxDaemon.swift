@@ -22,10 +22,16 @@ struct DaemonRequest: Codable {
     var cwd: String? = nil
     var timeoutSeconds: Int? = nil
     var force: Bool? = nil
+    var ptySessionId: String? = nil
+    var dataHex: String? = nil
+    var waitMillis: Int? = nil
 }
 
 struct DaemonResponse: Codable {
     let ok: Bool
+    var ptySessionId: String? = nil
+    var outputHex: String? = nil
+    var running: Bool? = nil
     var error: String? = nil
     var sandboxId: String? = nil
     var state: String? = nil
@@ -156,6 +162,14 @@ final class SandboxDaemon {
             return try self.dispatchStop(request)
         case "rm":
             return try self.dispatchRm(request)
+                case "ptyOpen":
+            return try self.dispatchPtyOpen(request)
+        case "ptyInput":
+            return try self.dispatchPtyInput(request)
+        case "ptyPoll":
+            return try self.dispatchPtyPoll(request)
+        case "ptyClose":
+            return try self.dispatchPtyClose(request)
         case "shutdown":
             for (_, session) in self.sessions {
                 try? runBlocking { try await session.runtime.destroy(session.handle) }
@@ -167,6 +181,8 @@ final class SandboxDaemon {
             throw CLIError.usage("unknown kind=\(request.kind)")
         }
     }
+
+    private var ptySessions: [String: (session: VZRuntime.PtyStreamSession, sandboxId: String)] = [:]
 
     private func dispatchRun(_ request: DaemonRequest) throws -> DaemonResponse {
         guard let manifestPath = request.manifestPath else {
@@ -257,6 +273,70 @@ final class SandboxDaemon {
         let response = try runBlocking { try await session.runtime.execute(session.handle, request: controlRequest) }
         return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running",
                               exitCode: response.exitCode, stdout: response.stdout, stderr: response.stderr)
+    }
+
+
+    private func dispatchPtyOpen(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("ptyOpen: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        // 单沙箱一次只能一个流式 pty 会话（协议 ptyId=0）
+        if ptySessions.values.contains(where: { $0.sandboxId == sandboxId }) {
+            throw CLIError.usage("ptyOpen: sandbox already has an active pty session")
+        }
+        guard let argv = request.argv, !argv.isEmpty else {
+            throw CLIError.usage("ptyOpen: argv required")
+        }
+        let opened = try runBlocking { try await session.runtime.ptyOpenSession(session.handle, argv: argv) }
+        let sid = opened.requestID.uuidString
+        self.ptySessions[sid] = (opened, sandboxId)
+        return DaemonResponse(ok: true, ptySessionId: sid, running: true, sandboxId: sandboxId, state: "running")
+    }
+
+    private func dispatchPtyInput(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sid = request.ptySessionId, let entry = self.ptySessions[sid] else {
+            throw CLIError.usage("ptyInput: pty session not found")
+        }
+        guard let sandbox = self.sessions[entry.sandboxId] else {
+            throw CLIError.usage("ptyInput: sandbox no longer alive")
+        }
+        let hex = request.dataHex ?? ""
+        var bytes = Data()
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let pair = hex[i..<hex.index(i, offsetBy: 2)]
+            if let b = UInt8(pair, radix: 16) { bytes.append(b) }
+            i = hex.index(i, offsetBy: 2)
+        }
+        let input = bytes
+        try runBlocking { try await sandbox.runtime.ptyWriteSession(sandbox.handle, session: entry.session, data: input) }
+        return DaemonResponse(ok: true)
+    }
+
+    private func dispatchPtyPoll(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sid = request.ptySessionId, let entry = self.ptySessions[sid] else {
+            throw CLIError.usage("ptyPoll: pty session not found")
+        }
+        guard let sandbox = self.sessions[entry.sandboxId] else {
+            self.ptySessions.removeValue(forKey: sid)
+            throw CLIError.usage("ptyPoll: sandbox no longer alive")
+        }
+        let result = try runBlocking {
+            try await sandbox.runtime.ptyPollSession(sandbox.handle, session: entry.session, waitMillis: request.waitMillis ?? 200)
+        }
+        var response = DaemonResponse(ok: true, ptySessionId: sid, running: result.running, sandboxId: entry.sandboxId, exitCode: result.exitCode)
+        response.outputHex = result.output.map { String(format: "%02x", $0) }.joined()
+        if !result.running { self.ptySessions.removeValue(forKey: sid) }
+        return response
+    }
+
+    private func dispatchPtyClose(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sid = request.ptySessionId, let _ = self.ptySessions[sid] else {
+            throw CLIError.usage("ptyClose: pty session not found")
+        }
+        self.ptySessions.removeValue(forKey: sid)
+        // 客端进程不可控制关闭——发 exit 信号让其自然退出；后续无态扔清
+        return DaemonResponse(ok: true, running: false, sandboxId: request.sandboxId)
     }
 
     private func dispatchStop(_ request: DaemonRequest) throws -> DaemonResponse {
