@@ -59,7 +59,7 @@ docker run --rm \
   -v "$OUT_DIR:/out" \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
-    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static dpkg libsodium-dev libsodium-static >/dev/null
+    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static dpkg libsodium-dev libsodium-static cpio >/dev/null
     # The Debian installer initrd is intentionally small and does not contain
     # virtio-blk/VSOCK transport modules. Fetch the matching Debian module set
     # for the direct kernel used by VZ; the host never trusts guest claims.
@@ -186,7 +186,8 @@ EOF
     chmod 0755 /tmp/initrd/init
     # M10 deterministic：initrd 的 mtime 也归一（gzip -n 无 mtime = 但 cpio header 里仍有）。
     find /tmp/initrd -exec touch -h -t "$TS_TOUCH" {} +
-    (cd /tmp/initrd && find . -print | LC_ALL=C sort | cpio -o -H newc 2>/dev/null | gzip -n9 > /out/initrd-deskbox.img)
+    # 使用 GNU cpio --reproducible：inode 归零消除建程差异（busybox cpio 会记录真实 inode 数）。
+    (cd /tmp/initrd && find . -print | LC_ALL=C sort | cpio --reproducible -o -H newc 2>/dev/null | gzip -n9 > /out/initrd-deskbox.img)
   '
 
 cd "$(dirname "$0")/.."
