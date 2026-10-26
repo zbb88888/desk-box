@@ -112,14 +112,16 @@ EOF
       -U 00000000-0000-0000-0000-000000000000 \
       /out/root-disk.raw
     # 确定性后处理（e2fsprogs journal-salt 与 few-byte timestamps）：
-    # 1) superblock 随机盐区/jnl_blocks (1248..1315, 无 journal 下无意义)；
-    # 2) s_mtime/s_wtime/lastcheck 等时间戳字段 (1068..1079)。
-    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1248 count=68 conv=notrunc status=none
+    # jnl 区域段清空（journal uuid + blocks slots），完全避开 s_desc_size 与其他 feature 字段：
+    # 非随机查才信的点：journal_uuid = sb+0xF0..0xFF (相间 1264..1279)。
+    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1264 count=16 conv=notrunc status=none
+    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1296 count=20 conv=notrunc status=none
     dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1068 count=12 conv=notrunc status=none
-    # 备份 superblock 清零：4KiB block / 512MB 磁盘时备份位于 group = 1 & 3 (sparse_super)：
+    # 备份 superblock 同处理（避开 desc_size/其他 feature 字段）：
     for blk in 32768 98304; do
       start=$((blk * 4096))
-      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 224)) count=68 conv=notrunc status=none 2>/dev/null || true
+      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 240)) count=16 conv=notrunc status=none 2>/dev/null || true
+      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 272)) count=20 conv=notrunc status=none 2>/dev/null || true
       dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 44)) count=12 conv=notrunc status=none 2>/dev/null || true
     done
 

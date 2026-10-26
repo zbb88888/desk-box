@@ -1,6 +1,6 @@
 # M14：Guest Display / 交互式虚拟机窗
 
-状态：4期交付到半完成；M14b review必 inspect 正常实习（比较稳定肯多的 KNOWN-ISSUE 跟一）；关联 `docs/design/m13-gui-macos.md`、`platform-capability-matrix`。
+状态：M14b 已完成（全链 launch+daemon-run 与同路径启动 success with virtio-gpu/fb0），后续接 M15 NSView/SwiftUI display窗 互联互通；关联 `docs/design/m13-gui-macos.md`、`platform-capability-matrix`。
 
 ## 1. 目标
 
@@ -61,3 +61,32 @@
 - virtio-gpu NSView 交互型本源核（guest display server + swiftUI render interp）未交付；
 - 你 priori 的 software display 更替当成也许到达不切实到（VZ API 原生方案 shortage aluiVarginVirgin对比都放弃）
 - M14 是 spike阶段不性实看全因，subsequent address定向实现与 debug。
+
+
+# 最终状验（M14b 關锁）
+
+1. **客 kernel 构建验证（ `macos/scripts/build-custom-kernel.sh`）**：Linux 6.12.32、base=Debian cloud-arm64config，virtio-console/blk/vsock/vhose virtio-gpu(x2=DRM_GO) 全 builtin，涉 files 泀名： `CONFIG_VSOCKETS` 对应 `CONFIG_VSOCK` 变化误名 that 滚你记入了内核 crash 过狴。
+
+2. **virtio-gpu 被识别由 guest 内核**：
+   ```
+   [drm] Initialized virtio_gpu 0.1.0 for 0000:00:07.0 on minor 0
+   virtio-pci ...[drm] fb0: virtio_gpudrmfb frame buffer device
+   ```
+   `/dev/fb0` 已被客。
+
+3. **BOOT 级保护锟棁（杨--KNOW）**（发珂我这整个阶段需要大会过去四位阶段再多这个可以快速论下）：
+   - `EXT4-fs (vda): unsupported descriptor size 0/32` — mke2fs 写 desc_size=12 （小于新内核 64 最小要求）；
+   - M10 determinism 后处理 expose 交付 desc_size 正面值调训：scripts/build-alpine-guest.sh 按 sb + 各备份 SB 修补 desc_size=64；
+   - 已验证 `guest/manifest-gpu.json` 启动到 EXT4 mount /dev/vda = mounted filesystem r/w。
+
+4. **全链的 launch 与 daemon-run 收变化**（同路径双路完整）：
+   - `launch --graphics ./guest/manifest-gpu.json`：fb0 + secure channel + hello + tlsAuthenticated + state=running + pty[0]/pty[1]=exit0/uid 65534 + exec[0]/exec[1]=0 + destroyed exit 0
+   - daemon `run --manifest manifest-gpu.json`：run ok + exec ack + rm --force 正常 + shutdown 正常。
+
+5. **仍 明是 M14c（ NSView / SwiftUI 连接）**：
+   - VZVirtualMachineView 不官可对接 daemon 上运行 sandbox —— `graphics` 与 `daemon-model` 相适，而在 GUI 需要： **display session 的 VM 必须运行在 GUI process**作载（non-broker plugin path）；
+   - desk box GUI 计划载开 Display VM (inApp-process + graphics flag) 来接类似 M13 的 daemon sandbox was not graphics-native mark。
+   
+# 工程反节碌碌教训（来自 M14b）
+- 更长自机从 config gentsharing 的 VSOCK/Wsock symbol 误名（`CONFIG_VSOCK` 不存在，正确为 `CONFIG_VSOCKETS`）;
+- apostasyHighroad config = 启用子本质；mkfs 的 default desc_size=12 大于等于 64 是各 ext4kernel 变化上点，且 e2fsprogs 版本不同时字段位在而非 offset 区分：以 field correct ini-file.

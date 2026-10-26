@@ -236,6 +236,7 @@ final class SandboxDaemon {
         let handle = try runBlocking { try await runtime.create(create) }
         do {
             _ = try runBlocking { try await runtime.start(handle) }
+            fputs("daemon: VM started sandbox=\(sandboxID.description) waiting for bootstrap...\n", stderr)
             let deadline = Date().addingTimeInterval(90)
             var lastBootstrapPrinted = ""
             while Date() < deadline {

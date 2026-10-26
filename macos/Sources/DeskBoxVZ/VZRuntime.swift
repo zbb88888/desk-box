@@ -185,6 +185,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             do {
                 try await self.startMachine(record.machine)
                 record.started = true
+                fputs("[vz-start] sandbox=\(record.request.sandboxID.description) machine.state=\(record.machine.state.rawValue)\n", stderr)
+                fflush(stderr)
                 try self.registry.upsert(RegisteredSandbox(
                     sandboxID: record.request.sandboxID,
                     bootID: record.boot.bootID,
@@ -674,6 +676,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         let configuration = VZVirtualMachineConfiguration()
         configuration.bootLoader = bootLoader
+        fputs("[vz-cfg] kernel=\(assets.kernelURL.standardizedFileURL.path) cmdline='\(assets.kernelCommandLine)' gfx=\(self.enableGraphics) console=\(self.enableConsole) ctrl=\(self.enableControlSocket)\n", stderr)
+        fflush(stderr)
         let requestedCPUs = request.resources.cpuCount ?? 2
         configuration.cpuCount = max(
             VZVirtualMachineConfiguration.minimumAllowedCPUCount,
