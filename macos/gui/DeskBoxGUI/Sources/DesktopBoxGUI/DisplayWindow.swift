@@ -34,10 +34,23 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
     private var consolePipe: (fh: FileHandle?, cleanup: (() -> Void)?) = (nil, nil)
 
     func start(kernelPath: URL, initrdPath: URL?, rootDiskPath: URL, cpu: Int = 2, memMiB: Int = 2048) {
+        // 会话私盘：rootfs base 不可写（strategies 一致）。
+        let sessionDisk = FileManager.default.temporaryDirectory
+            .appendingPathComponent("deskbox-display-root-\(UUID().uuidString).raw")
+        do {
+            try FileManager.default.copyItem(at: rootDiskPath, to: sessionDisk)
+        } catch {
+            DispatchQueue.main.async {
+                self.busy = false
+                self.status = "copy rootfs fail: \(error.localizedDescription)"
+            }
+            return
+        }
+        let activeRootDisk = sessionDisk
         DispatchQueue.main.async { self.busy = true; self.status = "starting" }
         animQueue.async {
             do {
-                let machine = try self.makeMachine(kernel: kernelPath, initrd: initrdPath, rootDisk: rootDiskPath, cpu: cpu, memMiB: memMiB)
+                let machine = try self.makeMachine(kernel: kernelPath, initrd: initrdPath, rootDisk: activeRootDisk, cpu: cpu, memMiB: memMiB)
                 let vmBox = VMBox(machine: machine)
                 DispatchQueue.main.async { self.machine = machine }
                 vmBox.machine.start { result in

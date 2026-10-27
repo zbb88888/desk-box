@@ -97,6 +97,7 @@ if [ ! -e /run/deskbox-bootstrap-ok ]; then
   /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 fi
 printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
+(busybox getty 9600 tty0 </dev/tty0 >/dev/tty0 2>/dev/tty0 &) 2>/dev/null || true
 # Do not keep init on a serial shell; the diagnostic bootstrap is complete.
 # A production execd replaces this loop.
 exec /bin/busybox sh -c "while :; do /bin/busybox sleep 3600; done"

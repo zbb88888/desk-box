@@ -14,7 +14,8 @@ cp "$ROOT/.build/release/DeskBoxGUI" "$APP_ROOT/Contents/MacOS/DeskBoxGUI"
 cp "$ROOT/gui/DeskBoxGUI/Resources/Info.plist" "$APP_ROOT/Contents/Info.plist"
 
 CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-Apple Development: 1220582684@qq.com (9LM4RS5GL6)}"
-codesign --force --sign "$CODESIGN_IDENTITY" --timestamp "$APP_ROOT" 2>&1 | tail -1
+# M14c：GUI 自己也启动 display VM（with virtual machine）——需要同 entitlement。
+codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$ROOT/Resources/DeskBox.entitlements" --timestamp "$APP_ROOT" 2>&1 | tail -1
 
 cat <<EOF
 

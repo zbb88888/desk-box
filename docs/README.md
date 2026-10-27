@@ -38,6 +38,7 @@
 - [M12 沙箱生命周期 CLI](design/m12-sandbox-lifecycle-cli.md)：daemon 模型的 run/ps/exec/stop/rm。
 - [M13 macOS GUI](design/m13-gui-macos.md)：SwiftUI + AppKit 的 Docker Desktop 型管理面板。
 - [M14 Guest Display](design/m14-guest-display.md)：virtio-gpu spike 实证结论与自定义 kernel 决策点。
+- [M14c GUI Display](design/m14c-gui-display.md)：virtio-gpu framebuffer → NSView 串 SwiftUI 窗口。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。
 - [安全验证追踪矩阵](security/security-verification-matrix.md)：把十项安全不变量映射到组件、测试、证据和责任角色。
