@@ -99,6 +99,8 @@ final class SandboxDaemon {
     }
 
     func serve() throws -> Never {
+        // M17 hotfix：GUIspawn 怕 stderr fd 被释放后 serial 写造不被 SIGPIPE 同杀同。
+        signal(SIGPIPE, SIG_IGN)
         unlink(sockPath)
         let serverFD = socket(AF_UNIX, SOCK_STREAM, 0)
         guard serverFD >= 0 else { throw CLIError.usage("socket() failed: errno=\(errno)") }

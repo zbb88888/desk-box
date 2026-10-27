@@ -146,6 +146,8 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
     }
 
     private var process: Process? = nil
+    /// M17 hotfix：保盾 daemon 日志 fd 一直吃 daemon 生命周期，不在 startDaemon 出去后被 ARC 释放。
+    private var daemonLogHandle: FileHandle? = nil
     private let client: DaemonSocketClient
     let clientPath: String
 
@@ -155,24 +157,62 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
         self.clientPath = path
     }
 
+    /// M17 hotfix：发现 daemon 死但 socket 残留时，清残留并允许重开。
+    private func clearStaleSocket() {
+        let path = self.clientPath
+        if FileManager.default.fileExists(atPath: path) {
+            try? FileManager.default.removeItem(atPath: path)
+            DispatchQueue.main.async {
+                LogStore.shared.append("stale daemon sock removed: \(path)")
+            }
+        }
+    }
+
     func refresh() {
-        self.status = client.probing() ? .connected : .stopped
+        // M17 hotfix：GUI 自持的 daemon 以 process.isRunning 为连注目（期间run 忙 socket 的 probing 会超时）。
+        if let p = process, p.isRunning {
+            self.status = .connected
+            return
+        }
+        let on = client.probing()
+        self.status = on ? .connected : .stopped
+        if !on && process == nil { clearStaleSocket() }
+    }
+
+    /// daemon 死处理：若已死，重置 process 引用使 startDaemon 工作。
+    func noteDiedIfNeeded() {
+        if let p = process, !p.isRunning {
+            process = nil
+            clearStaleSocket()
+        }
     }
 
     func startDaemon(dbxBinaryPath: URL, sockPath: String?) throws {
+        // M17 hotfix：已有本 GUI 开的 daemon 组件时，直接返回（probing 在 boot 期间可能超时不负责任）。
+        if let p = process, p.isRunning { self.status = .connected; return }
+        noteDiedIfNeeded()
         guard !client.probing() else { self.status = .connected; return }
         let process = Process()
         process.executableURL = dbxBinaryPath
         var args = ["daemon"]
         if let sockPath, !sockPath.isEmpty { args += ["--daemon-sock", sockPath] }
         process.arguments = args
-        // 输出接回 GUI 日志
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        // M17 hotfix：daemon 的 stdout/stderr 写到日志文件（避免 pipe 缓冲阻锡。
+        // GUI 由 LogStore.loadExternal 追加显示。
+        let logDir = (sockPath ?? self.clientPath).replacingOccurrences(of: "/dbxd.sock", with: "")
+        let logPath = logDir + "/dbxd-gui.log"
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+        let logHandle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
+        try? logHandle?.truncate(atOffset: 0)
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        self.daemonLogHandle = logHandle
+        self.daemonLogPath = logPath
         try process.run()
         self.process = process
         self.startedAt = ISO8601DateFormatter().string(from: Date())
+        // M17：GUI 从日志文件增量加载（独立 timer）。
+        self.startLogTail(path: self.daemonLogPath)
         // polling connect readiness
         DispatchQueue.global().async {
             for _ in 0..<40 {
@@ -187,12 +227,34 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
                 self.lastError = "daemon 启动后在 10s 内未响应 socket"
             }
         }
-        // 收集日志
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            let text = String(decoding: data, as: UTF8.self)
-            DispatchQueue.main.async { LogStore.shared.append(text) }
+    }
+
+    // MARK: - Log tail (M17 hotfix)
+    var daemonLogPath: String = ""
+    private var logTailOffset: UInt64 = 0
+
+    func startLogTail(path: String) {
+        guard !path.isEmpty else { return }
+        logTailOffset = 0
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.tailLoop(path: path)
+        }
+    }
+
+    private func tailLoop(path: String) {
+        // 简捕：每 1s 拉尾部 until daemon 停。
+        while true {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else {
+                Thread.sleep(forTimeInterval: 1.0); continue
+            }
+            if data.count > logTailOffset {
+                let newData = data.subdata(in: Int(logTailOffset)..<data.count)
+                let text = String(decoding: newData, as: UTF8.self)
+                logTailOffset = UInt64(data.count)
+                DispatchQueue.main.async { LogStore.shared.append(text) }
+            }
+            guard let p = self.process, p.isRunning else { break }
+            Thread.sleep(forTimeInterval: 1.0)
         }
     }
 

@@ -8,7 +8,30 @@ struct DockerMainView: View {
 
     @State private var selection: String? = "sandboxes"
     @AppStorage("manifestPath") private var manifestPath: String = ""
+    @AppStorage("dbxPath") private var dbxPathOverride: String = ""
     @AppStorage("autostartDaemon") private var autostartDaemon: Bool = true
+
+    /// M17 hotfix：宿主可定制的 dbx-poc 解析。 order:
+    /// 1. 偏好 dbxPath 覆盖；2. 相对 app bundle (gui/dist/DeskBox.app → macos/.build/release/dbx-poc)；3. cwd/.build/release/dbx-poc
+    private func resolvedDbxPath() -> String {
+        if !dbxPathOverride.isEmpty { return dbxPathOverride }
+        let bundleRoot = Bundle.main.bundleURL
+            .deletingLastPathComponent()  // dist/
+            .deletingLastPathComponent()  // gui/
+            .deletingLastPathComponent()  // macos/
+        let viaBundle = bundleRoot.path + "/.build/release/dbx-poc"
+        if FileManager.default.isExecutableFile(atPath: viaBundle) { return viaBundle }
+        return FileManager.default.currentDirectoryPath + "/.build/release/dbx-poc"
+    }
+
+    private func resolvedManifestPath() -> String {
+        if !manifestPath.isEmpty { return manifestPath }
+        let bundleRoot = Bundle.main.bundleURL
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let viaBundle = bundleRoot.path + "/guest/manifest.json"
+        if FileManager.default.fileExists(atPath: viaBundle) { return viaBundle }
+        return FileManager.default.currentDirectoryPath + "/guest/manifest.json"
+    }
     @State private var terminalSandboxId: String?
     @State private var consoleSandboxId: String?
     @State private var execSandboxId = ""
@@ -40,7 +63,7 @@ struct DockerMainView: View {
         .frame(minWidth: 900, minHeight: 520)
         .onAppear {
             if manifestPath.isEmpty {
-                manifestPath = FileManager.default.currentDirectoryPath + "/guest/manifest.json"
+                manifestPath = resolvedManifestPath()
             }
             daemonManager.refresh()
             viewModel.refresh()
@@ -49,8 +72,10 @@ struct DockerMainView: View {
             }
         }
         .onReceive(Timer.publish(every: 3.0, on: .main, in: .common).autoconnect()) { _ in
-            if daemonManager.status == .connected { viewModel.refresh() }
+            daemonManager.noteDiedIfNeeded()
             daemonManager.refresh()
+            if daemonManager.status == .connected { viewModel.refresh() }
+            else if autostartDaemon { startDaemon() }
         }
         .sheet(isPresented: Binding(get: { terminalSandboxId != nil },
                                     set: { if !$0 { terminalSandboxId = nil } })) {
@@ -180,7 +205,7 @@ struct DockerMainView: View {
     }
 
     private func startDaemon() {
-        let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath + "/.build/release/dbx-poc").standardizedFileURL
+        let url = URL(fileURLWithPath: resolvedDbxPath()).standardizedFileURL
         guard FileManager.default.isExecutableFile(atPath: url.path) else {
             LogStore.shared.append("dbx-poc not found at \(url.path). Build & sign first.")
             return
@@ -218,7 +243,10 @@ struct DockerMainView: View {
         do {
             let resp = try viewModel.client.send(req)
             execOutput = "exit=\(resp.exitCode ?? 0)\n---stdout---\n\(resp.stdout ?? "")\n---stderr---\n\(resp.stderr ?? "")"
-        } catch { execOutput = "daemon: \(error.localizedDescription)" }
+        } catch {
+            execOutput = "daemon: \(error.localizedDescription)"
+            daemonManager.status = .stopped
+        }
     }
 
     private func openDisplay() {
@@ -240,6 +268,8 @@ struct DockerMainView: View {
         } catch {
             LogStore.shared.append("\(req.kind) fail: \(error.localizedDescription)")
             execOutput = "daemon: \(error.localizedDescription)"
+            // M17 hotfix：发送失败也应立即表状态而不是仍是 connected
+            daemonManager.status = .stopped
         }
     }
 }
