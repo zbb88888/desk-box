@@ -7,9 +7,8 @@ struct DockerMainView: View {
     @StateObject private var displayModel = DisplaySandboxViewModel()
 
     @State private var selection: String? = "sandboxes"
-    @State private var manifestPath: String = {
-        FileManager.default.currentDirectoryPath + "/guest/manifest.json"
-    }()
+    @AppStorage("manifestPath") private var manifestPath: String = ""
+    @AppStorage("autostartDaemon") private var autostartDaemon: Bool = true
     @State private var terminalSandboxId: String?
     @State private var consoleSandboxId: String?
     @State private var execSandboxId = ""
@@ -40,8 +39,14 @@ struct DockerMainView: View {
         }
         .frame(minWidth: 900, minHeight: 520)
         .onAppear {
+            if manifestPath.isEmpty {
+                manifestPath = FileManager.default.currentDirectoryPath + "/guest/manifest.json"
+            }
             daemonManager.refresh()
             viewModel.refresh()
+            if autostartDaemon && daemonManager.status != .connected {
+                startDaemon()
+            }
         }
         .onReceive(Timer.publish(every: 3.0, on: .main, in: .common).autoconnect()) { _ in
             if daemonManager.status == .connected { viewModel.refresh() }
