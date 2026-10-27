@@ -64,6 +64,8 @@ struct DBXPOC {
             case "stop":  try daemonStopCli(args: Array(args.dropFirst()))
             case "rm":    try daemonRmCli(args: Array(args.dropFirst()))
             case "shutdown": try daemonShutdownCli(args: Array(args.dropFirst()))
+            case "restart": try daemonRestartCli(args: Array(args.dropFirst()))
+            case "console": try daemonConsoleCli(args: Array(args.dropFirst()))
             case "help", "-h", "--help":
                 printUsage()
             default:
@@ -794,6 +796,45 @@ private extension DBXPOC {
         let sock = try? optionString("--daemon-sock", in: args)
         _ = try DaemonClient.send(request: request, sockPath: sock)
         print("removed \(sandboxId)")
+    }
+
+    /// M16：restart（stop+rm+重建，新 sandboxId）
+    static func daemonRestartCli(args: [String]) throws {
+        let sock = (try? optionString("--daemon-sock", in: args))
+        // 踢出任何带 /, --skip 伻记夺 pairing
+        var rest: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == "--daemon-sock" { i += 2 } else { rest.append(args[i]); i += 1 }
+        }
+        guard let id = rest.first else { throw CLIError.usage("restart: sandbox id required") }
+        var req = DaemonRequest(kind: "restart")
+        req.sandboxId = id
+        let resp = try DaemonClient.send(request: req, sockPath: sock)
+        print("restarted -> \(resp.sandboxId ?? id)")
+    }
+
+    /// M16：console tail（guest serial的诊断回损）。
+    static func daemonConsoleCli(args: [String]) throws {
+        let sock = (try? optionString("--daemon-sock", in: args))
+        var rest: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == "--daemon-sock" { i += 2 } else { rest.append(args[i]); i += 1 }
+        }
+        guard let id = rest.first else { throw CLIError.usage("console: sandbox id required") }
+        var req = DaemonRequest(kind: "consoleLog")
+        req.sandboxId = id
+        req.waitMillis = 16384
+        let resp = try DaemonClient.send(request: req, sockPath: sock)
+        let hex = resp.outputHex ?? ""
+        var bytes = Data()
+        var j = hex.startIndex
+        while j < hex.endIndex {
+            bytes.append(UInt8(hex[j..<hex.index(j, offsetBy: 2)], radix: 16) ?? 0)
+            j = hex.index(j, offsetBy: 2)
+        }
+        print(String(data: bytes, encoding: .utf8) ?? "<binary \(bytes.count)B>")
     }
 
     static func daemonShutdownCli(args: [String]) throws {

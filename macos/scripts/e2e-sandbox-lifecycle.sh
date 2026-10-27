@@ -63,6 +63,22 @@ else
   pass "exec 未知 sandbox 拒绝"
 fi
 
+# T5.5 consoleLog（M16）
+CONSOLE=$("$BIN" console --daemon-sock "$SOCK" "$ID2" 2>/dev/null || true)
+[ -n "$CONSOLE" ] && pass "consoleLog 返回 guest serial" || fail "consoleLog 为空"
+
+# T5.6 restart（M16）：stop+rm+重建（新 sandboxId）
+R1=""
+R1=$("$BIN" restart --daemon-sock "$SOCK" "$ID2" 2>/dev/null || true)
+R_ID=$(printf '%s' "$R1" | awk '/restarted ->/{print $3}')
+if [ -n "$R_ID" ]; then
+  pass "restart 出新沙箱 ($R_ID)"
+  "$BIN" exec --daemon-sock "$SOCK" "$R_ID" -- /bin/echo restart-e2e > /dev/null 2>&1 && pass "restart 后 exec 可用" || fail "restart 后 exec 不可用"
+  "$BIN" rm --daemon-sock "$SOCK" "$R_ID" --force > /dev/null 2>&1 && pass "restart 沙箱可清" || fail "restart 沙箱清抹失败"
+else
+  fail "restart 未创建 sandbox（$R1）"
+fi
+
 # T5 stop/rm 正常路径
 "$BIN" stop --daemon-sock "$SOCK" "$ID" > /dev/null && pass "stop 正常" || fail "stop 失败"
 if "$BIN" rm --daemon-sock "$SOCK" "$ID" > /dev/null 2>&1; then
@@ -70,7 +86,7 @@ if "$BIN" rm --daemon-sock "$SOCK" "$ID" > /dev/null 2>&1; then
 else
   fail "stopped 状态 rm 应已可通过（如今仍需 --force）"
 fi
-"$BIN" rm --daemon-sock "$SOCK" "$ID2" --force > /dev/null && pass "rm --force 成功" || fail "rm --force 失败"
+"$BIN" rm --daemon-sock "$SOCK" "$ID2" --force > /dev/null 2>&1 || true
 PS2=$("$BIN" ps --daemon-sock "$SOCK" | wc -l | tr -d ' ')
 [ "$PS2" = "0" ] && pass "rm 后 ps 为空" || fail "ps 仍列为 $PS2 个沙箱"
 

@@ -60,6 +60,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private let cow: CowDiskManager
     private let registry: SandboxRegistry
     private let enableConsole: Bool
+    /// M16：console tail 支持（daemon consoleLog）。对 GUI 由由URLSession tái.
+    private var lastConsole: VZSerialConsole?
+
+    /// 返回 guest serial console 的头部字节（diagnostic only, 不构成 readiness）。
+    public func consoleTail(maxBytes: Int) -> Data {
+        lastConsole?.tail(maxBytes: maxBytes) ?? Data()
+    }
     private let enableControlSocket: Bool
     private let securityPolicy: ControlSecurityPolicy
     private let allowUnsignedManifest: Bool
@@ -700,6 +707,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 try? FileHandle.standardError.synchronize()
                 fflush(stderr)
             }
+            self.lastConsole = serialConsole
             let serial = VZVirtioConsoleDeviceConfiguration()
             let consolePort = VZVirtioConsolePortConfiguration()
             // Match Apple's Linux VZ console example. The console port name is

@@ -23,6 +23,24 @@ final class VZSerialConsole: @unchecked Sendable {
         )
     }
 
+    private let tailLock = NSLock()
+    private var tailData = Data()
+    private let tailCapacity = 128 * 1024
+
+    /// M16：console 的环形缓（diagnostic），daemon `consoleLog` 端点和 GUI 控制台显示从这点后。
+    func tail(maxBytes: Int) -> Data {
+        tailLock.lock()
+        defer { tailLock.unlock() }
+        return Data(tailData.suffix(maxBytes))
+    }
+
+    private func recordTail(_ chunk: Data) {
+        tailLock.lock()
+        tailData.append(chunk)
+        if tailData.count > tailCapacity { tailData.removeFirst(tailData.count - tailCapacity) }
+        tailLock.unlock()
+    }
+
     init(onOutput: @escaping @Sendable (Data) -> Void) {
         self.inputPipe = Pipe()
         self.outputPipe = Pipe()
@@ -34,6 +52,7 @@ final class VZSerialConsole: @unchecked Sendable {
                 handle.readabilityHandler = nil
                 return
             }
+            self.recordTail(data)
             self.onOutput(data)
         }
     }

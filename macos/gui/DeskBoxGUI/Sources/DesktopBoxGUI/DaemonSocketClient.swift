@@ -38,11 +38,14 @@ struct DaemonResponse: Codable {
     var pid: Int32? = nil
 }
 
-struct SandboxInfo: Codable {
+struct SandboxInfo: Codable, Identifiable {
+    var id: String { sandboxId }
     let sandboxId: String
     let state: String
     let bootedAtUtc: String
     let manifestPath: String
+    var uptimeSeconds: Int? = nil
+    var workspaceId: String? = nil
 }
 
 enum DaemonClientError: LocalizedError {

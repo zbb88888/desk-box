@@ -48,6 +48,18 @@ struct SandboxInfo: Codable {
     let state: String
     let bootedAtUtc: String
     let manifestPath: String
+    var uptimeSeconds: Int? = nil
+    var workspaceId: String? = nil
+}
+
+struct SandboxRunOptions: Codable {
+    var manifestPath: String
+    var cpus: Int?
+    var memoryMiB: Int?
+    var graphics: Bool?
+    var cowRoot: String?
+    var allowUnsignedManifest: Bool?
+    var allowPlaintext: Bool?
 }
 
 final class SandboxSession: @unchecked Sendable {
@@ -56,11 +68,14 @@ final class SandboxSession: @unchecked Sendable {
     let handle: SandboxHandle
     let manifestPath: String
     let bootedAt: Date
-    init(id: String, runtime: VZRuntime, handle: SandboxHandle, manifestPath: String) {
+    /// M16：保留 run 参数以便 `restart` 恢复工作流。
+    let runOptions: SandboxRunOptions
+    init(id: String, runtime: VZRuntime, handle: SandboxHandle, manifestPath: String, runOptions: SandboxRunOptions) {
         self.id = id
         self.runtime = runtime
         self.handle = handle
         self.manifestPath = manifestPath
+        self.runOptions = runOptions
         self.bootedAt = Date()
     }
 }
@@ -176,6 +191,10 @@ final class SandboxDaemon {
             return try self.dispatchPtyClose(request)
         case "wsSync":
             return try self.dispatchWsSync(request)
+        case "consoleLog":
+            return try self.dispatchConsoleLog(request)
+        case "restart":
+            return try self.dispatchRestart(request)
         case "shutdown":
             for (_, session) in self.sessions {
                 try? runBlocking { try await session.runtime.destroy(session.handle) }
@@ -247,7 +266,16 @@ final class SandboxDaemon {
                     lastBootstrapPrinted = bstr
                 }
                 if status.state == .running && (status.bootstrap == .authenticated || status.bootstrap == .tlsAuthenticated) {
-                    let session = SandboxSession(id: sandboxID.description, runtime: runtime, handle: handle, manifestPath: manifestPath)
+                    let session = SandboxSession(
+                        id: sandboxID.description, runtime: runtime, handle: handle,
+                        manifestPath: manifestPath,
+                        runOptions: SandboxRunOptions(
+                            manifestPath: manifestPath, cpus: request.cpus,
+                            memoryMiB: request.memoryMiB, graphics: request.graphics,
+                            cowRoot: request.cowRoot,
+                            allowUnsignedManifest: request.allowUnsignedManifest,
+                            allowPlaintext: request.allowPlaintext
+                        ))
                     self.sessions[sandboxID.description] = session
                     return DaemonResponse(ok: true, sandboxId: session.id, state: "running")
                 }
@@ -267,7 +295,8 @@ final class SandboxDaemon {
                 sandboxId: $0.id,
                 state: "running",
                 bootedAtUtc: ISO8601DateFormatter().string(from: $0.bootedAt),
-                manifestPath: $0.manifestPath
+                manifestPath: $0.manifestPath,
+                uptimeSeconds: Int(Date().timeIntervalSince($0.bootedAt))
             )
         }
         return DaemonResponse(ok: true, sandboxes: infos)
@@ -290,6 +319,39 @@ final class SandboxDaemon {
                               exitCode: response.exitCode, stdout: response.stdout, stderr: response.stderr)
     }
 
+
+    /// M16:consoleLog——返回 guest serial 的母/落到界 健康/联系 read 的置或。不构 Staging。
+    private func dispatchConsoleLog(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("consoleLog: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        let maxBytes = request.waitMillis ?? 16384
+        let data = session.runtime.consoleTail(maxBytes: maxBytes)
+        return DaemonResponse(ok: true, outputHex: data.map { String(format: "%02x", $0) }.joined(),
+                              sandboxId: sandboxId, state: "running")
+    }
+
+    /// M16:restart——stop+rm+按保留参数重建沙箱（新 sandboxId）。
+    private func dispatchRestart(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("restart: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        let opts = session.runOptions
+        // 强 rm（践可精确零 tryStop 开筛）
+        var rmReq = DaemonRequest(kind: "rm")
+        rmReq.sandboxId = sandboxId
+        rmReq.force = true
+        _ = try? self.dispatchRm(rmReq)
+        var runReq = DaemonRequest(kind: "run")
+        runReq.manifestPath = opts.manifestPath
+        runReq.cpus = opts.cpus
+        runReq.memoryMiB = opts.memoryMiB
+        runReq.graphics = opts.graphics
+        runReq.cowRoot = opts.cowRoot
+        runReq.allowUnsignedManifest = opts.allowUnsignedManifest
+        runReq.allowPlaintext = opts.allowPlaintext
+        return try self.dispatchRun(runReq)
+    }
 
     private func dispatchPtyOpen(_ request: DaemonRequest) throws -> DaemonResponse {
         guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
