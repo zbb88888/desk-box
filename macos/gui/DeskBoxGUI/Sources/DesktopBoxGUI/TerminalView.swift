@@ -47,6 +47,17 @@ final class PtySessionModel: ObservableObject, @unchecked Sendable {
         running = false
     }
 
+    func sendRawHex(_ hex: String) {
+        guard let sid = sessionId else { return }
+        let client = self.client
+        DispatchQueue.global().async {
+            var req = DaemonRequest(kind: "ptyInput")
+            req.ptySessionId = sid
+            req.dataHex = hex
+            _ = try? client.send(req, timeoutSec: 5)
+        }
+    }
+
     func sendInput(_ text: String) {
         guard let sid = sessionId else { return }
         var bytes = Data(text.utf8)
@@ -165,6 +176,8 @@ struct TerminalView: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { model.sendInput(input); input = "" }
                 Button("Send") { model.sendInput(input); input = "" }
+                // M15：純交互 Ctrl+C-EMPTY
+                Button("Ctrl+C") { model.sendRawHex("03") }
             }
             if let err = model.error { Text(err).foregroundColor(.red).font(.caption) }
         }

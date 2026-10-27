@@ -25,6 +25,7 @@ struct DeskBoxGUIApp: App {
             }
             Button("Quit") { NSApplication.shared.terminate(nil) }
         }
+        .menuBarExtraStyle(.window)
     }
 }
 
@@ -88,7 +89,12 @@ struct MainView: View {
             daemonLogView
         }
         .padding(.vertical)
-        .onAppear { refresh() }
+        .onAppear {
+            refresh()
+        }
+        .onReceive(Timer.publish(every: 3.0, on: .main, in: .common).autoconnect()) { _ in
+            viewModel.refresh()
+        }
         .sheet(isPresented: Binding(get: { terminalSandboxId != nil },
                                     set: { if !$0 { terminalSandboxId = nil } })) {
             terminalSheet

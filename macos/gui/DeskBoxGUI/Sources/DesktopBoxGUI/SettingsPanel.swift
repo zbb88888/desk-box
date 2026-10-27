@@ -30,6 +30,10 @@ struct SettingsPanel: View {
             SettingsWorkspaceTab(path: $workspacePath, sandboxId: $syncSandboxId,
                                  status: $syncResult, client: client)
                 .tabItem { Label("Workspace", systemImage: "folder") }
+            WorkspaceDropView(client: client)
+                .tabItem { Label("Drag & Drop", systemImage: "folder.fill.badge.plus") }
+            LoginItemToggle()
+                .tabItem { Label("Login Item", systemImage: "power.circle") }
             SettingsPolicyTab(policyPath: $policyPath, hosts: $policyHosts,
                               maxBytes: $policyMaxBytes, status: $policyStatus)
                 .tabItem { Label("Broker Policy", systemImage: "network") }
