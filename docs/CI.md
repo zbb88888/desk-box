@@ -33,3 +33,13 @@
 
 语义：**alpha tag → dev 通道（未公证，DMG 带 `-dev` 后缀）；正式 tag → 必须公证，否则 job 失败**。
 这是防止「以为发了公证版其实是 ad-hoc」的唯一可靠闸门。
+
+### 手动触发（dev DMG 出口）
+
+tag 推送路径永远 fail-closed；若确实需要一份未公证的 dev DMG（例如证书尚未就绪），用：
+
+```bash
+gh workflow run Release -f release_tag=v0.2.0 -f allow_unsigned_dev_dmg=true
+```
+
+产物名为 `DeskBox-<ver>-dev.dmg`，README 内明确标注「未公证」，不会与正式版混淆。

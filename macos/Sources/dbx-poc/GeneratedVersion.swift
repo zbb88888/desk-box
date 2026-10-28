@@ -3,9 +3,9 @@ import Foundation
 /// M22：构建期注入的版本信息（由 scripts/package-app.sh 生成，勿手工编辑）。
 public enum DeskBoxVersion {
     public static let semver: String = "0.2.0"
-    public static let build: String = "171"
+    public static let build: String = "174"
     public static let bundleIdentifier: String = "com.deskbox.gui"
-    public static let gitCommit: String = "3841c28"
+    public static let gitCommit: String = "a43ed28"
     public static let guestAssetVersion: Int = 1
 
     public static var hostArchitecture: String {

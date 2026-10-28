@@ -162,3 +162,26 @@ swift build -c release (GUI + dbx-poc)
 6. `.github/workflows/release.yml` app job + `docs/CI.md`
 7. GUI：About/版本显示 + 「检查更新」按钮
 8. docs 索引 / roadmap / README / security matrix 更新
+
+## 9. v0.2.0 实际发布记录（诚实状态）
+
+`v0.2.0` tag 已推送并触发 `release.yml`：
+
+| job | 结果 | 说明 |
+|---|---|---|
+| `guest-build` | ✅ | guest 资产构建（QEMU arm64） |
+| `publish` | ✅ | manifest 签名 + SBOM + channel.json + `guest-bundle-v0.2.0.tar.gz` 已上传到 GitHub Release |
+| `app` | ❌（**预期**） | 在 `Store notarytool credentials` 步骤失败：仓库未配置 `MACOS_NOTARY_*` secrets |
+
+这是设计上的 fail-closed：**没有公证凭据就不产出发行版 DMG**，而不是静默产出 ad-hoc 包冒充正式版。
+
+因此当前 release 页面上**只有 guest bundle，没有 DMG**。要补齐 DMG 有两条路：
+
+1. **正式路（推荐）**：配置 `MACOS_DEVELOPER_ID_P12_BASE64` / `MACOS_DEVELOPER_ID_P12_PASSWORD` /
+   `MACOS_NOTARY_APPLE_ID` / `MACOS_NOTARY_TEAM_ID` / `MACOS_NOTARY_APP_PASSWORD`，
+   然后 `gh workflow run Release -f release_tag=v0.2.0`（`allow_unsigned_dev_dmg=false`）→ 产出公证 DMG。
+2. **dev 路**：`gh workflow run Release -f release_tag=v0.2.0 -f allow_unsigned_dev_dmg=true`
+   → 产出 `DeskBox-0.2.0-dev.dmg`（ad-hoc/Apple Development 签名、未公证，README 内已标注）。
+
+本地已验证过的等价位（`./scripts/package-app.sh` + `./scripts/e2e-distribution.sh` 39/39）：
+`DeskBox-0.2.0-dev.dmg`，130 MB，含 helper + 三项 guest 资产，hardened runtime，`SHA256SUMS` 通过。

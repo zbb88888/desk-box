@@ -1,6 +1,17 @@
 name: Release
 
 on:
+  # 手动触发：用于「明确要一份未公证的 dev DMG」的场景（缺 Developer ID 时的唯一出口）。
+  # 默认 false，tag 推送路径永远是 fail-closed 的正式语义。
+  workflow_dispatch:
+    inputs:
+      allow_unsigned_dev_dmg:
+        description: "构建并发布未公证的 dev DMG（无 Developer ID 时使用）"
+        type: boolean
+        default: false
+      release_tag:
+        description: "复用的既有 tag（例如 v0.2.0）"
+        required: true
   push:
     tags:
       - "v*-alpha*"
@@ -153,7 +164,7 @@ jobs:
       contents: write
     env:
       # 正式 tag 必须公证：缺 secrets 直接失败，不产出「看起来像正式版」的 dev 包。
-      REQUIRE_NOTARIZATION: ${{ contains(github.ref_name, 'alpha') && '0' || '1' }}
+      REQUIRE_NOTARIZATION: ${{ (contains(github.ref_name, 'alpha') || inputs.allow_unsigned_dev_dmg) && '0' || '1' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -172,7 +183,7 @@ jobs:
       - name: Resolve version
         id: ver
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ inputs.release_tag || github.ref_name }}"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
