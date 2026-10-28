@@ -19,7 +19,7 @@
 | 阶段 | 主题 | 解决的不变量 | 规模 | 关键验收 |
 | --- | --- | --- | --- | --- |
 | M18 ✅ | guest 内核级纵深：seccomp-bpf + Landlock | INV-06, INV-08 补强 | M | 恶意 syscall/路径逃逸 corpus 被内核拒绝且审计可读；fail-closed（无支撑则拒绝启动强隔离模式） |
-| M19 | 安全证据补全（4 个 corpus） | INV-03, INV-04, INV-05, INV-06 | L | canary 扫描 / 网络绕过 / 文件系统 / 恶意 layer 四套 corpus 全部落成 CI 并出报告 |
+| M19 ✅ | 安全证据补全（4 个 corpus） | INV-03, INV-04, INV-05, INV-06 | L | canary 扫描 / 网络绕过 / 文件系统 / 恶意 layer 四套 corpus 全部落成 CI 并出报告 |
 | M20 | 生命周期持久化与不复活 | INV-10（当前 `未实现`） | L | snapshot/suspend/resume + 更新/回滚 + 撤销 + 销毁故障注入全部通过，且不复活权限 |
 | M21 | 资源统计与观测 | INV-08 剩余（资源统计上报） | S | guest 上报 CPU/mem/io → daemon `stats` → GUI Stats 面板；耗尽压力测试 |
 | M22 | 产品化发布 v0.2.0 | —（发布面） | M | notarized .app + DMG + 更新检查 + 正式 release assets（repro-check 通过） |
@@ -42,7 +42,9 @@
   - 关闭内核选项的负例：guest 启动即拒，不降级。
 - **风险**：Debian cloud config 需补 `CONFIG_SECCOMP_FILTER`、`CONFIG_SECURITY_LANDLOCK`；alpine 静态 binary 需 syscall 兼容回归。
 
-## M19：安全证据补全（4 个 corpus）
+## M19 ✅（已完成）：安全证据补全（4 个 corpus）
+
+> 结果：全绿（host 32 断言 + canary 6 + network 5），并修掉 OCI 路径穿越 2 处、补 DNS rebinding 防线。详见 `m19-security-corpora.md`。
 
 四个 corpus 都是「代码已实现、证据不足」，属于发布门槛。
 

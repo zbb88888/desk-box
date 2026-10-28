@@ -4,7 +4,7 @@
 set -u
 
 BIN="${BIN:-./.build/release/dbx-poc}"
-SOCK="${SOCK:-$HOME/Library/Application Support/DeskBox/dbxd.sock}"
+SOCK="${SOCK:-/tmp/dbx-corpus-kern.sock}"  # 独立 socket：避免与 GUI 自启 daemon 抢同一路径
 MANIFEST="${MANIFEST:-$PWD/guest/manifest.json}"
 PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); printf '[kern] PASS: %s\n' "$1"; }

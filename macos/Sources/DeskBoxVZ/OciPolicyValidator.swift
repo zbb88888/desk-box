@@ -51,9 +51,23 @@ public enum OciPolicyError: Error, Equatable, CustomStringConvertible {
 public enum OciPolicyValidator {
     public static let workspacePrefix = "/workspace"
 
+    /// M19 corpus 发现的路径穿越：`/workspace/../etc` 这类字符串前缀检查会通过，
+    /// 但实际解析到 workspace 之外。凡出现 `..` 组件一律拒绝（fail-closed）。
+    static func containsParentTraversal(_ path: String) -> Bool {
+        for component in path.split(separator: "/", omittingEmptySubsequences: true) {
+            if component == ".." { return true }
+        }
+        return false
+    }
+
+    static func isUnderWorkspace(_ path: String) -> Bool {
+        guard !containsParentTraversal(path) else { return false }
+        return path == workspacePrefix || path.hasPrefix(workspacePrefix + "/")
+    }
+
     public static func validate(spec: OciRuntimeSpec, bundleDir: URL) throws -> ResolvedWorkload {
         guard !spec.process.args.isEmpty else { throw OciPolicyError.emptyArgs }
-        guard spec.process.cwd == workspacePrefix || spec.process.cwd.hasPrefix(workspacePrefix + "/") else {
+        guard isUnderWorkspace(spec.process.cwd) else {
             throw OciPolicyError.cwdNotUnderWorkspace(spec.process.cwd)
         }
         if let user = spec.process.user, user.uid != 65534 { throw OciPolicyError.uidNotNobody(user.uid) }
@@ -65,7 +79,7 @@ public enum OciPolicyValidator {
         }
         if let mounts = spec.mounts {
             for mount in mounts {
-                guard mount.destination == workspacePrefix || mount.destination.hasPrefix(workspacePrefix + "/") else {
+                guard isUnderWorkspace(mount.destination) else {
                     throw OciPolicyError.mountOutsideWorkspace(mount.destination)
                 }
                 if let source = mount.source,
@@ -88,6 +102,10 @@ public enum OciPolicyValidator {
         }
         var rootfsURL: URL? = nil
         if let root = spec.root {
+            // 绝对路径与含 `..` 的 root.path 一律拒绝（bundle 内相对路径才允许）。
+            guard !root.path.hasPrefix("/"), !containsParentTraversal(root.path) else {
+                throw OciPolicyError.ociRootOutsideBundle(root.path)
+            }
             let resolved = bundleDir.appendingPathComponent(root.path).standardizedFileURL
             let rootPath = resolved.path
             // root.path 必须在 bundleDir 下（../ 拒绝）。

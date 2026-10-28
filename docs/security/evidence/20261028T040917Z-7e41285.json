@@ -1,0 +1,12 @@
+{
+  "generatedAtUtc": "2026-10-28T04:09:17Z",
+  "commit": "7e41285",
+  "platform": "Darwin arm64",
+  "hostOnly": false,
+  "results": [
+    {"corpus":"inv-05-06-inv-04-host","kind":"host","ok":true,"assertions":32},
+    {"corpus":"inv-03-canary","kind":"vm","ok":true,"summary":"PASS=6 FAIL=0"},
+    {"corpus":"inv-04-network","kind":"vm","ok":true,"summary":"PASS=5 FAIL=0"}
+  ],
+  "fail": 0
+}

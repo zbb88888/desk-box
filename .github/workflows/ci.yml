@@ -86,6 +86,22 @@ jobs:
             macos/guest/manifest.json
           if-no-files-found: ignore
 
+  security-corpus:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift test (security corpora, host-side)
+        working-directory: macos
+        run: swift test --filter SecurityCorpus
+      - name: Emit corpus evidence (host-only)
+        working-directory: macos
+        run: ./scripts/security-corpus.sh --host-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-corpus-evidence
+          path: docs/security/evidence/
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

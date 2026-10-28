@@ -225,7 +225,7 @@ static int dbx_landlock_apply(void) {
 
     /* 只读系统目录（含执行权限，否则 execvp 找不到 loader）。 */
     static const char *const ro_dirs[] = {
-        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/proc", NULL
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/proc", "/sys", NULL
     };
     for (int i = 0; ro_dirs[i]; i++) (void)dbx_landlock_add_rule(ruleset_fd, ro_dirs[i], ro);
 

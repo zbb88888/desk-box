@@ -67,8 +67,10 @@ public actor BrokerService {
     }
 
     public func fetch(_ url: URL) async throws -> (data: Data, report: BrokerFetchReport) {
-        // 1) Policy gate（fail-closed）。
-        let decision = policy.decision(for: url)
+        // 1) Policy gate（fail-closed）。M19：先解析域名，把地址一并交给策略判定，
+        //    防止 allowlist 内域名被 DNS rebinding 到私网/环回。
+        let resolved = url.host.map { BrokerService.resolveAddresses(host: $0) } ?? []
+        let decision = policy.decision(for: url, resolvedAddresses: resolved.isEmpty ? nil : resolved)
         guard decision.isAllowed else {
             if case .deny(let reason) = decision { throw BrokerError.policyDenied(reason) }
             throw BrokerError.policyDenied("denied")
@@ -98,6 +100,29 @@ public actor BrokerService {
 }
 
 extension BrokerService {
+    /// 解析 host 的全部 A/AAAA 记录（返回字符串形式）。解析失败返回空数组。
+    static func resolveAddresses(host: String) -> [String] {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0 else { return [] }
+        defer { freeaddrinfo(result) }
+        var addresses: [String] = []
+        var cursor = result
+        while let info = cursor {
+            var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(info.pointee.ai_addr, info.pointee.ai_addrlen,
+                           &buffer, socklen_t(buffer.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                let text = String(cString: buffer)
+                if !addresses.contains(text) { addresses.append(text) }
+            }
+            cursor = info.pointee.ai_next
+        }
+        return addresses
+    }
+
     static func sha256Hex(_ data: Data) -> String {
         var hasher = CryptoKit.SHA256()
         hasher.update(data: data)
