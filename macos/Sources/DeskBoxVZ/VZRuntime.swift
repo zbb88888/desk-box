@@ -32,10 +32,31 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var pendingPtyOpenID: UUID?
         var ptyEvents: [PtyEvent] = []
         var wsAcks: [WsAckEvent] = []
+        /// M23（INV-02）：该沙箱所属凭据域 + 本 VM 实例的唯一 ID（调度证据）。
+        let domain: CredentialDomain
+        let vmInstanceID: String
         var bootstrapState: BootstrapState = .notConnected
         /// M20：最近一次被接受的 bootstrap proof（resume 复用同一 boot 的 proof）。
         var lastAcceptedProof: BootstrapProof?
         var requestSequence: UInt64 = 1
+
+        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine,
+             configuration: VZVirtualMachineConfiguration, cowLease: CowDiskManager.Lease,
+             serialConsole: VZSerialConsole?, domain: CredentialDomain) {
+            self.request = request
+            self.boot = boot
+            self.machine = machine
+            self.configuration = configuration
+            self.cowLease = cowLease
+            self.serialConsole = serialConsole
+            self.domain = domain
+            self.vmInstanceID = UUID().uuidString
+            self.lifecycle = LifecycleMachine(
+                sandboxID: request.sandboxID,
+                boot: boot,
+                correlationID: request.correlationID
+            )
+        }
 
         func nextRequestSequence() -> UInt64 {
             let value = requestSequence
@@ -45,22 +66,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
 
-        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine,
-             configuration: VZVirtualMachineConfiguration,
-             cowLease: CowDiskManager.Lease, serialConsole: VZSerialConsole?) {
-            self.request = request
-            self.boot = boot
-            self.machine = machine
-            self.configuration = configuration
-            self.cowLease = cowLease
-            self.serialConsole = serialConsole
-            self.lifecycle = LifecycleMachine(
-                sandboxID: request.sandboxID,
-                boot: boot,
-                correlationID: request.correlationID
-            )
-        }
+
     }
+
+    /// M23（INV-02）：凭据域注册表。缺省为内置单域 `default`（与 M23 之前行为一致），
+    /// 但显式传入了别的域而注册表里没有它时必须拒绝。
+    public var domainRegistry: DomainRegistry
+    /// 调度决策记录（追加写，0600）：域 + VM 实例 + 内核摘要，作为 INV-02 证据。
+    public let schedulerDecisionLogURL: URL
 
     private let queue: DispatchQueue
     private let queueKey = DispatchSpecificKey<UInt8>()
@@ -112,6 +125,59 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         self.securityPolicy = securityPolicy
         self.allowUnsignedManifest = allowUnsignedManifest
         self.brokerConfigDir = nil
+        self.domainRegistry = DomainRegistry(
+            manifest: .singleDefault,
+            credentialRoot: cowRoot.deletingLastPathComponent()
+        )
+        self.schedulerDecisionLogURL = cowRoot.deletingLastPathComponent()
+            .appendingPathComponent("scheduler-decisions.jsonl")
+    }
+
+    /// M23：把域注册表挂上（daemon 启动时按 `domains.json` 配置）。
+    public func configureDomains(_ registry: DomainRegistry) {
+        self.domainRegistry = registry
+    }
+
+    /// M23：解析并**校验**凭据域。未知域/非法 ID 一律拒绝（无「默认域」兜底）。
+    public func resolveDomain(_ requested: CredentialDomainID) throws -> CredentialDomain {
+        do {
+            return try domainRegistry.resolve(requested)
+        } catch let error as DomainResolutionError {
+            throw SandboxFailure(.lifecycleInvalidTransition, "\(error.reasonCode): \(error)")
+        }
+    }
+
+    /// M23：写一条调度决策记录。失败不阻断主流程（审计是旁路），但会打日志。
+    private func recordSchedulerDecision(_ record: Record,
+                                        decision: String,
+                                        reason: String?) {
+        let entry: [String: Any] = [
+            "schema": "deskbox-scheduler-decision/v1",
+            "at": ISO8601DateFormatter().string(from: Date()),
+            "sandboxID": record.request.sandboxID.raw,
+            "bootID": record.boot.bootID.raw,
+            "vmInstanceID": record.vmInstanceID,
+            "domainID": record.domain.domainID.raw,
+            "manifestDigest": record.request.guestAssets.manifestDigest,
+            "kernelPath": record.request.guestAssets.kernelURL.lastPathComponent,
+            "cowClone": record.cowLease.cloneURL.lastPathComponent,
+            "cowDomain": record.cowLease.domainID.raw,
+            "hostPID": Int(ProcessInfo.processInfo.processIdentifier),
+            "decision": decision,
+            "reason": reason as Any? ?? NSNull()
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys]),
+              var line = String(data: data, encoding: .utf8) else { return }
+        line += "\n"
+        let url = schedulerDecisionLogURL
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil,
+                                           attributes: [.posixPermissions: 0o600])
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data(line.utf8))
     }
 
     /// Recover orphan resources left by SIGKILL/host crash before accepting
@@ -167,7 +233,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
             _ = try GuestAssetValidator.validate(request.guestAssets,
                                                  allowUnsignedManifest: self.allowUnsignedManifest)
-            let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL, sandboxID: request.sandboxID)
+            // M23（INV-02）：域必须是已声明域；未声明不得回退成「默认域」。
+            let domain = try self.resolveDomain(request.domainID)
+            let cowLease = try self.cow.createClone(source: request.guestAssets.rootDiskURL,
+                                                    sandboxID: request.sandboxID,
+                                                    domainID: domain.domainID)
             let boot = BootContext(
                 sandboxID: request.sandboxID,
                 protocolMajor: ControlChannelProtocol.currentMajor,
@@ -185,7 +255,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             }
             let machine = VZVirtualMachine(configuration: configuration, queue: self.queue)
             let record = Record(request: request, boot: boot, machine: machine,
-                                configuration: configuration, cowLease: cowLease, serialConsole: serialConsole)
+                                configuration: configuration, cowLease: cowLease, serialConsole: serialConsole,
+                                domain: domain)
             let sandboxID = request.sandboxID
             let delegate = VZRuntimeDelegate(
                 onGuestStopped: { [weak self] error in
@@ -213,8 +284,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 bootID: boot.bootID,
                 status: .created,
                 clonePath: cowLease.cloneURL.standardizedFileURL.path,
-                hostPID: ProcessInfo.processInfo.processIdentifier
+                hostPID: ProcessInfo.processInfo.processIdentifier,
+                domainID: domain.domainID
             ))
+            // 调度决策记录：这是 INV-02「不同域不共享 guest kernel」的可审计证据。
+            self.recordSchedulerDecision(record, decision: "allow", reason: nil)
             if self.enableControlSocket {
                 do {
                     try self.installControlListener(record)
@@ -246,7 +320,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                     bootID: record.boot.bootID,
                     status: .running,
                     clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
-                    hostPID: ProcessInfo.processInfo.processIdentifier
+                    hostPID: ProcessInfo.processInfo.processIdentifier,
+                    domainID: record.domain.domainID
                 ))
                 self.recordAudit(record, action: .start, decision: .allow())
                 return record.boot
@@ -304,7 +379,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 bootID: record.boot.bootID,
                 status: .stopped,
                 clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
-                hostPID: ProcessInfo.processInfo.processIdentifier
+                hostPID: ProcessInfo.processInfo.processIdentifier,
+                domainID: record.domain.domainID
             ))
             self.recordAudit(record, action: .stop, decision: .allow())
         }
@@ -323,7 +399,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             try self.registry.upsert(RegisteredSandbox(
                 sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
                 status: .stopped, clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
-                hostPID: ProcessInfo.processInfo.processIdentifier))
+                hostPID: ProcessInfo.processInfo.processIdentifier,
+                domainID: record.domain.domainID))
         }
 
         // VZ save/restore 只支持 arm64 + macOS 14+，且必须先把机器暂停。
@@ -357,7 +434,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 keyID: record.request.guestAssets.signature?.keyID ?? "unsigned",
                 createdAtUtc: ISO8601DateFormatter().string(from: Date()),
                 hostBuild: ProcessInfo.processInfo.operatingSystemVersionString,
-                payloadSha256: "")
+                payloadSha256: "",
+                domainID: record.domain.domainID.raw)
         }
         try self.snapshots.seal(payload: payload, metadata: metadata, to: snapshotURL)
 
@@ -373,7 +451,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             try self.registry.upsert(RegisteredSandbox(
                 sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
                 status: .stopped, clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
-                hostPID: ProcessInfo.processInfo.processIdentifier))
+                hostPID: ProcessInfo.processInfo.processIdentifier,
+                domainID: record.domain.domainID))
         }
     }
 
@@ -386,20 +465,22 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         // 1) 闸门（不改变任何状态）。
         let metadata = try self.snapshots.readMetadata(at: snapshotURL)
-        let (configuration, assets, bootID) = try await onQueue {
-            () -> (VZVirtualMachineConfiguration, GuestAssetManifest, BootID) in
+        let (configuration, assets, bootID, domain) = try await onQueue {
+            () -> (VZVirtualMachineConfiguration, GuestAssetManifest, BootID, CredentialDomainID) in
             let record = try self.require(handle)
             guard record.lifecycle.state == .suspended else {
                 throw SandboxFailure(.lifecycleInvalidTransition,
                                      "resume 仅允许 suspended 状态，当前 \(record.lifecycle.state)")
             }
-            return (record.configuration, record.request.guestAssets, record.boot.bootID)
+            return (record.configuration, record.request.guestAssets, record.boot.bootID,
+                    record.domain.domainID)
         }
         let gate = SnapshotGate(
             manifestDigest: assets.manifestDigest,
             guestAssetVersion: assets.guestAssetVersion,
             minimumAssetVersionFloor: assets.guestAssetVersion,
-            releaseKeys: self.releaseKeys
+            releaseKeys: self.releaseKeys,
+            domainID: domain
         )
         do {
             try gate.check(metadata)
@@ -1115,13 +1196,42 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             self.sendBrokerEnd(record, request: request, status: 0, ok: false, error: "bad url")
             return
         }
-        let policyURL = configDir.appendingPathComponent("broker-policy.json")
-        let credsURL = configDir.appendingPathComponent("broker-credentials.local")
-        let handle = SandboxHandle(sandboxID: record.request.sandboxID, bootID: record.boot.bootID)
+        // M23（INV-02）：出口策略与凭据**按域解析**。
+        // 域有 brokerPolicyFile 就只读该文件；域没有 → 该域禁止出站（不给「全局兜底策略」）。
+        // 凭据同理：域 A 的凭据永远不会被域 B 的沙箱取到。
+        let domain = record.domain
+        let policyURL: URL
+        let credsURL: URL? 
+        if domain.brokerPolicyFile != nil || domain.brokerCredentialsFile != nil {
+            let credentialRoot = configDir
+            do {
+                let resolved = try DomainRegistry(
+                    manifest: CredentialDomainsManifest(defaultDomain: domain.domainID, domains: [domain]),
+                    credentialRoot: credentialRoot
+                ).resolveForBroker(domain.domainID)
+                guard let resolvedPolicy = resolved.policyURL else {
+                    self.sendBrokerEnd(record, request: request, status: 0, ok: false,
+                                       error: "DBX-DOMAIN-NO-EGRESS: 域 \(domain.domainID) 未配置出口策略")
+                    return
+                }
+                policyURL = resolvedPolicy
+                credsURL = resolved.credentialsURL
+            } catch {
+                self.sendBrokerEnd(record, request: request, status: 0, ok: false,
+                                   error: "DBX-DOMAIN-POLICY: \(error)")
+                return
+            }
+        } else {
+            policyURL = configDir.appendingPathComponent("broker-policy.json")
+            credsURL = configDir.appendingPathComponent("broker-credentials.local")
+        }
+        let handle = SandboxHandle(sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
+                                   domainID: domain.domainID)
         Task {
             do {
                 let policy = try BrokerPolicy.load(from: policyURL)
-                let credentials = CredentialBroker.load(from: credsURL)
+                let credentials = credsURL.map { CredentialBroker.load(from: $0) }
+                    ?? CredentialBroker(tokenByHost: [:])
                 let broker = BrokerService(policy: policy, credentials: credentials)
                 let (data, report) = try await broker.fetch(url)
                 try await self.pushBrokerChunks(handle: handle, request: request, data: data,
@@ -1335,6 +1445,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
         guard record.boot.bootID == handle.bootID else {
             throw SandboxFailure(.bootstrapProofMismatch, "handle 不属于当前 boot")
+        }
+        // M23（INV-02）：声明了域就必须与会话域一致——跨域 exec/pty/stats/stop/rm 全部拒绝。
+        if let declared = handle.domainID, declared != record.domain.domainID {
+            recordSchedulerDecision(record, decision: "deny",
+                                    reason: "session-domain-mismatch \(declared.raw) != \(record.domain.domainID.raw)")
+            throw SandboxFailure(.domainSessionMismatch,
+                                 "DBX-DOMAIN-SESSION-MISMATCH: 请求域 \(declared.raw) 与沙箱域 \(record.domain.domainID.raw) 不一致")
         }
         return record
     }

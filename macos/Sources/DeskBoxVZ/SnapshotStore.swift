@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import DeskBoxCore
 
 /// M20：快照加密信封（INV-10）。
 ///
@@ -18,9 +19,12 @@ public struct SnapshotMetadata: Sendable, Codable, Equatable {
     public let createdAtUtc: String
     public let hostBuild: String
     public let payloadSha256: String
+    /// M23（INV-02）：快照所属凭据域，参与 AAD。跨域恢复在解密前就会失败。
+    public let domainID: String
 
     public init(sandboxID: String, bootID: String, manifestDigest: String, guestAssetVersion: Int,
-                keyID: String, createdAtUtc: String, hostBuild: String, payloadSha256: String) {
+                keyID: String, createdAtUtc: String, hostBuild: String, payloadSha256: String,
+                domainID: String = "default") {
         self.schema = Self.schemaValue
         self.sandboxID = sandboxID
         self.bootID = bootID
@@ -30,6 +34,7 @@ public struct SnapshotMetadata: Sendable, Codable, Equatable {
         self.createdAtUtc = createdAtUtc
         self.hostBuild = hostBuild
         self.payloadSha256 = payloadSha256
+        self.domainID = domainID
     }
 
     /// 规范化字节：排序键、无空白，作为 AEAD 的 AAD 与绑定校验的输入。
@@ -49,6 +54,8 @@ public enum SnapshotError: Error, Equatable, CustomStringConvertible {
     case keyRevoked(String)
     case keyUnknown(String)
     case missing(String)
+    /// M23：快照属于别的凭据域（跨域恢复必须拒绝）。
+    case domainMismatch(stored: String, current: String)
 
     public var description: String {
         switch self {
@@ -59,6 +66,8 @@ public enum SnapshotError: Error, Equatable, CustomStringConvertible {
         case .assetVersionStale(let s, let f): return "快照资产版本过旧/不符: stored=\(s) floor=\(f)"
         case .keyRevoked(let k): return "快照签名 key 已 revoked: \(k)"
         case .keyUnknown(let k): return "快照签名 key 未知: \(k)"
+        case .domainMismatch(let stored, let current):
+            return "snapshot-domain-mismatch: 快照域=\(stored) 请求域=\(current)"
         case .missing(let p): return "快照不存在: \(p)"
         }
     }
@@ -101,11 +110,14 @@ public struct SnapshotStore: Sendable {
     public func seal(payload: Data, metadata base: SnapshotMetadata, to url: URL) throws {
         let key = try loadOrCreateKey()
         let payloadHash = Data(SHA256.hash(data: payload)).map { String(format: "%02x", $0) }.joined()
+        // 注意：必须逐字段带上 domainID，否则 metadata 会被重建为默认域，
+        // AAD 与闸门都会看到错的域（M23 实施时踩到的真实 bug）。
         let metadata = SnapshotMetadata(
             sandboxID: base.sandboxID, bootID: base.bootID,
             manifestDigest: base.manifestDigest, guestAssetVersion: base.guestAssetVersion,
             keyID: base.keyID, createdAtUtc: base.createdAtUtc,
-            hostBuild: base.hostBuild, payloadSha256: payloadHash)
+            hostBuild: base.hostBuild, payloadSha256: payloadHash,
+            domainID: base.domainID)
         let aad = try metadata.canonicalAAD()
         let sealed = try ChaChaPoly.seal(payload, using: key, authenticating: aad)
 
@@ -184,16 +196,24 @@ public struct SnapshotGate: Sendable {
     public let guestAssetVersion: Int
     public let minimumAssetVersionFloor: Int
     public let releaseKeys: ReleaseKeysManifest?
+    /// M23（INV-02）：当前沙箱的凭据域；快照域必须与之相同。
+    public let domainID: CredentialDomainID
 
     public init(manifestDigest: String, guestAssetVersion: Int, minimumAssetVersionFloor: Int,
-                releaseKeys: ReleaseKeysManifest?) {
+                releaseKeys: ReleaseKeysManifest?,
+                domainID: CredentialDomainID = CredentialDomainID("default")) {
         self.manifestDigest = manifestDigest
         self.guestAssetVersion = guestAssetVersion
         self.minimumAssetVersionFloor = minimumAssetVersionFloor
         self.releaseKeys = releaseKeys
+        self.domainID = domainID
     }
 
     public func check(_ metadata: SnapshotMetadata) throws {
+        // 域闸放在最前：跨域快照在语义上就不可用，不该再走 manifest/资产的比较。
+        guard metadata.domainID == domainID.raw else {
+            throw SnapshotError.domainMismatch(stored: metadata.domainID, current: domainID.raw)
+        }
         guard metadata.manifestDigest == manifestDigest else {
             throw SnapshotError.manifestMismatch(stored: metadata.manifestDigest, current: manifestDigest)
         }

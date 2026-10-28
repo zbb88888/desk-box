@@ -64,6 +64,8 @@ public struct SandboxCreateRequest: Sendable, Codable {
     public var resources: ResourceHints
     public var networking: SandboxNetworkMode
     public var controlChannelPort: UInt32
+    /// M23（INV-02）：凭据域。创建时定域，之后不可变；跨域复用一律拒绝。
+    public var domainID: CredentialDomainID
 
     public init(
         sandboxID: SandboxID,
@@ -74,7 +76,8 @@ public struct SandboxCreateRequest: Sendable, Codable {
         guestAssets: GuestAssetManifest,
         resources: ResourceHints,
         networking: SandboxNetworkMode = .none,
-        controlChannelPort: UInt32 = 1024
+        controlChannelPort: UInt32 = 1024,
+        domainID: CredentialDomainID = CredentialDomainID("default")
     ) {
         self.sandboxID = sandboxID
         self.workspaceID = workspaceID
@@ -85,16 +88,21 @@ public struct SandboxCreateRequest: Sendable, Codable {
         self.resources = resources
         self.networking = networking
         self.controlChannelPort = controlChannelPort
+        self.domainID = domainID
     }
 }
 
 public struct SandboxHandle: Sendable, Hashable, Codable {
     public let sandboxID: SandboxID
     public let bootID: BootID
+    /// M23（INV-02）：请求方声明的凭据域。
+    /// `nil` 表示「不声明」（旧协议/内部调用），非 nil 时必须与会话域一致。
+    public let domainID: CredentialDomainID?
 
-    public init(sandboxID: SandboxID, bootID: BootID) {
+    public init(sandboxID: SandboxID, bootID: BootID, domainID: CredentialDomainID? = nil) {
         self.sandboxID = sandboxID
         self.bootID = bootID
+        self.domainID = domainID
     }
 }
 

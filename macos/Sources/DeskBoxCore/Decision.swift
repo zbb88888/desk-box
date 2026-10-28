@@ -35,6 +35,12 @@ public struct ReasonCode: Hashable, Sendable, Codable, CustomStringConvertible {
     public static let grantTargetMismatch = ReasonCode("DBX-GRANT-TARGET-MISMATCH")
     public static let grantInvalid = ReasonCode("DBX-GRANT-INVALID")
 
+    // MARK: 凭据域（M23 / INV-02）
+    public static let domainUnknown = ReasonCode("DBX-DOMAIN-UNKNOWN")
+    public static let domainSessionMismatch = ReasonCode("DBX-DOMAIN-SESSION-MISMATCH")
+    public static let domainSnapshotMismatch = ReasonCode("DBX-DOMAIN-SNAPSHOT-MISMATCH")
+    public static let domainCowMismatch = ReasonCode("DBX-DOMAIN-COW-MISMATCH")
+
     // MARK: 生命周期（架构 §5.1）
     public static let lifecycleCreated = ReasonCode("DBX-LIFECYCLE-CREATED")
     public static let lifecycleBooted = ReasonCode("DBX-LIFECYCLE-BOOTED")

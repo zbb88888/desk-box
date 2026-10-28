@@ -26,6 +26,8 @@ struct DaemonRequest: Codable {
     var dataHex: String? = nil
     var waitMillis: Int? = nil
     var graphics: Bool? = nil
+    /// M23（INV-02）：凭据域。run 用它定域；其余操作用它做会话比对。
+    var domain: String? = nil
 }
 
 struct DaemonResponse: Codable {
@@ -52,6 +54,8 @@ struct SandboxInfo: Codable {
     let manifestPath: String
     var uptimeSeconds: Int? = nil
     var workspaceId: String? = nil
+    /// M23（INV-02）：凭据域（`ps` 可审计）。
+    var domain: String? = nil
 }
 
 struct SandboxRunOptions: Codable {
@@ -70,14 +74,18 @@ final class SandboxSession: @unchecked Sendable {
     let handle: SandboxHandle
     let manifestPath: String
     let bootedAt: Date
+    /// M23（INV-02）：会话所属凭据域；所有后续操作必须带同域标签。
+    let domainID: CredentialDomainID
     /// M16：保留 run 参数以便 `restart` 恢复工作流。
     let runOptions: SandboxRunOptions
-    init(id: String, runtime: VZRuntime, handle: SandboxHandle, manifestPath: String, runOptions: SandboxRunOptions) {
+    init(id: String, runtime: VZRuntime, handle: SandboxHandle, manifestPath: String,
+         runOptions: SandboxRunOptions, domainID: CredentialDomainID) {
         self.id = id
         self.runtime = runtime
         self.handle = handle
         self.manifestPath = manifestPath
         self.runOptions = runOptions
+        self.domainID = domainID
         self.bootedAt = Date()
     }
 }
@@ -100,7 +108,43 @@ final class SandboxDaemon {
         self.sockPath = sockPath
     }
 
+    /// M23：把 `domains.json` 挂到 runtime（缺失时保持内置单域 `default`）。
+    private func configureDomainsIfPresent(runtime: VZRuntime) {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DeskBox", isDirectory: true)
+        let manifestURL = root.appendingPathComponent("domains.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else {
+            fputs("daemon domains: domains.json 不存在，使用内置单域 default\n", stderr)
+            return
+        }
+        do {
+            let registry = try DomainRegistry.load(from: manifestURL, credentialRoot: root)
+            runtime.configureDomains(registry)
+            fputs("daemon domains: loaded \(registry.domains.map(\.domainID.raw).joined(separator: ",")) default=\(registry.defaultDomain?.raw ?? "nil")\n", stderr)
+        } catch {
+            // fail-closed：domains.json 存在但非法 → 拒绝启动（不能带着错配置跑沙箱）。
+            fputs("daemon domains: FATAL \(error)\n", stderr)
+            exit(2)
+        }
+    }
+
+    /// 启动期校验：domains.json 存在但非法时直接拒绝启动（不带错配置接单）。
+    private func validateDomainsAtStartup() {
+        let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("DeskBox", isDirectory: true)
+        let manifestURL = root.appendingPathComponent("domains.json")
+        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return }
+        do {
+            let registry = try DomainRegistry.load(from: manifestURL, credentialRoot: root)
+            fputs("daemon domains: loaded \(registry.domains.map(\.domainID.raw).joined(separator: ",")) default=\(registry.defaultDomain?.raw ?? "nil")\n", stderr)
+        } catch {
+            fputs("daemon domains: FATAL \(error)\n", stderr)
+            exit(2)
+        }
+    }
+
     func serve() throws -> Never {
+        validateDomainsAtStartup()
         // M17 hotfix：GUIspawn 怕 stderr fd 被释放后 serial 写造不被 SIGPIPE 同杀同。
         signal(SIGPIPE, SIG_IGN)
         unlink(sockPath)
@@ -242,6 +286,7 @@ final class SandboxDaemon {
             securityPolicy: plaintextAllowed ? ControlSecurityPolicy() : .strict,
             allowUnsignedManifest: unsignedAllowed
         )
+        self.configureDomainsIfPresent(runtime: runtime)
         runtime.brokerConfigDir = manifestDir
         runtime.enableGraphics = request.graphics ?? false  // M14：virtio-gpu（对应额外 spike 配置）
         let sweep = try runtime.sweepOrphans()
@@ -254,12 +299,19 @@ final class SandboxDaemon {
             workingDirectory: "/", declaredPorts: [], uid: 65_534, gid: 65_534,
             volumes: [], resources: ResourceHints(cpuCount: request.cpus ?? 2, memoryMiB: request.memoryMiB ?? 2048)
         )
+        // M23（INV-02）：创建时定域。显式 --domain 优先，否则用 domains.json 的 defaultDomain；
+        // 两者都没有 → 拒绝（不静默落回 "default"）。
+        let requestedDomain = (request.domain.flatMap { $0.isEmpty ? nil : CredentialDomainID($0) })
+            ?? runtime.domainRegistry.defaultDomain
+            ?? CredentialDomainID("default")
+        let domain = try runtime.resolveDomain(requestedDomain)
         let create = SandboxCreateRequest(
             sandboxID: sandboxID, workspaceID: .new(), correlationID: UUID(),
             workloadDigest: "sha256:local-poc", workload: workload,
             guestAssets: manifest.asManifest,
             resources: ResourceHints(cpuCount: request.cpus ?? 2, memoryMiB: request.memoryMiB ?? 2048),
-            networking: .none
+            networking: .none,
+            domainID: domain.domainID
         )
         fputs("daemon create manifest=\(manifestPath) kernel=\(manifest.asManifest.kernelURL.lastPathComponent) digest=\(manifest.asManifest.manifestDigest.prefix(16)) gfx=\(runtime.enableGraphics)\n", stderr)
         let handle = try runBlocking { try await runtime.create(create) }
@@ -276,7 +328,8 @@ final class SandboxDaemon {
                     cowRoot: request.cowRoot,
                     allowUnsignedManifest: request.allowUnsignedManifest,
                     allowPlaintext: request.allowPlaintext
-                ))
+                ),
+                domainID: domain.domainID)
             self.sessions[sandboxID.description] = session
             return DaemonResponse(ok: true, sandboxId: session.id, state: "running")
         } catch {
@@ -312,16 +365,16 @@ final class SandboxDaemon {
                 state: ($0.runtime.cachedLifecycleState(of: $0.handle) ?? "running"),
                 bootedAtUtc: ISO8601DateFormatter().string(from: $0.bootedAt),
                 manifestPath: $0.manifestPath,
-                uptimeSeconds: Int(Date().timeIntervalSince($0.bootedAt))
+                uptimeSeconds: Int(Date().timeIntervalSince($0.bootedAt)),
+                domain: $0.domainID.raw
             )
         }
         return DaemonResponse(ok: true, sandboxes: infos)
     }
 
     private func dispatchExec(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("exec: sandbox not found or not running: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "exec")
+        let sandboxId = session.id
         guard let argv = request.argv, !argv.isEmpty else {
             throw CLIError.usage("exec: argv required")
         }
@@ -336,11 +389,32 @@ final class SandboxDaemon {
     }
 
 
+    /// M23（INV-02）：查找会话并强制域比对。
+    ///
+    /// 规则：
+    /// - 请求声明了 `domain` → 必须与会话域一致（跨域一律拒绝）；
+    /// - 请求未声明 → 允许（CLI/GUI 单用户场景），但仍返回绑定了会话域的 handle，
+    ///   由 `VZRuntime.require` 再做一层校验。
+    private func sessionFor(_ request: DaemonRequest, op: String) throws -> (SandboxSession, SandboxHandle) {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("\(op): sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        if let declaredRaw = request.domain, !declaredRaw.isEmpty {
+            let declared = CredentialDomainID(declaredRaw)
+            guard declared == session.domainID else {
+                throw CLIError.usage("DBX-DOMAIN-SESSION-MISMATCH: \(op) 请求域 \(declaredRaw) 与沙箱域 \(session.domainID) 不一致")
+            }
+        }
+        let handle = SandboxHandle(sandboxID: session.handle.sandboxID,
+                                   bootID: session.handle.bootID,
+                                   domainID: session.domainID)
+        return (session, handle)
+    }
+
     /// M20：暂停并加密落盘（INV-10）。
     private func dispatchSuspend(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("suspend: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "suspend")
+        let sandboxId = session.id
         try runBlocking { try await session.runtime.suspend(session.handle) }
         // 会话保留（resume 需要 runtime/handle）；active pty 一律关闭（恢复后不保证存活）。
         for (sid, entry) in self.ptySessions where entry.sandboxId == sandboxId {
@@ -351,9 +425,8 @@ final class SandboxDaemon {
 
     /// M20：从加密快照恢复（三道闸 fail-closed）。
     private func dispatchResume(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("resume: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "resume")
+        let sandboxId = session.id
         _ = try runBlocking { try await session.runtime.resume(session.handle) }
         try self.waitForRunning(runtime: session.runtime, handle: session.handle,
                                 sandboxID: session.handle.sandboxID)
@@ -362,9 +435,8 @@ final class SandboxDaemon {
 
     /// M21：资源统计。观测面 fail-soft：失败时 stats.statsError 有值但不抛错。
     private func dispatchStats(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("stats: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "stats")
+        let sandboxId = session.id
         do {
             let stats = try runBlocking { try await session.runtime.stats(session.handle) }
             return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running", stats: stats)
@@ -378,9 +450,8 @@ final class SandboxDaemon {
 
     /// M16:consoleLog——返回 guest serial 的母/落到界 健康/联系 read 的置或。不构 Staging。
     private func dispatchConsoleLog(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("consoleLog: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "consoleLog")
+        let sandboxId = session.id
         let maxBytes = request.waitMillis ?? 16384
         let data = session.runtime.consoleTail(maxBytes: maxBytes)
         return DaemonResponse(ok: true, outputHex: data.map { String(format: "%02x", $0) }.joined(),
@@ -389,9 +460,8 @@ final class SandboxDaemon {
 
     /// M16:restart——stop+rm+按保留参数重建沙箱（新 sandboxId）。
     private func dispatchRestart(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("restart: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "restart")
+        let sandboxId = session.id
         let opts = session.runOptions
         // 强 rm（践可精确零 tryStop 开筛）
         var rmReq = DaemonRequest(kind: "rm")
@@ -410,9 +480,8 @@ final class SandboxDaemon {
     }
 
     private func dispatchPtyOpen(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("ptyOpen: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "ptyOpen")
+        let sandboxId = session.id
         // 单沙箱一次只能一个流式 pty 会话（协议 ptyId=0）
         if ptySessions.values.contains(where: { $0.sandboxId == sandboxId }) {
             throw CLIError.usage("ptyOpen: sandbox already has an active pty session")
@@ -473,9 +542,8 @@ final class SandboxDaemon {
     }
 
     private func dispatchWsSync(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("wsSync: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "wsSync")
+        let sandboxId = session.id
         guard let workspacePath = request.workspaceDir else {
             throw CLIError.usage("wsSync: workspaceDir required")
         }
@@ -488,9 +556,8 @@ final class SandboxDaemon {
     }
 
     private func dispatchStop(_ request: DaemonRequest) throws -> DaemonResponse {
-        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
-            throw CLIError.usage("stop: sandbox not found: \(request.sandboxId ?? "nil")")
-        }
+        let (session, sessionHandle) = try self.sessionFor(request, op: "stop")
+        let sandboxId = session.id
         try runBlocking { try await session.runtime.stop(session.handle) }
         return DaemonResponse(ok: true, sandboxId: sandboxId, state: "stopped")
     }

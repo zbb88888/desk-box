@@ -53,6 +53,8 @@ struct DBXPOC {
                 try verifyReleaseChannel(args: Array(args.dropFirst()))
             case "version":
                 try printVersion()
+            case "domains":
+                try listDomains(args: Array(args.dropFirst()))
             case "check-update":
                 try checkUpdate(args: Array(args.dropFirst()))
             case "launch":
@@ -665,6 +667,53 @@ struct DBXPOC {
         print(String(decoding: try JSONEncoder.pretty.encode(info), as: UTF8.self))
     }
 
+    /// M23：列出已配置凭据域（fail-closed 解析；非法即报错）。
+    private static func listDomains(args: [String]) throws {
+        let asJSON = args.contains("--json")
+        let root = try optionURL("--root", in: args)
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("DeskBox", isDirectory: true)
+        let manifestURL = root.appendingPathComponent("domains.json")
+        let registry: DomainRegistry
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            registry = try DomainRegistry.load(from: manifestURL, credentialRoot: root)
+        } else {
+            registry = DomainRegistry(manifest: .singleDefault, credentialRoot: root)
+        }
+        if asJSON {
+            struct Out: Encodable {
+                let schema: String
+                let defaultDomain: String?
+                let domains: [Row]
+                let source: String
+            }
+            struct Row: Encodable {
+                let domainID: String
+                let allowsEgress: Bool
+                let brokerPolicyFile: String?
+                let brokerCredentialsFile: String?
+                let allowedSigningKeyIDs: [String]
+            }
+            let out = Out(
+                schema: "deskbox-domains-list/v1",
+                defaultDomain: registry.defaultDomain?.raw,
+                domains: registry.domains.map {
+                    Row(domainID: $0.domainID.raw, allowsEgress: $0.allowsEgress,
+                        brokerPolicyFile: $0.brokerPolicyFile,
+                        brokerCredentialsFile: $0.brokerCredentialsFile,
+                        allowedSigningKeyIDs: $0.allowedSigningKeyIDs)
+                },
+                source: FileManager.default.fileExists(atPath: manifestURL.path) ? manifestURL.path : "builtin-single-default"
+            )
+            print(String(decoding: try JSONEncoder.pretty.encode(out), as: UTF8.self))
+            return
+        }
+        print("default=\(registry.defaultDomain?.raw ?? "nil") source=\(manifestURL.path)")
+        for domain in registry.domains {
+            print("\(domain.domainID.raw)\tegress=\(domain.allowsEgress ? "yes" : "no")\tpolicy=\(domain.brokerPolicyFile ?? "-")\tcreds=\(domain.brokerCredentialsFile ?? "-")")
+        }
+    }
+
     /// M22：更新检查。只读 channel 公开内容，回滚/未签名/撤销 key 一律拒绝。
     private static func checkUpdate(args: [String]) throws {
         guard let channelPath = try optionString("--channel", in: args)
@@ -799,6 +848,7 @@ private extension DBXPOC {
         request.memoryMiB = try? optionInt("--memory-mib", in: args)
         request.cpus = try? optionInt("--cpus", in: args)
         request.cowRoot = try? optionString("--cow-root", in: args)
+        request.domain = try? optionString("--domain", in: args)
         let sock = try? optionString("--daemon-sock", in: args)
         let response = try DaemonClient.send(request: request, sockPath: sock)
         print("run ok sandboxId=\(response.sandboxId ?? "?") state=\(response.state ?? "?")")
@@ -808,7 +858,7 @@ private extension DBXPOC {
         let sock = try? optionString("--daemon-sock", in: args)
         let response = try DaemonClient.send(request: DaemonRequest(kind: "ps"), sockPath: sock)
         for info in response.sandboxes ?? [] {
-            print("\(info.sandboxId)\t\(info.state)\t\(info.bootedAtUtc)\t\(info.manifestPath)")
+            print("\(info.sandboxId)\t\(info.state)\t\(info.bootedAtUtc)\t\(info.manifestPath)\t\(info.domain ?? "-")")
         }
     }
 
@@ -821,9 +871,11 @@ private extension DBXPOC {
         var timeout: Int? = nil
         var cwd: String? = nil
         var envPairs: [String] = []
+        var domain: String? = nil
         rest = try parseFlags(rest, "--timeout", &timeout)
         rest = try parseFlags(rest, "--cwd", &cwd)
         rest = try parseFlagsMulti(rest, "--env", &envPairs)
+        rest = try parseFlags(rest, "--domain", &domain)
         var argv = rest
         if let dashIdx = argv.firstIndex(of: "--") { argv = Array(argv.dropFirst(dashIdx + 1)) }
         guard !argv.isEmpty else { throw CLIError.usage("exec requires argv via '-- ...'") }
@@ -838,6 +890,7 @@ private extension DBXPOC {
         request.cwd = cwd
         request.timeoutSeconds = timeout
         request.env = envDict
+        request.domain = domain
         let sock = try? optionString("--daemon-sock", in: args)
         let response = try DaemonClient.send(request: request, sockPath: sock)
         if let out = response.stdout { print(out, terminator: "") }
@@ -913,11 +966,15 @@ private extension DBXPOC {
         var rest: [String] = []
         var i = 0
         while i < args.count {
-            if args[i] == "--daemon-sock" { i += 2 } else { rest.append(args[i]); i += 1 }
+            if args[i] == "--daemon-sock" { i += 2; continue }
+            if args[i] == "--domain" { i += 2; continue }
+            if args[i].hasPrefix("--") { i += 1; continue }
+            rest.append(args[i]); i += 1
         }
         guard let id = rest.first else { throw CLIError.usage("\(usage): sandbox id required") }
         var req = DaemonRequest(kind: kind)
         req.sandboxId = id
+        req.domain = try? optionString("--domain", in: args)
         let resp = try DaemonClient.send(request: req, sockPath: sock)
         print("\(kind) ok sandboxId=\(resp.sandboxId ?? id) state=\(resp.state ?? "?")")
     }
@@ -1003,12 +1060,15 @@ private extension DBXPOC {
 
 
 private extension DBXPOC {
+    /// 丢弃「带值且不属于位置参数」的选项（`--daemon-sock` / `--domain`）。
+    /// M23：`run` 的第一个位置参数必须是 manifest 路径，`--domain X` 不能被当成路径。
     static func dropSockOption(from args: [String]) throws -> [String] {
+        let valueOptions: Set<String> = ["--daemon-sock", "--domain"]
         var out: [String] = []
         var i = 0
         while i < args.count {
-            if args[i] == "--daemon-sock" {
-                guard i + 1 < args.count else { throw CLIError.usage("missing --daemon-sock value") }
+            if valueOptions.contains(args[i]) {
+                guard i + 1 < args.count else { throw CLIError.usage("missing value for \(args[i])") }
                 i += 2
             } else { out.append(args[i]); i += 1 }
         }

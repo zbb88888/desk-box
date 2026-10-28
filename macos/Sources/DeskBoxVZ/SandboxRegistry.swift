@@ -18,6 +18,8 @@ public struct RegisteredSandbox: Sendable, Codable, Equatable {
     public let clonePath: String
     public let hostPID: Int32
     public let createdAt: Date
+    /// M23（INV-02）：凭据域（旧 registry 文件缺该字段时按 `default` 读取）。
+    public let domainID: CredentialDomainID
 
     public init(
         sandboxID: SandboxID,
@@ -25,7 +27,8 @@ public struct RegisteredSandbox: Sendable, Codable, Equatable {
         status: Status,
         clonePath: String,
         hostPID: Int32,
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        domainID: CredentialDomainID = CredentialDomainID("default")
     ) {
         self.sandboxID = sandboxID
         self.bootID = bootID
@@ -33,6 +36,24 @@ public struct RegisteredSandbox: Sendable, Codable, Equatable {
         self.clonePath = clonePath
         self.hostPID = hostPID
         self.createdAt = createdAt
+        self.domainID = domainID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sandboxID, bootID, status, clonePath, hostPID, createdAt, domainID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sandboxID = try c.decode(SandboxID.self, forKey: .sandboxID)
+        bootID = try c.decode(BootID.self, forKey: .bootID)
+        status = try c.decode(Status.self, forKey: .status)
+        clonePath = try c.decode(String.self, forKey: .clonePath)
+        hostPID = try c.decode(Int32.self, forKey: .hostPID)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        // 兼容 M23 之前写下的 registry：无 domainID 视为 default。
+        domainID = (try? c.decode(CredentialDomainID.self, forKey: .domainID))
+            ?? CredentialDomainID("default")
     }
 }
 

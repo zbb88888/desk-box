@@ -144,6 +144,12 @@ struct DockerMainView: View {
                     Text(uptimeString(sb.uptimeSeconds)).font(.system(.caption, design: .monospaced))
                 }
                 .width(80)
+                TableColumn("Domain") { sb in
+                    Text(sb.domain ?? "—")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                .width(90)
                 TableColumn("Manifest") { sb in
                     Text(URL(fileURLWithPath: sb.manifestPath).lastPathComponent).font(.caption)
                 }

@@ -58,6 +58,8 @@ struct SandboxInfo: Codable, Identifiable {
     let manifestPath: String
     var uptimeSeconds: Int? = nil
     var workspaceId: String? = nil
+    /// M23（INV-02）：凭据域。
+    var domain: String? = nil
 }
 
 enum DaemonClientError: LocalizedError {

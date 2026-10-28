@@ -23,7 +23,7 @@
 | M20 ✅ | 生命周期持久化与不复活 | INV-10 | L | snapshot/suspend/resume + 更新/回滚 + 撤销 + 销毁故障注入全部通过，且不复活权限 |
 | M21 ✅ | 资源统计与观测 | INV-08 剩余（资源统计上报） | S | guest 上报 CPU/mem/io → daemon `stats` → GUI Stats 面板；耗尽压力测试 |
 | M22 | 产品化发布 v0.2.0 | —（发布面） | M | notarized .app + DMG + 更新检查 + 正式 release assets（repro-check 通过） |
-| M23 | 多凭据域隔离 | INV-02（当前 `未实现`） | L | 凭据域不共享 guest kernel 的调度证据 + 属性测试 |
+| M23 ✅ | 多凭据域隔离 | INV-02 | L | 已完成：e2e 21/21 + 属性矩阵 11/11 |
 
 ---
 
@@ -83,7 +83,9 @@
 - **发布**：tag `v0.2.0` → CI `repro-check` 双跑一致 → assets + `checksums.txt` + SBOM 附件；`verify-channel` 本地复核。
 - **验收**：从 DMG 安装到首次 run 的完整手动 checklist（含 GUI 每个按钮，配合已有 `e2e-gui-buttons.sh`）。
 
-## M23：多凭据域隔离（INV-02）
+## M23 ✅（已完成）：多凭据域隔离（INV-02）
+
+> 结果见 `m23-credential-domains.md`：域一等化，COW/快照/会话/调度四层跨域拒绝，调度决策证据 0600 落盘。
 
 矩阵中 `未实现`，工作量最大，放最后。
 
