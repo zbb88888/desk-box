@@ -163,6 +163,23 @@ swift build -c release (GUI + dbx-poc)
 7. GUI：About/版本显示 + 「检查更新」按钮
 8. docs 索引 / roadmap / README / security matrix 更新
 
+## 8.1 CI 状态（修复后）
+
+`main` 的 CI 六个 job 全绿：
+
+```
+✓ fuzz               15s
+✓ repro-check        14m37s   ← 修复后首次通过（此前 root-disk.raw 不可复现）
+✓ guest-build        6m59s
+✓ security-corpus    55s      ← macos-15（Swift 6）+ 修掉两处 actor 隔离编译错误
+✓ macos-build-test   1m33s
+✓ idempotent-release 1m12s
+```
+
+期间 CI 抓到两个本地没暴露的真实问题（apple silicon 本地 Xcode 版本较旧，诊断更宽松）：
+`DeskBoxGUIApp.send()` 与 `SettingsPanel` 里三个 helper 在 `Sendable` 闭包中捕获 MainActor 隔离属性。
+已改为先取局部值 + `Task { @MainActor in … }` 回主线程更新。
+
 ## 9. v0.2.0 实际发布记录（诚实状态）
 
 `v0.2.0` tag 已推送并触发 `release.yml`：
