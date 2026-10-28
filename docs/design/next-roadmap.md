@@ -20,7 +20,7 @@
 | --- | --- | --- | --- | --- |
 | M18 ✅ | guest 内核级纵深：seccomp-bpf + Landlock | INV-06, INV-08 补强 | M | 恶意 syscall/路径逃逸 corpus 被内核拒绝且审计可读；fail-closed（无支撑则拒绝启动强隔离模式） |
 | M19 ✅ | 安全证据补全（4 个 corpus） | INV-03, INV-04, INV-05, INV-06 | L | canary 扫描 / 网络绕过 / 文件系统 / 恶意 layer 四套 corpus 全部落成 CI 并出报告 |
-| M20 | 生命周期持久化与不复活 | INV-10（当前 `未实现`） | L | snapshot/suspend/resume + 更新/回滚 + 撤销 + 销毁故障注入全部通过，且不复活权限 |
+| M20a ✅ | 生命周期持久化与不复活 | INV-10 | L | snapshot/suspend/resume + 更新/回滚 + 撤销 + 销毁故障注入全部通过，且不复活权限 |
 | M21 ✅ | 资源统计与观测 | INV-08 剩余（资源统计上报） | S | guest 上报 CPU/mem/io → daemon `stats` → GUI Stats 面板；耗尽压力测试 |
 | M22 | 产品化发布 v0.2.0 | —（发布面） | M | notarized .app + DMG + 更新检查 + 正式 release assets（repro-check 通过） |
 | M23 | 多凭据域隔离 | INV-02（当前 `未实现`） | L | 凭据域不共享 guest kernel 的调度证据 + 属性测试 |
@@ -55,7 +55,10 @@
 
 - **验收**：每套 corpus 一个 `scripts/security-corpus-*.sh` + 结果 JSON 归档；CI 新增 job；`docs/security/security-verification-matrix.md` 状态从「部分已验证」升级到「已验证（macOS）」。
 
-## M20：生命周期持久化与不复活（INV-10）
+## M20a ✅（已完成）：生命周期持久化与不复活（INV-10）
+
+> 结果：suspend/resume 真机可用，快照密文 + 三道闸，e2e 15/15。详见 `m20-lifecycle-persistence.md`。
+> 剩余：M20b 阶段故障注入矩阵。
 
 当前矩阵中 `未实现`。
 

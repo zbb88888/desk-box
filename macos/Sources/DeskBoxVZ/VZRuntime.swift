@@ -14,7 +14,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private final class Record: @unchecked Sendable {
         let request: SandboxCreateRequest
         let boot: BootContext
-        let machine: VZVirtualMachine
+        /// M20：resume 需要从同一 configuration 重建 machine（VZ 要求 stopped 才能 restore）。
+        var machine: VZVirtualMachine
+        let configuration: VZVirtualMachineConfiguration
         var lifecycle: LifecycleMachine
         var started = false
         var delegate: VZRuntimeDelegate?
@@ -31,6 +33,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var ptyEvents: [PtyEvent] = []
         var wsAcks: [WsAckEvent] = []
         var bootstrapState: BootstrapState = .notConnected
+        /// M20：最近一次被接受的 bootstrap proof（resume 复用同一 boot 的 proof）。
+        var lastAcceptedProof: BootstrapProof?
         var requestSequence: UInt64 = 1
 
         func nextRequestSequence() -> UInt64 {
@@ -41,10 +45,13 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         let serialConsole: VZSerialConsole?
         let cowLease: CowDiskManager.Lease
 
-        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine, cowLease: CowDiskManager.Lease, serialConsole: VZSerialConsole?) {
+        init(request: SandboxCreateRequest, boot: BootContext, machine: VZVirtualMachine,
+             configuration: VZVirtualMachineConfiguration,
+             cowLease: CowDiskManager.Lease, serialConsole: VZSerialConsole?) {
             self.request = request
             self.boot = boot
             self.machine = machine
+            self.configuration = configuration
             self.cowLease = cowLease
             self.serialConsole = serialConsole
             self.lifecycle = LifecycleMachine(
@@ -61,6 +68,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     private var records: [SandboxID: Record] = [:]
     private let audit: AuditSink?
     private let cow: CowDiskManager
+    /// M20：快照信封（加密 + 三道闸）。
+    private let snapshots: SnapshotStore
+    /// M20：release key 链（用于撤销检查）；nil 时跳过该闸（本地 dev）。
+    public var releaseKeys: ReleaseKeysManifest?
+    /// M20：快照目录（与 COW 同根）。
+    private let snapshotRoot: URL
     private let registry: SandboxRegistry
     private let enableConsole: Bool
     /// M16：console tail 支持（daemon consoleLog）。对 GUI 由由URLSession tái.
@@ -89,6 +102,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         self.queue = DispatchQueue(label: "com.deskbox.vz-runtime", qos: .userInitiated)
         self.queue.setSpecific(key: queueKey, value: 1)
         self.cow = try CowDiskManager(root: cowRoot)
+        self.snapshotRoot = cowRoot.appendingPathComponent("snapshots", isDirectory: true)
+        // 快照密钥固定在 Application Support，随宿主用户生命周期；不放进 COW 根（否则 rm 会连密钥一起删）。
+        self.snapshots = SnapshotStore(keyURL: SnapshotStore.defaultKeyURL())
         self.registry = try SandboxRegistry(root: cowRoot)
         self.audit = audit
         self.enableConsole = enableConsole
@@ -141,7 +157,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw error
             }
             let machine = VZVirtualMachine(configuration: configuration, queue: self.queue)
-            let record = Record(request: request, boot: boot, machine: machine, cowLease: cowLease, serialConsole: serialConsole)
+            let record = Record(request: request, boot: boot, machine: machine,
+                                configuration: configuration, cowLease: cowLease, serialConsole: serialConsole)
             let sandboxID = request.sandboxID
             let delegate = VZRuntimeDelegate(
                 onGuestStopped: { [weak self] error in
@@ -266,14 +283,186 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
+    /// M20：暂停并把 VZ 状态加密落盘（INV-10）。COW 盘保留，供 resume 使用。
     public func suspend(_ handle: SandboxHandle) async throws {
-        _ = try await inspect(handle)
-        throw SandboxFailure(.platformSuspendDisabled, "suspend/resume 尚未完成真实平台 POC，首版关闭")
+        let snapshotURL = snapshotURL(for: handle.sandboxID)
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running else {
+                throw SandboxFailure(.lifecycleInvalidTransition,
+                                     "suspend 仅允许 running 状态，当前 \(record.lifecycle.state)")
+            }
+            try record.lifecycle.transition(to: .suspending, reason: .lifecycleStopRequested)
+            try self.registry.upsert(RegisteredSandbox(
+                sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
+                status: .stopped, clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
+                hostPID: ProcessInfo.processInfo.processIdentifier))
+        }
+
+        // VZ save/restore 只支持 arm64 + macOS 14+，且必须先把机器暂停。
+        let machine = try await onQueue { try self.require(handle).machine }
+        try await self.vzOperation { completion in
+            machine.pause { result in
+                switch result {
+                case .success: completion(nil)
+                case .failure(let error): completion(error)
+                }
+            }
+        }
+
+        let tempURL = snapshotURL.deletingLastPathComponent()
+            .appendingPathComponent("tmp-\(UUID().uuidString).vzstate")
+        try? FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        try await self.vzOperation { completion in
+            machine.saveMachineStateTo(url: tempURL) { error in completion(error) }
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let payload = try Data(contentsOf: tempURL)
+        let metadata = try await onQueue { () -> SnapshotMetadata in
+            let record = try self.require(handle)
+            return SnapshotMetadata(
+                sandboxID: record.request.sandboxID.description,
+                bootID: record.boot.bootID.raw,
+                manifestDigest: record.request.guestAssets.manifestDigest,
+                guestAssetVersion: record.request.guestAssets.guestAssetVersion,
+                keyID: record.request.guestAssets.signature?.keyID ?? "unsigned",
+                createdAtUtc: ISO8601DateFormatter().string(from: Date()),
+                hostBuild: ProcessInfo.processInfo.operatingSystemVersionString,
+                payloadSha256: "")
+        }
+        try self.snapshots.seal(payload: payload, metadata: metadata, to: snapshotURL)
+
+        try await onQueue {
+            let record = try self.require(handle)
+            // 不关闭 control socket：guest 被冻结后同一 vsock 会话在 resume 时继续有效，
+            // 因此不需要（guest 也不会）重新发 hello。proof 复用同一 boot。
+            record.started = false
+            if record.lifecycle.state != .suspended {
+                try record.lifecycle.transition(to: .suspended, reason: .lifecycleStopped)
+            }
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
+            try self.registry.upsert(RegisteredSandbox(
+                sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
+                status: .stopped, clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
+                hostPID: ProcessInfo.processInfo.processIdentifier))
+        }
     }
 
+    /// M20：从快照恢复。三道闸（manifestDigest / assetVersion / key 撤销）先过，再交给 VZ。
+    ///
+    /// 状态机纪律：任何失败都必须让沙箱保持在 `.suspended`（可重试/可 rm），
+    /// 只有在 VZ 真正恢复成功之后才进入 `.resuming`。
     public func resume(_ handle: SandboxHandle) async throws -> BootContext {
-        _ = try await inspect(handle)
-        throw SandboxFailure(.platformSuspendDisabled, "suspend/resume 尚未完成真实平台 POC，首版关闭")
+        let snapshotURL = snapshotURL(for: handle.sandboxID)
+
+        // 1) 闸门（不改变任何状态）。
+        let metadata = try self.snapshots.readMetadata(at: snapshotURL)
+        let (configuration, assets, bootID) = try await onQueue {
+            () -> (VZVirtualMachineConfiguration, GuestAssetManifest, BootID) in
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .suspended else {
+                throw SandboxFailure(.lifecycleInvalidTransition,
+                                     "resume 仅允许 suspended 状态，当前 \(record.lifecycle.state)")
+            }
+            return (record.configuration, record.request.guestAssets, record.boot.bootID)
+        }
+        let gate = SnapshotGate(
+            manifestDigest: assets.manifestDigest,
+            guestAssetVersion: assets.guestAssetVersion,
+            minimumAssetVersionFloor: assets.guestAssetVersion,
+            releaseKeys: self.releaseKeys
+        )
+        do {
+            try gate.check(metadata)
+            guard metadata.bootID == bootID.raw else {
+                throw SnapshotError.malformed("bootID 与当前沙箱不符")
+            }
+        } catch {
+            try await onQueue {
+                let record = try self.require(handle)
+                self.recordAudit(record, action: .channelEvent,
+                                 decision: .deny(.bootstrapProofMismatch, "snapshot gate: \(error)"))
+            }
+            throw error
+        }
+
+        // 2) 解密 + VZ 恢复（这一步失败也只回到 suspended）。
+        let payload = try self.snapshots.open(at: snapshotURL)
+        let tempURL = snapshotURL.deletingLastPathComponent()
+            .appendingPathComponent("tmp-restore-\(UUID().uuidString).vzstate")
+        try payload.write(to: tempURL, options: [.atomic])
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        // VZ 要求 restore 目标 machine 处于 stopped：从同一 configuration 重建一台。
+        let machine = try await onQueue { () -> VZVirtualMachine in
+            let record = try self.require(handle)
+            let rebuilt = VZVirtualMachine(configuration: configuration, queue: self.queue)
+            rebuilt.delegate = record.delegate
+            record.machine = rebuilt
+            return rebuilt
+        }
+        try await self.vzOperation { completion in
+            machine.restoreMachineStateFrom(url: tempURL) { error in completion(error) }
+        }
+        // 恢复后机器处于 paused，需要显式 resume。
+        try await self.vzOperation { completion in
+            machine.resume { result in
+                switch result {
+                case .success: completion(nil)
+                case .failure(let error): completion(error)
+                }
+            }
+        }
+
+        // 3) VZ 成功后才推进状态机，并等待 guest 重连后的新握手。
+        try? FileManager.default.removeItem(at: snapshotURL)
+        return try await onQueue {
+            let record = try self.require(handle)
+            if record.lifecycle.state == .suspended {
+                try record.lifecycle.transition(to: .resuming, reason: .lifecycleResuming)
+            }
+            record.started = true
+            // VZ restore 会重置 vsock 连接：丢弃旧会话状态、重装监听，
+            // 由 guest 重连发来的新 hello 完成 resuming -> running（带新 proof）。
+            self.closeSocketOnQueue(record)
+            record.controlSocket = nil
+            record.secureSession = nil
+            record.bootstrapState = .notConnected
+            record.lastAcceptedProof = nil
+            if self.enableControlSocket {
+                try self.installControlListener(record)
+            }
+            self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return record.boot
+        }
+    }
+
+    /// 同步读取生命周期状态（供 daemon `ps` 使用；不经 async 队列）。
+    public func cachedLifecycleState(of handle: SandboxHandle) -> String? {
+        queue.sync {
+            guard let record = records[handle.sandboxID] else { return nil }
+            return record.lifecycle.state.rawValue
+        }
+    }
+
+    /// M20：VZ 的 pause/save/restore/resume 内部有 `dispatch_assert_queue`，
+    /// 必须在 VM 自己的 queue 上调用，否则直接 SIGTRAP。这里统一桥接。
+    private func vzOperation(_ body: @escaping (@escaping (Error?) -> Void) -> Void) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            self.queue.async {
+                body { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume() }
+                }
+            }
+        }
+    }
+
+    /// 快照路径：与 COW 同根，便于 sweep 一起清扫。
+    private func snapshotURL(for sandboxID: SandboxID) -> URL {
+        self.snapshotRoot.appendingPathComponent("\(sandboxID.description).snap")
     }
 
     public func destroy(_ handle: SandboxHandle) async throws {
@@ -1051,6 +1240,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 sessionID: ack.sessionID
             )
             try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+            record.lastAcceptedProof = proof
             record.bootstrapState = .authenticated
             self.recordAudit(record, action: .channelEvent, decision: .allow())
         } catch {
@@ -1086,6 +1276,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 sessionID: binding.sessionID
             )
             try record.lifecycle.transition(to: .running, reason: .bootstrapProofAccepted, proof: proof)
+            record.lastAcceptedProof = proof
             record.bootstrapState = .tlsAuthenticated
             self.recordAudit(record, action: .channelEvent, decision: .allow())
         } catch {

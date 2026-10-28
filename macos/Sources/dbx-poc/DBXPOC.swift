@@ -67,6 +67,8 @@ struct DBXPOC {
             case "restart": try daemonRestartCli(args: Array(args.dropFirst()))
             case "console": try daemonConsoleCli(args: Array(args.dropFirst()))
             case "stats": try daemonStatsCli(args: Array(args.dropFirst()))
+            case "suspend": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "suspend", usage: "suspend")
+            case "resume": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "resume", usage: "resume")
             case "help", "-h", "--help":
                 printUsage()
             default:
@@ -836,6 +838,21 @@ private extension DBXPOC {
             j = hex.index(j, offsetBy: 2)
         }
         print(String(data: bytes, encoding: .utf8) ?? "<binary \(bytes.count)B>")
+    }
+
+    /// 通用单 id 端点（suspend / resume）。
+    static func daemonSimpleCli(args: [String], kind: String, usage: String) throws {
+        let sock = (try? optionString("--daemon-sock", in: args))
+        var rest: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == "--daemon-sock" { i += 2 } else { rest.append(args[i]); i += 1 }
+        }
+        guard let id = rest.first else { throw CLIError.usage("\(usage): sandbox id required") }
+        var req = DaemonRequest(kind: kind)
+        req.sandboxId = id
+        let resp = try DaemonClient.send(request: req, sockPath: sock)
+        print("\(kind) ok sandboxId=\(resp.sandboxId ?? id) state=\(resp.state ?? "?")")
     }
 
     /// M21：资源统计（--json 输出机器可读）。

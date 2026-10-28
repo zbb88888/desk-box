@@ -1240,6 +1240,11 @@ int main(void) {
         sandbox, boot, nonce, manifest);
     if (len <= 0 || (size_t)len >= sizeof(json)) return 4;
 
+    /* M20：VZ save/restore 会重置 vsock 连接，宿主恢复后会等待新的握手。
+     * 因此控制通道断开（含 suspend/resume 后的重置）必须重连并重发 hello，
+     * 使用同一 boot/nonce（bootID 不变，proof 绑定关系因此保持一致）。 */
+reconnect:
+    record_mode = 0;
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (fd < 0) {
         char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: socket errno=%d\n", errno);
@@ -1422,6 +1427,12 @@ int main(void) {
 
         if (ready <= 0) continue;
 
+        /* M20：VZ restore 后旧 vsock 句柄会变成 HUP/ERR。只处理 POLLIN 会导致
+         * 永久 poll 一个死 fd，从而永远不重连 —— 必须显式退出循环去重连。 */
+        if (pfds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+            break;
+        }
+
         if (pfds[0].revents & POLLIN) {
             ssize_t got = (record_mode ? recv_record(fd, incoming, sizeof(incoming))
                                        : recv_frame(fd, incoming, sizeof(incoming)));
@@ -1591,6 +1602,18 @@ int main(void) {
         }
     }
     close(fd);
-    return 0;
+    /* 控制通道断开：重置本地会话状态后重连（PTY 会话不跨重连保留）。 */
+    if (pty.master_fd >= 0) {
+        close(pty.master_fd);
+        pty.master_fd = -1;
+        pty.pid = -1;
+    }
+    {
+        const char *lost = "Desk Box bootstrap: control channel lost, reconnecting\n";
+        write(STDOUT_FILENO, lost, strlen(lost));
+        fsync(STDOUT_FILENO);
+    }
+    sleep(1);
+    goto reconnect;
 }
 #endif // DBX_TEST_NO_MAIN

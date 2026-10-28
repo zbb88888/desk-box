@@ -199,6 +199,10 @@ final class SandboxDaemon {
             return try self.dispatchConsoleLog(request)
         case "stats":
             return try self.dispatchStats(request)
+        case "suspend":
+            return try self.dispatchSuspend(request)
+        case "resume":
+            return try self.dispatchResume(request)
         case "restart":
             return try self.dispatchRestart(request)
         case "shutdown":
@@ -262,32 +266,19 @@ final class SandboxDaemon {
         do {
             _ = try runBlocking { try await runtime.start(handle) }
             fputs("daemon: VM started sandbox=\(sandboxID.description) waiting for bootstrap...\n", stderr)
-            let deadline = Date().addingTimeInterval(90)
-            var lastBootstrapPrinted = ""
-            while Date() < deadline {
-                let status = try runBlocking { try await runtime.inspect(handle) }
-                let bstr = "\(status.state)/\(status.bootstrap)"
-                if bstr != lastBootstrapPrinted {
-                    fputs("daemon boot-watch sandbox=\(sandboxID.description) status=\(bstr)\n", stderr)
-                    lastBootstrapPrinted = bstr
-                }
-                if status.state == .running && (status.bootstrap == .authenticated || status.bootstrap == .tlsAuthenticated) {
-                    let session = SandboxSession(
-                        id: sandboxID.description, runtime: runtime, handle: handle,
-                        manifestPath: manifestPath,
-                        runOptions: SandboxRunOptions(
-                            manifestPath: manifestPath, cpus: request.cpus,
-                            memoryMiB: request.memoryMiB, graphics: request.graphics,
-                            cowRoot: request.cowRoot,
-                            allowUnsignedManifest: request.allowUnsignedManifest,
-                            allowPlaintext: request.allowPlaintext
-                        ))
-                    self.sessions[sandboxID.description] = session
-                    return DaemonResponse(ok: true, sandboxId: session.id, state: "running")
-                }
-                Thread.sleep(forTimeInterval: 0.2)
-            }
-            throw CLIError.usage("run: bootstrap did not reach running within 90s")
+            try self.waitForRunning(runtime: runtime, handle: handle, sandboxID: sandboxID)
+            let session = SandboxSession(
+                id: sandboxID.description, runtime: runtime, handle: handle,
+                manifestPath: manifestPath,
+                runOptions: SandboxRunOptions(
+                    manifestPath: manifestPath, cpus: request.cpus,
+                    memoryMiB: request.memoryMiB, graphics: request.graphics,
+                    cowRoot: request.cowRoot,
+                    allowUnsignedManifest: request.allowUnsignedManifest,
+                    allowPlaintext: request.allowPlaintext
+                ))
+            self.sessions[sandboxID.description] = session
+            return DaemonResponse(ok: true, sandboxId: session.id, state: "running")
         } catch {
             _ = try? runBlocking { try await runtime.destroy(handle) }
             auditFlush()
@@ -295,11 +286,30 @@ final class SandboxDaemon {
         }
     }
 
+    /// 等待沙箱进入 running 且 bootstrap 已认证（run 与 resume 共用）。
+    private func waitForRunning(runtime: VZRuntime, handle: SandboxHandle, sandboxID: SandboxID) throws {
+        let deadline = Date().addingTimeInterval(90)
+        var lastBootstrapPrinted = ""
+        while Date() < deadline {
+            let status = try runBlocking { try await runtime.inspect(handle) }
+            let bstr = "\(status.state)/\(status.bootstrap)"
+            if bstr != lastBootstrapPrinted {
+                fputs("daemon boot-watch sandbox=\(sandboxID.description) status=\(bstr)\n", stderr)
+                lastBootstrapPrinted = bstr
+            }
+            if status.state == .running && (status.bootstrap == .authenticated || status.bootstrap == .tlsAuthenticated) {
+                return
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        throw CLIError.usage("bootstrap did not reach running within 90s")
+    }
+
     private func dispatchPs(_ request: DaemonRequest) throws -> DaemonResponse {
         let infos: [SandboxInfo] = sessions.values.map {
             SandboxInfo(
                 sandboxId: $0.id,
-                state: "running",
+                state: ($0.runtime.cachedLifecycleState(of: $0.handle) ?? "running"),
                 bootedAtUtc: ISO8601DateFormatter().string(from: $0.bootedAt),
                 manifestPath: $0.manifestPath,
                 uptimeSeconds: Int(Date().timeIntervalSince($0.bootedAt))
@@ -325,6 +335,30 @@ final class SandboxDaemon {
                               exitCode: response.exitCode, stdout: response.stdout, stderr: response.stderr)
     }
 
+
+    /// M20：暂停并加密落盘（INV-10）。
+    private func dispatchSuspend(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("suspend: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        try runBlocking { try await session.runtime.suspend(session.handle) }
+        // 会话保留（resume 需要 runtime/handle）；active pty 一律关闭（恢复后不保证存活）。
+        for (sid, entry) in self.ptySessions where entry.sandboxId == sandboxId {
+            self.ptySessions.removeValue(forKey: sid)
+        }
+        return DaemonResponse(ok: true, sandboxId: sandboxId, state: "suspended")
+    }
+
+    /// M20：从加密快照恢复（三道闸 fail-closed）。
+    private func dispatchResume(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("resume: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        _ = try runBlocking { try await session.runtime.resume(session.handle) }
+        try self.waitForRunning(runtime: session.runtime, handle: session.handle,
+                                sandboxID: session.handle.sandboxID)
+        return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running")
+    }
 
     /// M21：资源统计。观测面 fail-soft：失败时 stats.statsError 有值但不抛错。
     private func dispatchStats(_ request: DaemonRequest) throws -> DaemonResponse {
