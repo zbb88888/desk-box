@@ -187,25 +187,29 @@ struct SettingsKeysTab: View {
     }
 
     private func runCli(_ args: [String]) {
-        guard FileManager.default.isExecutableFile(atPath: dbxPath) else {
+        let tool = dbxPath   // MainActor 隔离属性不能进 Sendable 闭包，先取局部值
+        guard FileManager.default.isExecutableFile(atPath: tool) else {
             status = "dbx-poc not found; build+sign first"; return
         }
         DispatchQueue.global().async {
             let process = Process()
             let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: dbxPath)
+            process.executableURL = URL(fileURLWithPath: tool)
             process.arguments = args
             process.standardOutput = pipe
             process.standardError = pipe
             do { try process.run(); } catch {
-                DispatchQueue.main.async { status = "run fail: \(error.localizedDescription)" }
+                let message = error.localizedDescription
+                Task { @MainActor in status = "run fail: \(message)" }
                 return
             }
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
             let text = String(decoding: data, as: UTF8.self)
-            DispatchQueue.main.async {
+            let code = process.terminationStatus
+            let name = args.first ?? ""
+            Task { @MainActor in
                 logText = text
-                status = process.terminationStatus == 0 ? "ok: \(args.first ?? "")" : "fail: exit=\(process.terminationStatus)"
+                status = code == 0 ? "ok: \(name)" : "fail: exit=\(code)"
             }
             process.waitUntilExit()
         }
@@ -261,9 +265,10 @@ struct SettingsAboutTab: View {
         checking = true
         updateText = ""
         let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
-        guard FileManager.default.isExecutableFile(atPath: dbxPath) else {
+        let tool = dbxPath   // MainActor 隔离属性不能进 Sendable 闭包
+        guard FileManager.default.isExecutableFile(atPath: tool) else {
             checking = false
-            updateText = "dbx-poc helper 未找到（\(dbxPath)）"
+            updateText = "dbx-poc helper 未找到（\(tool)）"
             return
         }
         guard FileManager.default.isReadableFile(atPath: channelPath) else {
@@ -275,7 +280,7 @@ struct SettingsAboutTab: View {
         DispatchQueue.global().async {
             let process = Process()
             let pipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: dbxPath)
+            process.executableURL = URL(fileURLWithPath: tool)
             process.arguments = ["check-update", "--channel", channel,
                                  "--current-version", current, "--json"]
             process.standardOutput = pipe
@@ -305,7 +310,7 @@ struct SettingsAboutTab: View {
                 }
             }
             if exitCode != 0 && exitCode != 3 { text += "\nexit=\(exitCode)" }
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 updateText = text
                 checking = false
             }

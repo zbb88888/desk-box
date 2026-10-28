@@ -98,12 +98,16 @@ struct MenuBarStatusView: View {
     }
 
     private func send(_ kind: String, id: String) {
+        // Swift 6 严格并发：MainActor 隔离的属性不能在 Sendable 闭包里直接捕获。
+        // 先把 client 取到局部常量（DaemonSocketClient 自身是线程安全的），
+        // 刷新再回主线程。
+        let client = viewModel.client
         DispatchQueue.global().async {
             var req = DaemonRequest(kind: kind)
             req.sandboxId = id
             req.force = true
-            _ = try? viewModel.client.send(req, timeoutSec: 10)
-            DispatchQueue.main.async { viewModel.refresh() }
+            _ = try? client.send(req, timeoutSec: 10)
+            Task { @MainActor in viewModel.refresh() }
         }
     }
 }
