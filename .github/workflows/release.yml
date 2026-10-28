@@ -4,7 +4,8 @@ on:
   push:
     tags:
       - "v*-alpha*"
-      - "v[0-9]+.[0-9]+.[0-9]+"
+      # GitHub Actions 的 tag filter 是 glob，不是正则：用 `v*.*.*` 覆盖正式语义化版本。
+      - "v*.*.*"
 
 env:
   ALPINE_VERSION: "3.21.3"
