@@ -42,6 +42,7 @@
 - [M15 GUI Polish](design/m15-gui-polish.md)：drag-drop workspace / Login Item / terminal interactivity。
 - [M16 Docker Parity GUI](design/m16-docker-parity-gui.md)：sandboxes表/restart/consoleLog/manifests面板/sidebar导航。
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
+- [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [后续开发计划（M18 起）](design/next-roadmap.md)：M18 guest 内核纵深 → M19 安全证据 corpus → M21 统计 → M20 快照/不复活 → M22 发布 v0.2.0 → M23 多凭据域。
 - [平台能力矩阵](design/platform-capability-matrix.md)：列出 VZ 与 Hyper-V 必须在真实目标系统验证的能力和版本冻结产物。
 - [工作区同步](design/workspace-sync.md)：定义快照式导入、暂存式导出、冲突、Git 和路径安全语义。

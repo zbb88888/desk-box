@@ -17,6 +17,7 @@ MINIROOT_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releas
 
 mkdir -p "$OUT_DIR"
 cp "$(dirname "$0")/guest-bootstrap.c" "$OUT_DIR/guest-bootstrap.c"
+cp "$(dirname "$0")/hardening-probe.c" "$OUT_DIR/hardening-probe.c"
 cp "$(dirname "$0")/brokerreq.c" "$OUT_DIR/brokerreq.c"
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v docker >/dev/null || { echo "docker is required to build the ext4 image" >&2; exit 1; }
@@ -72,10 +73,16 @@ docker run --rm \
     mkdir -p /tmp/rootfs
     curl --fail --location --retry 3 "$MINIROOT_URL" | tar -xz -C /tmp/rootfs
     mkdir -p /tmp/rootfs/root /tmp/rootfs/workspace /tmp/rootfs/run
+    # M18：exec 子进程是 uid 65534，/workspace 必须可写（粘滞位避免互相删除）
+    chmod 1777 /tmp/rootfs/workspace
     # 顺手装个 brokerreq 小客户端（M2-3b：guest 进程通过 AF_UNIX 请求宿主 broker）
     gcc -static -O2 -Wall -Wextra -o /tmp/brokerreq /out/brokerreq.c
+    # M18：内核加固探针 + Landlock 对照组目录（0777：无 Landlock 时可写）
+    gcc -static -O2 -Wall -Wextra -o /tmp/hardening-probe /out/hardening-probe.c
     install -m 0755 /tmp/deskbox-bootstrap /tmp/rootfs/sbin/deskbox-bootstrap
     install -m 0755 /tmp/brokerreq /tmp/rootfs/bin/brokerreq
+    install -m 0755 /tmp/hardening-probe /tmp/rootfs/bin/hardening-probe
+    mkdir -p /tmp/rootfs/opt/landlock-canary && chmod 0777 /tmp/rootfs/opt/landlock-canary
     cat > /tmp/rootfs/etc/motd <<EOF
 Desk Box Alpine guest POC
 Network is intentionally disabled by the host VZ configuration.
@@ -89,12 +96,17 @@ export PATH=/sbin:/usr/sbin:/bin:/usr/bin
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
 mkdir -p /run /workspace
+chmod 1777 /workspace
 mount -t devtmpfs dev /dev 2>/dev/null && printf "DBXDEV devtmpfs-ok\\n" > /dev/console 2>/dev/null || printf "DBXDEV devtmpfs-fail\\n" > /dev/console 2>/dev/null || true
 mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts 2>/dev/null && printf "DBXDEV devpts-ok\\n" > /dev/console 2>/dev/null || printf "DBXDEV devpts-fail\\n" > /dev/console 2>/dev/null || true
 [ -e /dev/ptmx ] && printf "DBXDEV ptmx-ok\\n" > /dev/console 2>/dev/null || printf "DBXDEV ptmx-missing\\n" > /dev/console 2>/dev/null || true
 if [ ! -e /run/deskbox-bootstrap-ok ]; then
-  /sbin/deskbox-bootstrap >/dev/console 2>&1 || true
+  # M18：确保 exec 子进程可写的目录存在且权限正确（initramfs root 是 ramfs）
+mkdir -p /workspace /tmp /run /opt/landlock-canary 2>/dev/null || true
+chmod 1777 /workspace /tmp /run 2>/dev/null || true
+chmod 0777 /opt/landlock-canary 2>/dev/null || true
+/sbin/deskbox-bootstrap >/dev/console 2>&1 || true
 fi
 printf "Desk Box guest init ready\\n" > /dev/console 2>/dev/null || true
 (busybox getty 9600 tty0 </dev/tty0 >/dev/tty0 2>/dev/tty0 &) 2>/dev/null || true
@@ -130,6 +142,12 @@ EOF
     mkdir -p /tmp/initrd
     gzip -dc /out/debian-initrd.gz | (cd /tmp/initrd && cpio -id --quiet)
     mkdir -p /tmp/initrd/bin /tmp/initrd/dev /tmp/initrd/proc /tmp/initrd/sys /tmp/initrd/newroot /tmp/initrd/workspace
+    # M18：sandbox runtime 实际运行在 initramfs 上（bootstrap 在 switch_root 前常驻），
+    # 因此 exec 子进程（uid 65534）需要的可写目录与 Landlock 对照组必须在这里建立。
+    mkdir -p /tmp/initrd/tmp /tmp/initrd/run /tmp/initrd/opt/landlock-canary
+    chmod 1777 /tmp/initrd/workspace /tmp/initrd/tmp
+    chmod 1777 /tmp/initrd/run
+    chmod 0777 /tmp/initrd/opt/landlock-canary
     # Keep the early boot path independent of devtmpfs/udev. VZ exposes the
     # virtio block device as vda and the primary console as hvc0.
     rm -f /tmp/initrd/dev/console /tmp/initrd/dev/hvc0 /tmp/initrd/dev/ttyS0 /tmp/initrd/dev/vda
@@ -149,6 +167,7 @@ EOF
     mkdir -p /tmp/initrd/sbin /tmp/initrd/bin
     cp /tmp/deskbox-bootstrap /tmp/initrd/sbin/deskbox-bootstrap
     cp /tmp/brokerreq /tmp/initrd/bin/brokerreq
+    cp /tmp/hardening-probe /tmp/initrd/bin/hardening-probe
     chmod 0755 /tmp/initrd/bin/busybox
     rm -f /tmp/initrd/bin/mount /tmp/initrd/bin/switch_root
     ln -s busybox /tmp/initrd/bin/mount
@@ -198,7 +217,14 @@ SBOM_ONLY="${SKIP_SWIFT_SIGN:-0}"
 if [ "$SBOM_ONLY" != "1" ]; then
   # 开发密钥淡离仓库：在 guest/（gitignored）下只生成一次；发布链必须使用正式 key。
   if [ ! -f "$OUT_DIR/dev-sign-key.local" ]; then
-    swift run dbx-poc gen-guest-sign-key --output-key "$OUT_DIR/dev-sign-key.local" >/dev/null
+    # 复用仓库内已有的 dev key（若存在），避免每次重建都换 keyID 而导致
+    # DevSigningPublicKey.generated.swift 与既有 manifest 失效。
+    REPO_DEV_KEY="$(cd "$(dirname "$0")" && pwd)/../guest/dev-sign-key.local"
+    if [ -f "$REPO_DEV_KEY" ]; then
+      cp "$REPO_DEV_KEY" "$OUT_DIR/dev-sign-key.local"
+    else
+      swift run dbx-poc gen-guest-sign-key --output-key "$OUT_DIR/dev-sign-key.local" >/dev/null
+    fi
   fi
   # 将 dev key 对应公钥汇编进 DeskBoxVZ（gitignored 生成文件），使每次构建的可信列表与本地签名一致。
   DEV_PRIV=$(sed 's/private://' "$OUT_DIR/dev-sign-key.local" | tr -d '[:space:]')

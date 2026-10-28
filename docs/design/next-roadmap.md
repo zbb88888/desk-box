@@ -18,7 +18,7 @@
 
 | 阶段 | 主题 | 解决的不变量 | 规模 | 关键验收 |
 | --- | --- | --- | --- | --- |
-| M18 | guest 内核级纵深：seccomp-bpf + Landlock | INV-06, INV-08 补强 | M | 恶意 syscall/路径逃逸 corpus 被内核拒绝且审计可读；fail-closed（无支撑则拒绝启动强隔离模式） |
+| M18 ✅ | guest 内核级纵深：seccomp-bpf + Landlock | INV-06, INV-08 补强 | M | 恶意 syscall/路径逃逸 corpus 被内核拒绝且审计可读；fail-closed（无支撑则拒绝启动强隔离模式） |
 | M19 | 安全证据补全（4 个 corpus） | INV-03, INV-04, INV-05, INV-06 | L | canary 扫描 / 网络绕过 / 文件系统 / 恶意 layer 四套 corpus 全部落成 CI 并出报告 |
 | M20 | 生命周期持久化与不复活 | INV-10（当前 `未实现`） | L | snapshot/suspend/resume + 更新/回滚 + 撤销 + 销毁故障注入全部通过，且不复活权限 |
 | M21 | 资源统计与观测 | INV-08 剩余（资源统计上报） | S | guest 上报 CPU/mem/io → daemon `stats` → GUI Stats 面板；耗尽压力测试 |
@@ -27,7 +27,9 @@
 
 ---
 
-## M18：guest 内核级纵深（seccomp-bpf + Landlock）
+## M18 ✅（已完成）：guest 内核级纵深（seccomp-bpf + Landlock）
+
+> 结果：M18a 已交付（Landlock 白名单 + seccomp deny-list，fail-closed），e2e 12/12；M18b（默认 deny + 签名 workload profile）留作后续。详见 `m18-guest-kernel-hardening.md`。
 
 **为什么现在做**：exec 已具备 namespaces + cgroup v2，但 syscall 面与文件系统面仍靠用户态策略。内核级白名单能在 runc/OCI 之外再收一层，且完全在我们自己的 VM 内可验证（无需外部环境）。
 

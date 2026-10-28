@@ -329,8 +329,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         guard let first = request.argv.first else {
             throw SandboxFailure(.bootstrapProofMissing, "exec argv 不可为空")
         }
+        // M18：/bin/hardening-probe 是随签名 rootfs 一起下发的固定自检二进制
+        // （只执行预置的测例，不接受任意代码），用于验证内核级加固是否生效。
         let allowedFirst = first == "/bin/echo"
             || first == "/bin/sh"
+            || first == "/bin/hardening-probe"
             || first.hasPrefix("/workspace/")
         let cwdOK = (request.cwd == nil)
             || request.cwd == "/workspace"

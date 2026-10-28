@@ -7,6 +7,11 @@
 #ifdef __linux__
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
+#include <stddef.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
 #endif
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -133,6 +138,174 @@ static int parse_timeout_seconds(const char *json) {
  * Symbol returns 0 in the child when all steps succeeded; on host/test
  * builds there is no privilege boundary to establish (best effort).
  */
+/* -------------------------------------------------------------------------
+ * M18：内核级纵深。Landlock（路径面白名单）+ seccomp-bpf（危险 syscall → EPERM）。
+ * 两者都是 fail-closed：内核不支持时返回负值，调用方 _exit(126)，不做静默降级。
+ * 详见 docs/design/m18-guest-kernel-hardening.md。
+ * ------------------------------------------------------------------------- */
+#ifdef __linux__
+
+/* Landlock uapi（不依赖 linux/landlock.h，避免 musl headers 版本差异）。 */
+#define DBX_LL_CREATE_RULESET_VERSION 1
+#define DBX_LL_RULE_PATH_BENEATH 1
+
+extern long syscall(long, ...);
+
+struct dbx_ll_ruleset_attr {
+    uint64_t handled_access_fs;
+};
+struct dbx_ll_path_beneath_attr {
+    uint64_t allowed_access;
+    int32_t parent_fd;
+} __attribute__((packed));
+
+#define LL_FS_EXECUTE (1ULL << 0)
+#define LL_FS_WRITE_FILE (1ULL << 1)
+#define LL_FS_READ_FILE (1ULL << 2)
+#define LL_FS_READ_DIR (1ULL << 3)
+#define LL_FS_REMOVE_DIR (1ULL << 4)
+#define LL_FS_REMOVE_FILE (1ULL << 5)
+#define LL_FS_MAKE_CHAR (1ULL << 6)
+#define LL_FS_MAKE_DIR (1ULL << 7)
+#define LL_FS_MAKE_REG (1ULL << 8)
+#define LL_FS_MAKE_SOCK (1ULL << 9)
+#define LL_FS_MAKE_FIFO (1ULL << 10)
+#define LL_FS_MAKE_BLOCK (1ULL << 11)
+#define LL_FS_MAKE_SYM (1ULL << 12)
+#define LL_FS_REFER (1ULL << 13) /* ABI >= 2 */
+#define LL_FS_TRUNCATE (1ULL << 14) /* ABI >= 3 */
+
+#ifndef __NR_landlock_create_ruleset
+#define __NR_landlock_create_ruleset 444
+#define __NR_landlock_add_rule 445
+#define __NR_landlock_restrict_self 446
+#endif
+
+static int dbx_landlock_add_rule(int ruleset_fd, const char *path, uint64_t access) {
+    int fd = open(path, O_PATH | O_CLOEXEC);
+    if (fd < 0) return -1;
+    struct dbx_ll_path_beneath_attr rule;
+    rule.allowed_access = access;
+    rule.parent_fd = fd;
+    long rc = syscall(__NR_landlock_add_rule, ruleset_fd, DBX_LL_RULE_PATH_BENEATH, &rule, 0);
+    close(fd);
+    return rc == 0 ? 0 : -1;
+}
+
+/** 返回 0 成功；负值分别代表不同失败点（fail-closed）。 */
+static int dbx_landlock_apply(void) {
+    long abi = syscall(__NR_landlock_create_ruleset, NULL, 0, DBX_LL_CREATE_RULESET_VERSION);
+    if (abi < 1) return -1;
+
+    const uint64_t write_bits = LL_FS_WRITE_FILE | LL_FS_REMOVE_DIR | LL_FS_REMOVE_FILE |
+                                LL_FS_MAKE_DIR | LL_FS_MAKE_REG | LL_FS_MAKE_SOCK |
+                                LL_FS_MAKE_FIFO | LL_FS_MAKE_BLOCK | LL_FS_MAKE_CHAR |
+                                LL_FS_MAKE_SYM;
+    uint64_t handled = LL_FS_EXECUTE | LL_FS_READ_FILE | LL_FS_READ_DIR | write_bits;
+    if (abi >= 2) handled |= LL_FS_REFER;
+    if (abi >= 3) handled |= LL_FS_TRUNCATE;
+
+    struct dbx_ll_ruleset_attr attr;
+    attr.handled_access_fs = handled;
+    int ruleset_fd = (int)syscall(__NR_landlock_create_ruleset, &attr, sizeof(attr), 0);
+    if (ruleset_fd < 0) return -2;
+
+    uint64_t rw = LL_FS_READ_FILE | LL_FS_READ_DIR | LL_FS_EXECUTE | write_bits;
+    if (abi >= 2) rw |= LL_FS_REFER;
+    if (abi >= 3) rw |= LL_FS_TRUNCATE;
+    uint64_t ro = LL_FS_READ_FILE | LL_FS_READ_DIR | LL_FS_EXECUTE;
+    uint64_t dev = LL_FS_READ_FILE | LL_FS_READ_DIR | LL_FS_WRITE_FILE;
+
+    /* 可写：workspace / tmp 全权；dev 只读写不造节点。
+     * /workspace 必须存在：缺失时 fail-closed（绝不回退成授予 "/" 读写）。 */
+    if (dbx_landlock_add_rule(ruleset_fd, "/workspace", rw) != 0) { close(ruleset_fd); return -3; }
+    (void)dbx_landlock_add_rule(ruleset_fd, "/tmp", rw);
+    (void)dbx_landlock_add_rule(ruleset_fd, "/dev", dev);
+    (void)dbx_landlock_add_rule(ruleset_fd, "/run", dev);
+
+    /* 只读系统目录（含执行权限，否则 execvp 找不到 loader）。 */
+    static const char *const ro_dirs[] = {
+        "/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc", "/proc", NULL
+    };
+    for (int i = 0; ro_dirs[i]; i++) (void)dbx_landlock_add_rule(ruleset_fd, ro_dirs[i], ro);
+
+    if (syscall(__NR_landlock_restrict_self, ruleset_fd, 0) != 0) { close(ruleset_fd); return -4; }
+    close(ruleset_fd);
+    return 0;
+}
+
+/** seccomp deny-list：命中返回 EPERM，未命中放行；非目标架构直接 KILL。 */
+static int dbx_seccomp_apply(void) {
+    static const int denied[] = {
+        __NR_mount, __NR_umount2, __NR_pivot_root, __NR_chroot,
+        __NR_unshare, __NR_setns, __NR_ptrace,
+        __NR_process_vm_readv, __NR_process_vm_writev, __NR_kcmp,
+        __NR_bpf, __NR_perf_event_open, __NR_userfaultfd,
+        __NR_init_module, __NR_finit_module, __NR_delete_module,
+#ifdef __NR_kexec_load
+        __NR_kexec_load,
+#endif
+#ifdef __NR_kexec_file_load
+        __NR_kexec_file_load,
+#endif
+        __NR_reboot, __NR_swapon, __NR_swapoff,
+        __NR_sethostname, __NR_setdomainname, __NR_acct,
+        __NR_settimeofday, __NR_clock_settime, __NR_adjtimex,
+#ifdef __NR_clock_adjtime
+        __NR_clock_adjtime,
+#endif
+        __NR_keyctl, __NR_add_key, __NR_request_key,
+        __NR_open_by_handle_at, __NR_name_to_handle_at,
+        __NR_syslog, __NR_fanotify_init,
+#ifdef __NR_lookup_dcookie
+        __NR_lookup_dcookie,
+#endif
+        __NR_personality,
+#ifdef __NR_iopl
+        __NR_iopl,
+#endif
+#ifdef __NR_ioperm
+        __NR_ioperm,
+#endif
+    };
+    enum { DENIED_COUNT = (int)(sizeof(denied) / sizeof(denied[0])) };
+
+#if defined(__aarch64__)
+    const uint32_t expected_arch = AUDIT_ARCH_AARCH64;
+#elif defined(__x86_64__)
+    const uint32_t expected_arch = AUDIT_ARCH_X86_64;
+#else
+    return -1;
+#endif
+
+    /* 4 (arch 校验 + load nr) + 2*N (deny) + 1 (default allow) */
+    struct sock_filter filter[5 + 2 * DENIED_COUNT];
+    int i = 0;
+    filter[i++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                               offsetof(struct seccomp_data, arch));
+    filter[i++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, expected_arch, 1, 0);
+    filter[i++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
+    filter[i++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                               offsetof(struct seccomp_data, nr));
+    for (int d = 0; d < DENIED_COUNT; d++) {
+        filter[i++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (uint32_t)denied[d], 0, 1);
+        filter[i++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K,
+                                                   SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
+    }
+    filter[i++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+
+    struct sock_fprog prog;
+    prog.len = (unsigned short)i;
+    prog.filter = filter;
+    if (syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) != 0) return -2;
+    return 0;
+}
+
+#else /* !__linux__ */
+static int dbx_landlock_apply(void) { return 0; }
+static int dbx_seccomp_apply(void) { return 0; }
+#endif /* __linux__ */
+
 static int install_exec_hardening(int timeout_seconds) {
 #ifdef __linux__
     enum { SVC_UID = 65534, SVC_GID = 65534 };
@@ -151,6 +324,9 @@ static int install_exec_hardening(int timeout_seconds) {
     if (setreuid(SVC_UID, SVC_UID) != 0) return -8;
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -9;
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) return -10;
+    // M18：内核级纵深（no_new_privs 之后才能装）。任一步失败即 fail-closed。
+    if (dbx_landlock_apply() != 0) return -11;
+    if (dbx_seccomp_apply() != 0) return -12;
     // Environment: forced whitelist, later requests only get these defaults.
     static char *const default_env[] = {
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
