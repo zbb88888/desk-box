@@ -60,3 +60,24 @@ docker run --rm ... -e SOURCE_DATE_EPOCH
 ## 4. 安全决策
 - 复构为 supply-chain 的装弹语言：同的 commit、同的 machine 必出同的文件；差异不代表应被许可进正规验证；
 - builtAtUtc 与 commit 时间关联；CI/复跑一致的结果才是可信状态。
+## 9. 复现缺陷修复（M22 期间，CI 实测触发）
+
+CI 的 `repro-check` job 在 `root-disk.raw` 上报不一致，定位到三层真实原因：
+
+| # | 根因 | 现象 | 修复 |
+|---|---|---|---|
+| 1 | `mke2fs` 用**当前时钟**写 `s_mkfs_time` / `s_wtime` / `s_lastcheck` 以及每个 inode 的 `ctime`/`crtime` | 两次构建差 2 秒的字节 | 用 `libfaketime` 把 mke2fs 的时钟钉到 `SOURCE_DATE_EPOCH` |
+| 2 | `s_hash_seed`（`sb+0xEC`，16 字节）由 mke2fs **随机生成**，且**每个备份 superblock 各有一份** | 0xEC 处 16 字节随机 | 在**主 + 全部备份** superblock 上清零 `s_hash_seed`/时间字段 |
+| 3 | 原脚本硬编码 4k-block 备份块号（32768/98304），且 Alpine 的 `dumpe2fs` 属于 `e2fsprogs-extra` 包 | 备份块从未被清理（且解析失败时静默 fallback） | 从 `dumpe2fs` 动态解析块大小与备份块号；`dumpe2fs` 缺失时 **fail-closed** |
+
+验证（Apple Silicon，`SOURCE_DATE_EPOCH` 固定为 HEAD 提交时间）：
+
+```
+REPRO-OK vmlinuz-virt
+REPRO-OK initrd-deskbox.img
+REPRO-OK root-disk.raw
+REPRO-OK sbom.json
+```
+
+另外 `security-corpus` job 从 `macos-14`（自带 Swift 5.10）改到 `macos-15`，
+否则 `swift test` 会因 `swift-tools-version 6.0` 与工具链不匹配而失败。

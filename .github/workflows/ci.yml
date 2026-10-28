@@ -87,7 +87,9 @@ jobs:
           if-no-files-found: ignore
 
   security-corpus:
-    runs-on: macos-14
+    # Package.swift 要求 swift-tools-version 6.0；macos-14 runner 自带 Swift 5.10 会在
+    # `swift test` 阶段直接报 "using Swift tools version 6.0.0 but the installed version is 5.10.0"。
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Swift test (security corpora, host-side)

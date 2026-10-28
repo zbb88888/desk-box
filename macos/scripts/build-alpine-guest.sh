@@ -60,7 +60,7 @@ docker run --rm \
   -v "$OUT_DIR:/out" \
   "alpine:${ALPINE_VERSION%.*}" \
   sh -eu -c '
-    apk add --no-cache e2fsprogs curl gcc musl-dev linux-headers busybox-static dpkg libsodium-dev libsodium-static cpio >/dev/null
+    apk add --no-cache e2fsprogs e2fsprogs-extra libfaketime curl gcc musl-dev linux-headers busybox-static dpkg libsodium-dev libsodium-static cpio >/dev/null
     # The Debian installer initrd is intentionally small and does not contain
     # virtio-blk/VSOCK transport modules. Fetch the matching Debian module set
     # for the direct kernel used by VZ; the host never trusts guest claims.
@@ -119,24 +119,45 @@ EOF
     find /tmp/rootfs -exec touch -h -t "$TS_TOUCH" {} +
     truncate -s "${ROOT_SIZE_MB}M" /out/root-disk.raw
     # e2fsprogs deterministic variant：无 journal + 无 metadata_csum + test_fs。
-    mke2fs -q -t ext4 -F -d /tmp/rootfs \
-      -O ^has_journal,^metadata_csum \
-      -E test_fs \
-      -U 00000000-0000-0000-0000-000000000000 \
-      /out/root-disk.raw
-    # 确定性后处理（e2fsprogs journal-salt 与 few-byte timestamps）：
-    # jnl 区域段清空（journal uuid + blocks slots），完全避开 s_desc_size 与其他 feature 字段：
-    # 非随机查才信的点：journal_uuid = sb+0xF0..0xFF (相间 1264..1279)。
-    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1264 count=16 conv=notrunc status=none
-    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1296 count=20 conv=notrunc status=none
-    dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=1068 count=12 conv=notrunc status=none
-    # 备份 superblock 同处理（避开 desc_size/其他 feature 字段）：
-    for blk in 32768 98304; do
-      start=$((blk * 4096))
-      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 240)) count=16 conv=notrunc status=none 2>/dev/null || true
-      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 272)) count=20 conv=notrunc status=none 2>/dev/null || true
-      dd if=/dev/zero of=/out/root-disk.raw bs=1 seek=$((start + 44)) count=12 conv=notrunc status=none 2>/dev/null || true
+    #
+    # M22 repro 修复（CI repro-check 实测失败后定位）：
+    # 1) mke2fs 会给 s_mkfs_time / s_wtime / s_lastcheck 以及每个 inode 的
+    #    ctime/crtime 写入「当前时钟」。只 zero 几个偏移不敢信——用 libfaketime
+    #    把整个 mke2fs 的时钟钉死到 SOURCE_DATE_EPOCH，从源头消除。
+    # 2) s_hash_seed（sb+0xEC, 16 字节）是随机生成的，且**每个备份 superblock
+    #    各有一份**。原先只处理 4k-block 的备份块（32768/98304），漏掉了全部备份
+    #    的 hash_seed，这就是 CI 上 root-disk.raw 两次构建不一致的根因。
+    FAKE_TIME="$(date -u -d "@${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M:%S" 2>/dev/null \
+      || date -u -r "${SOURCE_DATE_EPOCH}" "+%Y-%m-%d %H:%M:%S")"
+    FAKETIME_NO_CACHE=1 FAKETIME_DONT_FAKE_MONOTONIC=1 FAKETIME="$FAKE_TIME" \
+      LD_PRELOAD=/usr/lib/faketime/libfaketimeMT.so.1 \
+      mke2fs -q -t ext4 -F -d /tmp/rootfs \
+        -O ^has_journal,^metadata_csum \
+        -E test_fs \
+        -U 00000000-0000-0000-0000-000000000000 \
+        /out/root-disk.raw
+
+    # 确定性后处理：清空 s_hash_seed（主 + 全部备份 superblock）。
+    # 备份 superblock 的块号由 fs 块大小决定，这里从 dumpe2fs 读取而不是硬编码。
+    zero_at() { dd if=/dev/zero of=/out/root-disk.raw bs=1 seek="$1" count="$2" conv=notrunc status=none; }
+    # 注意：整段脚本被外层单引号包住（sh -eu -c '...'），这里只能用双引号/awk。
+    # dumpe2fs 在 Alpine 属于 e2fsprogs-extra；缺了就 fail-closed，
+    # 否则会「只清主 superblock」而静默产出不可复现的镜像（正是 CI 失败的成因）。
+    command -v dumpe2fs >/dev/null 2>&1 || { echo "FATAL: dumpe2fs 缺失（需要 e2fsprogs-extra），无法归一备份 superblock" >&2; exit 1; }
+    BLOCK_SIZE=$(dumpe2fs /out/root-disk.raw 2>/dev/null | awk -F: "/^Block size/{gsub(/ /,\"\",\$2); print \$2}")
+    [ -n "$BLOCK_SIZE" ] || { echo "FATAL: 无法解析 ext4 块大小" >&2; exit 1; }
+    SB_OFFSETS="1024"
+    for blk in $(dumpe2fs /out/root-disk.raw 2>/dev/null | awk "/Backup superblock at/{print \$4}" | tr -d ","); do
+      SB_OFFSETS="$SB_OFFSETS $((blk * BLOCK_SIZE))"
     done
+    echo "ext4 block_size=$BLOCK_SIZE superblock_copies=$(echo $SB_OFFSETS | wc -w)"
+    for base in $SB_OFFSETS; do
+      zero_at $((base + 236)) 16   # s_hash_seed
+      zero_at $((base + 44)) 8     # s_mtime + s_wtime
+      zero_at $((base + 64)) 4     # s_lastcheck
+      zero_at $((base + 264)) 4    # s_mkfs_time
+    done
+    rm -f /out/root-disk.raw.tmp
 
     rm -rf /tmp/initrd
     mkdir -p /tmp/initrd

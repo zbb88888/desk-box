@@ -1,0 +1,10 @@
+{
+  "generatedAtUtc": "2026-10-28T08:35:00Z",
+  "commit": "25d5580",
+  "platform": "Darwin arm64",
+  "hostOnly": true,
+  "results": [
+    {"corpus":"inv-05-06-inv-04-host","kind":"host","ok":true,"assertions":32}
+  ],
+  "fail": 0
+}

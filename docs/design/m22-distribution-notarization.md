@@ -135,6 +135,11 @@ swift build -c release (GUI + dbx-poc)
 2. **`codesign -dv … | grep -q` 在 `pipefail` 下误判**：grep 提前退出 → codesign 吃 SIGPIPE → 管道失败 → 被当成「没有 hardened runtime」。修：先捕获输出再 grep。
 3. **`gen-release-key --output-key X` 的 release-keys.json 落在 `dirname(X)/release-keys.json`**，`X` 本身是**私钥**；`publish --release-keys X` 会因读到 `private:…` 而 JSON 解析失败。另外 manifest 必须用 **release key** 签名（publish 要求 signature keyID 在 active release key 里），不能用独立的 guest 签名 key。
 
+### 顺带修复的两处 CI 真实失败
+
+1. **`repro-check`（root-disk.raw 不可复现）**：mke2fs 的时钟字段 + 备份 superblock 的随机 `hash_seed`。详见 `m10-reproducible-build.md` §9。修复后四资产双跑 `REPRO-OK`。
+2. **`security-corpus`（工具链不匹配）**：`macos-14` runner 自带 Swift 5.10，而 `Package.swift` 要求 tools 6.0 → 改 `macos-15`。
+
 ### GUI 侧变化
 
 - 新增 `BundlePaths.swift`：helper 解析顺序改为「`Contents/MacOS/dbx-poc`（分发包）→ `.build/release/dbx-poc`（开发包）」，与 M17 的 bundle 相对解析兼容。
