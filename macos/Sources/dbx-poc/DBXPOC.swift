@@ -51,6 +51,10 @@ struct DBXPOC {
                 try publishReleaseChannel(args: Array(args.dropFirst()))
             case "verify-channel":
                 try verifyReleaseChannel(args: Array(args.dropFirst()))
+            case "version":
+                try printVersion()
+            case "check-update":
+                try checkUpdate(args: Array(args.dropFirst()))
             case "launch":
                 try await launch(args: Array(args.dropFirst()))
             case "sweep":
@@ -637,6 +641,67 @@ struct DBXPOC {
         guard let value = try optionString(name, in: args) else { return nil }
         guard let int = Int(value) else { throw CLIError.usage("invalid value for \(name)") }
         return int
+    }
+
+    // MARK: - M22 分发
+
+    /// 当前构建的版本信息（编译期注入，缺省 `0.0.0-dev`）。
+    private static func printVersion() throws {
+        struct VersionInfo: Encodable {
+            let schema = "deskbox-version/v1"
+            let version: String
+            let build: String
+            let bundleIdentifier: String
+            let gitCommit: String
+            let hostArchitecture: String
+            let guestAssetVersion: Int
+        }
+        let info = VersionInfo(version: DeskBoxVersion.semver,
+                               build: DeskBoxVersion.build,
+                               bundleIdentifier: DeskBoxVersion.bundleIdentifier,
+                               gitCommit: DeskBoxVersion.gitCommit,
+                               hostArchitecture: DeskBoxVersion.hostArchitecture,
+                               guestAssetVersion: DeskBoxVersion.guestAssetVersion)
+        print(String(decoding: try JSONEncoder.pretty.encode(info), as: UTF8.self))
+    }
+
+    /// M22：更新检查。只读 channel 公开内容，回滚/未签名/撤销 key 一律拒绝。
+    private static func checkUpdate(args: [String]) throws {
+        guard let channelPath = try optionString("--channel", in: args)
+                ?? args.first(where: { !$0.hasPrefix("--") }) else {
+            throw CLIError.usage("dbx-poc check-update --channel <channel.json> [--current-version <semver>] [--json]")
+        }
+        let current = try optionString("--current-version", in: args) ?? DeskBoxVersion.semver
+        let asJSON = args.contains("--json")
+        let url = URL(fileURLWithPath: channelPath)
+        do {
+            let result = try UpdateChecker.check(channelURL: url, currentVersion: current)
+            emit(result, asJSON: asJSON)
+        } catch {
+            let refusal = UpdateChecker.refusal(currentVersion: current, error: error)
+            emit(refusal, asJSON: asJSON)
+            // fail-closed：拒绝必须以非零退出码表达，避免被脚本当成「无更新」。
+            exit(3)
+        }
+    }
+
+    private static func emit(_ result: UpdateCheckResult, asJSON: Bool) {
+        if asJSON {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(result) {
+                print(String(decoding: data, as: UTF8.self))
+                return
+            }
+        }
+        switch result.decision {
+        case .available:
+            print("update available: \(result.currentVersion) -> \(result.remoteVersion ?? "?") (\(result.releaseTag ?? "?"))")
+        case .upToDate:
+            print("up-to-date: \(result.currentVersion)")
+        case .rollback:
+            print("update refused: \(result.reason ?? "unknown")")
+        }
     }
 
     private static func sweep(args: [String]) throws {

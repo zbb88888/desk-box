@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*-alpha*"
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 env:
   ALPINE_VERSION: "3.21.3"
@@ -142,3 +143,101 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
+
+  # M22：可分发 app + DMG + 公证（docs/design/m22-distribution-notarization.md）
+  app:
+    runs-on: macos-latest
+    needs: publish
+    permissions:
+      contents: write
+    env:
+      # 正式 tag 必须公证：缺 secrets 直接失败，不产出「看起来像正式版」的 dev 包。
+      REQUIRE_NOTARIZATION: ${{ contains(github.ref_name, 'alpha') && '0' || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          (sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer) || \
+          (sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer) || true
+          xcodebuild -version
+
+      - name: Download guest assets
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-assets
+          path: macos/
+
+      - name: Resolve version
+        id: ver
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "build=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID certificate
+        if: env.REQUIRE_NOTARIZATION == '1' || github.event_name == 'push'
+        env:
+          P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ]; then
+            echo "::warning::未配置 MACOS_DEVELOPER_ID_P12_BASE64；正式 tag 将在打包阶段 fail-closed"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/dbx-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Store notarytool credentials
+        if: env.REQUIRE_NOTARIZATION == '1'
+        env:
+          APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.MACOS_NOTARY_APP_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_APP_PASSWORD" ]; then
+            echo "::error::正式 tag 需要公证凭据（MACOS_NOTARY_APPLE_ID / MACOS_NOTARY_TEAM_ID / MACOS_NOTARY_APP_PASSWORD）"
+            exit 1
+          fi
+          xcrun notarytool store-credentials "dbx-ci" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+
+      - name: Package app + DMG
+        run: |
+          cd macos
+          VERSION="${{ steps.ver.outputs.version }}" \
+          BUILD="${{ steps.ver.outputs.build }}" \
+            ./scripts/package-app.sh 2>&1 | tee /tmp/package.log
+          DMG=$(ls gui/dist/DeskBox-*.dmg | head -1)
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+
+      - name: Notarize + staple
+        if: env.REQUIRE_NOTARIZATION == '1'
+        run: |
+          cd macos
+          NOTARY_PROFILE=dbx-ci ./scripts/notarize.sh "$DMG"
+          NOTARY_PROFILE=dbx-ci ./scripts/notarize.sh gui/dist/DeskBox.app
+
+      - name: Verify distribution (e2e)
+        run: |
+          cd macos
+          VERSION="${{ steps.ver.outputs.version }}" ./scripts/e2e-distribution.sh
+
+      - name: Upload DMG to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            macos/gui/dist/DeskBox-*.dmg
+            macos/gui/dist/SHA256SUMS
+          tag_name: ${{ github.ref_name }}

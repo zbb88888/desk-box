@@ -10,3 +10,6 @@ macos/guest/
 # private keys must never be committed, even for development.
 macos/Resources/tls-dev/
 \n# Generated dev signing public key (from dev-sign-key.local, gitignored)\\nmacos/Sources/DeskBoxVZ/DevSigningPublicKey.generated.swift\n
+
+# M22: packaged app / DMG / checksums are build outputs, never commit.
+macos/gui/dist/

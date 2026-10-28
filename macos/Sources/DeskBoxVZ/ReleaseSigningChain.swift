@@ -82,4 +82,15 @@ public extension ReleaseKeysManifest {
     var activeKeyIDs: [String] {
         keys.filter { $0.status == .active }.map(\.keyID)
     }
+
+    /// M22：判断单把 key 在给定时刻是否可用于「发布面」验证（active/retired 且在有效期内）。
+    static func isUsable(_ key: Key, at date: Date = Date()) -> Bool {
+        guard key.status != .revoked else { return false }
+        let fmt = ISO8601DateFormatter()
+        if let notBefore = fmt.date(from: key.notBefore), date < notBefore { return false }
+        if let notAfterStr = key.notAfter, let notAfter = fmt.date(from: notAfterStr), date >= notAfter {
+            return false
+        }
+        return true
+    }
 }

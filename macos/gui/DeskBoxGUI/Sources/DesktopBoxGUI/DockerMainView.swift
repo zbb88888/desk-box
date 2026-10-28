@@ -14,23 +14,13 @@ struct DockerMainView: View {
     /// M17 hotfix：宿主可定制的 dbx-poc 解析。 order:
     /// 1. 偏好 dbxPath 覆盖；2. 相对 app bundle (gui/dist/DeskBox.app → macos/.build/release/dbx-poc)；3. cwd/.build/release/dbx-poc
     private func resolvedDbxPath() -> String {
-        if !dbxPathOverride.isEmpty { return dbxPathOverride }
-        let bundleRoot = Bundle.main.bundleURL
-            .deletingLastPathComponent()  // dist/
-            .deletingLastPathComponent()  // gui/
-            .deletingLastPathComponent()  // macos/
-        let viaBundle = bundleRoot.path + "/.build/release/dbx-poc"
-        if FileManager.default.isExecutableFile(atPath: viaBundle) { return viaBundle }
-        return FileManager.default.currentDirectoryPath + "/.build/release/dbx-poc"
+        BundlePaths.dbxPOC(override: dbxPathOverride)
+            ?? FileManager.default.currentDirectoryPath + "/.build/release/dbx-poc"
     }
 
     private func resolvedManifestPath() -> String {
         if !manifestPath.isEmpty { return manifestPath }
-        let bundleRoot = Bundle.main.bundleURL
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let viaBundle = bundleRoot.path + "/guest/manifest.json"
-        if FileManager.default.fileExists(atPath: viaBundle) { return viaBundle }
-        return FileManager.default.currentDirectoryPath + "/guest/manifest.json"
+        return BundlePaths.defaultManifestPath
     }
     @State private var terminalSandboxId: String?
     @State private var consoleSandboxId: String?

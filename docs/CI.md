@@ -14,3 +14,22 @@
 3. 走 `dbx-poc validate-assets --release-keys ./guest/release-keys.json` 隧道；
 4. 需要 release 签名链后执行按 M5 的 rotate/revoke 操作并更新 `guest/release-keys.json`；
 5. Windows phase（后续架需显示在分支演示层）。
+## M22 分发/公证流水线
+
+`release.yml` 新增 `app` job（在 `publish` 之后）：
+
+| 步骤 | 作用 | 缺 secrets 时 |
+|---|---|---|
+| Import Developer ID certificate | 导入 `MACOS_DEVELOPER_ID_P12_BASE64` | 警告，继续 |
+| Store notarytool credentials | 用 Apple ID + Team ID + app-specific password 建 `dbx-ci` profile | **正式 tag 直接失败** |
+| Package app + DMG | `scripts/package-app.sh`（版本来自 tag） | `REQUIRE_NOTARIZATION=1` 时拒绝产出 ad-hoc 包 |
+| Notarize + staple | `scripts/notarize.sh`（仅正式 tag） | — |
+| Verify distribution | `scripts/e2e-distribution.sh`（39 断言） | — |
+
+需要的 secrets：
+
+- `MACOS_DEVELOPER_ID_P12_BASE64` / `MACOS_DEVELOPER_ID_P12_PASSWORD` — Developer ID Application 证书
+- `MACOS_NOTARY_APPLE_ID` / `MACOS_NOTARY_TEAM_ID` / `MACOS_NOTARY_APP_PASSWORD` — 公证凭据
+
+语义：**alpha tag → dev 通道（未公证，DMG 带 `-dev` 后缀）；正式 tag → 必须公证，否则 job 失败**。
+这是防止「以为发了公证版其实是 ad-hoc」的唯一可靠闸门。
