@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <poll.h>
 #include <pty.h>
@@ -400,6 +401,26 @@ static int cgroup2_ready = 0;
 static int cgroup_counter = 0;
 static char cgroup_dir[128];
 
+/** M21：尽早挂载 cgroup2，使 stats 在第一个 exec 之前也可用。 */
+static int cgroup2_mount_early(void) {
+#ifdef __linux__
+    if (cgroup2_ready) return 0;
+    (void)mkdir("/sys/fs/cgroup", 0755);
+    if (mount("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, NULL) != 0 && errno != EBUSY) return -1;
+    int sc = open("/sys/fs/cgroup/cgroup.subtree_control", O_WRONLY);
+    if (sc >= 0) {
+        static const char v[] = "+cpu +memory +pids";
+        ssize_t w = write(sc, v, sizeof(v) - 1);
+        (void)w;
+        close(sc);
+    }
+    cgroup2_ready = 1;
+    return 0;
+#else
+    return 0;
+#endif
+}
+
 static int cgroup_prepare(void) {
 #ifdef __linux__
     if (!cgroup2_ready) {
@@ -452,6 +473,151 @@ static int cgroup_add(pid_t pid) {
     return w == n ? 0 : -2;
 #else
     (void)pid; return 0;
+#endif
+}
+
+/* M21：只读采集所有 dbx-exec-* cgroup 的资源用量（诊断用途，非安全边界）。 */
+static unsigned long long cg_read_u64(const char *path, const char *key, int *found) {
+    FILE *f = fopen(path, "re");
+    if (!f) return 0;
+    char line[256];
+    unsigned long long total = 0;
+    int hit = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (key) {
+            size_t klen = strlen(key);
+            if (strncmp(line, key, klen) != 0) continue;
+            const char *p = line + klen;
+            while (*p == ' ' || *p == '\t') p++;
+            total = strtoull(p, NULL, 10);
+            hit = 1;
+        } else {
+            total = strtoull(line, NULL, 10);
+            hit = 1;
+        }
+        break;
+    }
+    fclose(f);
+    if (found) *found = hit;
+    return total;
+}
+
+/** 从 memory.stat 求和给定 key 的多个字段（回退路径：root cgroup 无 memory.current 时）。 */
+static unsigned long long memstat_sum(const char *path, const char *const *keys, int nkeys, int *found) {
+    FILE *f = fopen(path, "re");
+    if (!f) return 0;
+    unsigned long long total = 0;
+    int hit = 0;
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        for (int i = 0; i < nkeys; i++) {
+            size_t klen = strlen(keys[i]);
+            if (strncmp(line, keys[i], klen) == 0 && line[klen] == ' ') {
+                total += strtoull(line + klen + 1, NULL, 10);
+                hit = 1;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    if (found) *found = hit;
+    return total;
+}
+
+static int dir_has_prefix(const char *name, const char *prefix) {
+    return strncmp(name, prefix, strlen(prefix)) == 0;
+}
+
+/** 生成 stats JSON；调用方负责 buffer。返回写入长度，失败返回负值。
+ *
+ * 语义（诚实标注）：
+ *  - 数值取自 **根 cgroup**（= 整个 sandbox VM），因此空闲沙箱也有可用数据；
+ *  - cgroup v2 父级已包含子级用量，故不再叠加 dbx-exec-* 子组，避免重复计数；
+ *  - activeExecGroups 只作为活动度提示，不是资源数值。
+ */
+static int collect_stats_json(char *out, size_t cap) {
+#ifdef __linux__
+    /* 根 cgroup 必须可读；不可读说明 cgroup2 未挂载，按观测失败上报。 */
+    int cpu_found = 0;
+    unsigned long long cpu_total = cg_read_u64("/sys/fs/cgroup/cpu.stat", "usage_usec", &cpu_found);
+    int mem_found = 0;
+    unsigned long long mem_total = cg_read_u64("/sys/fs/cgroup/memory.current", NULL, &mem_found);
+    if (!mem_found) {
+        /* 回退：部分内核在 root cgroup 不暴露 memory.current，用 memory.stat 合成。
+         * 语义差异已写进文档：这是 anon+file 的即时和，不是 memory.current。 */
+        static const char *const mem_keys[] = {"anon", "file"};
+        mem_total = memstat_sum("/sys/fs/cgroup/memory.stat", mem_keys, 2, &mem_found);
+    }
+    int pids_found = 0;
+    unsigned long long pids_total = cg_read_u64("/sys/fs/cgroup/pids.current", NULL, &pids_found);
+
+    if (!cpu_found && !mem_found && !pids_found) {
+        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\"}");
+        return n > 0 ? n : -1;
+    }
+
+    /* memory.max 可能是字面量 "max"（无限制），此时上报 null。 */
+    unsigned long long mem_max = 0;
+    int mem_max_seen = 0;
+    {
+        FILE *f = fopen("/sys/fs/cgroup/memory.max", "re");
+        if (f) {
+            char line[64] = {0};
+            if (fgets(line, sizeof(line), f) && strncmp(line, "max", 3) != 0) {
+                mem_max = strtoull(line, NULL, 10);
+                mem_max_seen = 1;
+            }
+            fclose(f);
+        }
+    }
+    unsigned long long pids_max = 0;
+    int pids_max_seen = 0;
+    {
+        FILE *f = fopen("/sys/fs/cgroup/pids.max", "re");
+        if (f) {
+            char line[64] = {0};
+            if (fgets(line, sizeof(line), f) && strncmp(line, "max", 3) != 0) {
+                pids_max = strtoull(line, NULL, 10);
+                pids_max_seen = 1;
+            }
+            fclose(f);
+        }
+    }
+
+    /* 活动 exec 子组计数（提示活动度，不参与数值）。 */
+    int groups = 0;
+    DIR *d = opendir("/sys/fs/cgroup");
+    if (d) {
+        struct dirent *entry;
+        while ((entry = readdir(d)) != NULL) {
+            if (dir_has_prefix(entry->d_name, "dbx-exec-")) groups++;
+        }
+        closedir(d);
+    }
+
+    char cpu_json[32], mem_json[32], pids_json[32];
+    char mem_max_json[32], pids_max_json[32];
+    /* 无数据一律 null（0 会被误读为“无消耗”）。 */
+    if (cpu_found) snprintf(cpu_json, sizeof(cpu_json), "%llu", cpu_total);
+    else snprintf(cpu_json, sizeof(cpu_json), "null");
+    if (mem_found) snprintf(mem_json, sizeof(mem_json), "%llu", mem_total);
+    else snprintf(mem_json, sizeof(mem_json), "null");
+    if (pids_found) snprintf(pids_json, sizeof(pids_json), "%llu", pids_total);
+    else snprintf(pids_json, sizeof(pids_json), "null");
+    if (mem_max_seen && mem_max < (1ULL << 62)) snprintf(mem_max_json, sizeof(mem_max_json), "%llu", mem_max);
+    else snprintf(mem_max_json, sizeof(mem_max_json), "null");
+    if (pids_max_seen) snprintf(pids_max_json, sizeof(pids_max_json), "%llu", pids_max);
+    else snprintf(pids_max_json, sizeof(pids_max_json), "null");
+
+    int n = snprintf(out, cap,
+                     "{\"cpuUsageUsec\":%s,\"memoryCurrentBytes\":%s,"
+                     "\"memoryMaxBytes\":%s,\"pidsCurrent\":%s,\"pidsMax\":%s,"
+                     "\"activeExecGroups\":%d}",
+                     cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups);
+    return n > 0 ? n : -1;
+#else
+    (void)out; (void)cap;
+    return -1;
 #endif
 }
 
@@ -1049,7 +1215,8 @@ int main(void) {
         (void)mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
         (void)mkdir("/dev/pts", 0755);
         (void)mount("devpts", "/dev/pts", "devpts", 0, NULL);
-
+        // M21：尽早挂 cgroup2，使 stats 在首个 exec 之前就有数据。
+        (void)cgroup2_mount_early();
     }
     char cmd[4096] = {0};
     FILE *f = fopen("/proc/cmdline", "r");
@@ -1318,6 +1485,13 @@ int main(void) {
                                          "exit", NULL, 0, 137, SIGKILL, request_id);
                     pty.pid = -1;
                     pty.id = 0;
+                }
+            } else if (kind == 24) { /* M21 statsRequest */
+                char stats_json[512];
+                int slen = collect_stats_json(stats_json, sizeof(stats_json));
+                if (slen > 0) {
+                    (void)send_any_frame(fd, record_mode, 25, response_sequence++, request_id,
+                                         stats_json, (size_t)slen);
                 }
             } else if (kind == 14) { /* wsBegin */
                 struct ws_session n;

@@ -83,6 +83,39 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     case brokerData = 22
     /// Host -> guest: 拉取终报（status/ok/error）。
     case brokerEnd = 23
+    /// Host -> guest: 资源统计请求（M21）。payload 为空对象。
+    case statsRequest = 24
+    /// Guest -> host: 资源统计响应（M21）。payload 为 SandboxStats JSON。
+    case statsResponse = 25
+}
+
+/// M21：guest cgroup v2 采样（只读、诊断用途，不构成安全边界）。
+public struct SandboxStats: Sendable, Codable, Equatable {
+    /// cgroup 累计 CPU 微秒（cpu.stat usage_usec）。
+    public let cpuUsageUsec: UInt64?
+    /// 瞬时内存占用（memory.current）。
+    public let memoryCurrentBytes: UInt64?
+    /// 内存上限（memory.max；为 nil 表示无限制）。
+    public let memoryMaxBytes: UInt64?
+    /// 当前进程数（pids.current）。
+    public let pidsCurrent: Int?
+    public let pidsMax: Int?
+    /// 活动 exec 子组计数（活动度提示，不参与资源数值）。
+    public let activeExecGroups: Int?
+    /// 采集失败原因；成功后为 nil。
+    public let statsError: String?
+
+    public init(cpuUsageUsec: UInt64?, memoryCurrentBytes: UInt64?, memoryMaxBytes: UInt64?,
+                pidsCurrent: Int?, pidsMax: Int?, activeExecGroups: Int? = nil,
+                statsError: String? = nil) {
+        self.cpuUsageUsec = cpuUsageUsec
+        self.memoryCurrentBytes = memoryCurrentBytes
+        self.memoryMaxBytes = memoryMaxBytes
+        self.pidsCurrent = pidsCurrent
+        self.pidsMax = pidsMax
+        self.activeExecGroups = activeExecGroups
+        self.statsError = statsError
+    }
 }
 
 // MARK: - Broker online channel messages (M2-3b)

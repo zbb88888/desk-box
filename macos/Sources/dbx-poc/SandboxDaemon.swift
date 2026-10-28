@@ -41,6 +41,8 @@ struct DaemonResponse: Codable {
     var stderr: String? = nil
     var sandboxes: [SandboxInfo]? = nil
     var pid: Int32? = nil
+    /// M21：资源采样（诊断）。
+    var stats: SandboxStats? = nil
 }
 
 struct SandboxInfo: Codable {
@@ -195,6 +197,8 @@ final class SandboxDaemon {
             return try self.dispatchWsSync(request)
         case "consoleLog":
             return try self.dispatchConsoleLog(request)
+        case "stats":
+            return try self.dispatchStats(request)
         case "restart":
             return try self.dispatchRestart(request)
         case "shutdown":
@@ -321,6 +325,22 @@ final class SandboxDaemon {
                               exitCode: response.exitCode, stdout: response.stdout, stderr: response.stderr)
     }
 
+
+    /// M21：资源统计。观测面 fail-soft：失败时 stats.statsError 有值但不抛错。
+    private func dispatchStats(_ request: DaemonRequest) throws -> DaemonResponse {
+        guard let sandboxId = request.sandboxId, let session = self.sessions[sandboxId] else {
+            throw CLIError.usage("stats: sandbox not found: \(request.sandboxId ?? "nil")")
+        }
+        do {
+            let stats = try runBlocking { try await session.runtime.stats(session.handle) }
+            return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running", stats: stats)
+        } catch {
+            let soft = SandboxStats(cpuUsageUsec: nil, memoryCurrentBytes: nil, memoryMaxBytes: nil,
+                                    pidsCurrent: nil, pidsMax: nil,
+                                    statsError: error.localizedDescription)
+            return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running", stats: soft)
+        }
+    }
 
     /// M16:consoleLog——返回 guest serial 的母/落到界 健康/联系 read 的置或。不构 Staging。
     private func dispatchConsoleLog(_ request: DaemonRequest) throws -> DaemonResponse {

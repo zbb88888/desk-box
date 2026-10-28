@@ -45,6 +45,7 @@ struct DockerMainView: View {
             List(selection: $selection) {
                 Label("Sandboxes", systemImage: "shippingbox").tag("sandboxes")
                 Label("Manifests", systemImage: "square.stack.3d.up").tag("manifests")
+                Label("Stats", systemImage: "chart.bar").tag("stats")
                 Label("Settings", systemImage: "gear").tag("settings")
             }
             .navigationTitle("Desk Box")
@@ -55,6 +56,8 @@ struct DockerMainView: View {
             case "manifests":
                 ManifestsPanel(manifestDir: manifestDir, isDaemonOn: daemonManager.status == .connected,
                                onRun: { path in run(manifestPath: path) })
+            case "stats":
+                StatsPanel(client: viewModel.client, viewModel: viewModel)
             default:
                 SettingsPanel(client: viewModel.client, log: LogStore.shared)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

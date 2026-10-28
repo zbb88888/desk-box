@@ -27,6 +27,7 @@ struct DaemonResponse: Codable {
     let ok: Bool
     var ptySessionId: String? = nil
     var outputHex: String? = nil
+    var stats: SandboxStats? = nil
     var running: Bool? = nil
     var error: String? = nil
     var sandboxId: String? = nil
@@ -36,6 +37,17 @@ struct DaemonResponse: Codable {
     var stderr: String? = nil
     var sandboxes: [SandboxInfo]? = nil
     var pid: Int32? = nil
+}
+
+/// M21：guest 资源采样（诊断用途）。
+struct SandboxStats: Codable {
+    var cpuUsageUsec: UInt64? = nil
+    var memoryCurrentBytes: UInt64? = nil
+    var memoryMaxBytes: UInt64? = nil
+    var pidsCurrent: Int? = nil
+    var pidsMax: Int? = nil
+    var activeExecGroups: Int? = nil
+    var statsError: String? = nil
 }
 
 struct SandboxInfo: Codable, Identifiable {

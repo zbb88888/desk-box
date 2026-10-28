@@ -66,6 +66,7 @@ struct DBXPOC {
             case "shutdown": try daemonShutdownCli(args: Array(args.dropFirst()))
             case "restart": try daemonRestartCli(args: Array(args.dropFirst()))
             case "console": try daemonConsoleCli(args: Array(args.dropFirst()))
+            case "stats": try daemonStatsCli(args: Array(args.dropFirst()))
             case "help", "-h", "--help":
                 printUsage()
             default:
@@ -835,6 +836,38 @@ private extension DBXPOC {
             j = hex.index(j, offsetBy: 2)
         }
         print(String(data: bytes, encoding: .utf8) ?? "<binary \(bytes.count)B>")
+    }
+
+    /// M21：资源统计（--json 输出机器可读）。
+    static func daemonStatsCli(args: [String]) throws {
+        let sock = (try? optionString("--daemon-sock", in: args))
+        let asJSON = args.contains("--json")
+        var rest: [String] = []
+        var i = 0
+        while i < args.count {
+            if args[i] == "--daemon-sock" { i += 2 } else if args[i] == "--json" { i += 1 } else { rest.append(args[i]); i += 1 }
+        }
+        guard let id = rest.first else { throw CLIError.usage("stats: sandbox id required") }
+        var req = DaemonRequest(kind: "stats")
+        req.sandboxId = id
+        let resp = try DaemonClient.send(request: req, sockPath: sock)
+        guard let stats = resp.stats else {
+            print("stats: 无数据")
+            return
+        }
+        if asJSON {
+            let data = try JSONEncoder().encode(stats)
+            print(String(decoding: data, as: UTF8.self))
+            return
+        }
+        func fmt(_ v: UInt64?) -> String { v.map(String.init) ?? "null" }
+        print("sandbox=\(id)")
+        print("cpuUsageUsec=\(fmt(stats.cpuUsageUsec))")
+        print("memoryCurrentBytes=\(fmt(stats.memoryCurrentBytes))")
+        print("memoryMaxBytes=\(fmt(stats.memoryMaxBytes))")
+        print("pidsCurrent=\(stats.pidsCurrent.map(String.init) ?? "null")")
+        print("pidsMax=\(stats.pidsMax.map(String.init) ?? "null")")
+        if let err = stats.statsError { print("statsError=\(err)") }
     }
 
     static func daemonShutdownCli(args: [String]) throws {

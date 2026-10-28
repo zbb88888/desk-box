@@ -24,6 +24,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var lastExecResponse: ControlFrame?
         var lastDecodedExecResponse: ControlResponse?
         var pendingExecRequestID: UUID?
+        var lastStatsFrame: ControlFrame?
+        var lastDecodedStats: SandboxStats?
+        var pendingStatsRequestID: UUID?
         var pendingPtyOpenID: UUID?
         var ptyEvents: [PtyEvent] = []
         var wsAcks: [WsAckEvent] = []
@@ -384,6 +387,38 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             if let response { return response.payload }
             if Date() >= deadline {
                 throw SandboxFailure(.bootstrapProofMismatch, "exec response timeout")
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// M21：读取 guest cgroup v2 资源采样（诊断用途；不参与任何安全判定）。
+    public func stats(_ handle: SandboxHandle, timeoutSeconds: Int = 5) async throws -> SandboxStats {
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running, record.controlSocket != nil else {
+                throw SandboxFailure(.bootstrapProofMissing, "authenticated control session required before stats")
+            }
+            let requestID = UUID()
+            let payload = Data("{}".utf8)
+            let frame = try ControlFrame(kind: .statsRequest, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
+            record.pendingStatsRequestID = requestID
+            record.lastStatsFrame = nil
+            record.lastDecodedStats = nil
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+        while true {
+            let stats = try await onQueue { () -> SandboxStats? in
+                let record = try self.require(handle)
+                guard let decoded = record.lastDecodedStats,
+                      let frame = record.lastStatsFrame,
+                      frame.requestID == record.pendingStatsRequestID else { return nil }
+                return decoded
+            }
+            if let stats { return stats }
+            if Date() >= deadline {
+                throw SandboxFailure(.bootstrapProofMismatch, "stats response timeout")
             }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -924,6 +959,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 record.lastDecodedExecResponse = response
             }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return
+        }
+        if frame.kind == .statsResponse {
+            if let stats = try? JSONDecoder().decode(SandboxStats.self, from: frame.payload) {
+                record.lastStatsFrame = frame
+                record.lastDecodedStats = stats
+            }
+            recordAudit(record, action: .channelEvent, decision: .allow())
             return
         }
         if frame.kind == .ptyEvent {
