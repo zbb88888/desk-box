@@ -150,6 +150,17 @@ COW 跨域收养拒绝、快照 AAD 绑定域、篡改域导致解密失败、�
 2. **`run --domain X` 的 `--domain` 被当成 manifest 路径**：`dropSockOption` 只丢 `--daemon-sock`。
    已改为统一的「带值选项」表。
 
+### CI（M23 提交，六个 job 全绿）
+
+```
+✓ fuzz               18s
+✓ repro-check        9m51s
+✓ guest-build        7m4s
+✓ security-corpus    1m2s
+✓ macos-build-test   1m4s
+✓ idempotent-release 1m34s
+```
+
 ### 实现要点
 
 - `DomainRegistry` 在 **daemon 启动时**先校验一次（非法即 `exit(2)`，不带错配置接单），每次 `run` 再按实际配置注入 runtime。
