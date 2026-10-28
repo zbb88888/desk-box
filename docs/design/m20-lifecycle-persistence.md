@@ -1,6 +1,6 @@
 # M20：生命周期持久化与「不复活权限」（INV-10）
 
-状态：M20a 已完成（M20b 故障注入矩阵待做）；关联 `security-verification-matrix.md`（INV-10）、`m5-release-signing-chain.md`、`m7-release-channel.md`、`next-roadmap.md`。
+状态：已完成（M20a + M20b）；关联 `security-verification-matrix.md`（INV-10）、`m5-release-signing-chain.md`、`m7-release-channel.md`、`next-roadmap.md`。
 
 ## 1. 目标
 
@@ -112,6 +112,25 @@ ciphertext+tag           rest            (ChaChaPoly sealed box)
 
 - §2.5 写的是「resume 后沿用同一会话」。实测不成立：VZ restore 重置 vsock，**必须重新握手**。因此 resume 后拿到的是**新 proof**（同一 bootID/nonce 绑定未变），而不是复用旧 proof。daemon 的 `resume` 会等待 `running` 才返回（与 `run` 共用 `waitForRunning`）。
 - PTY 会话不跨 suspend/resume：suspend 时主动丢弃活动 pty 表项。
+
+## 4.2 M20b 故障注入矩阵（INV-10 收尾）
+
+`scripts/e2e-fault-injection.sh`：在 run / exec / suspend 三个阶段 `kill -9` daemon，断言：
+
+```
+[inject] PASS: after-run: 崩溃后 sweep 收敛（首轮发现 1，次轮 0，快照 0）
+[inject] PASS: after-run: 重启后不复活旧沙箱
+[inject] PASS: after-exec: 崩溃后 sweep 收敛（首轮发现 1，次轮 0，快照 0）
+[inject] PASS: after-exec: 重启后不复活旧沙箱
+[inject] PASS: after-suspend: 崩溃后 sweep 收敛（首轮发现 1，次轮 0，快照 0）
+[inject] PASS: after-suspend: 重启后不复活旧沙箱
+[inject] 结果：PASS=6 FAIL=0
+```
+
+### M20b 修掉的两个真实缺口
+
+1. **快照文件不参与 sweep**：`SandboxRegistry.sweep()` 只清理 COW clone，崩溃后会留下 `.snap` 文件——而有快照就能 restore，这正是 INV-10 要阻断的「复活」路径。现在 `VZRuntime.sweepOrphans()` 额外调用 `removeOrphanSnapshots(keeping:)`，删除无活跃注册项的快照与崩溃残留的 `tmp-*.vzstate`。
+2. **CLI `sweep` 绕过 runtime**：原先直接 `SandboxRegistry(root:).sweep()`，因此永远不清快照。已改为经 `VZRuntime.sweepOrphans()`。
 
 ## 5. 非目标
 

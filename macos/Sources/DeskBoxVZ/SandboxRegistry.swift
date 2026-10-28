@@ -104,6 +104,15 @@ public final class SandboxRegistry: @unchecked Sendable {
     /// Remove COW clones of registries whose host process is dead. Never
     /// touches entries owned by a live app instance, and never deletes files
     /// that were not recorded in the registry.
+    /// M20：当前仍存活（host PID 活着）的沙箱 ID 集合，供快照清理判断。
+    public func liveSandboxIDs() throws -> Set<String> {
+        var ids: Set<String> = []
+        for entry in try load() where Self.processIsAlive(entry.hostPID) {
+            ids.insert(entry.sandboxID.description)
+        }
+        return ids
+    }
+
     public func sweep(now: Date = Date()) throws -> RegistrySweepReport {
         let entries = try load()
         var survivors: [RegisteredSandbox] = []

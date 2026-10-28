@@ -643,8 +643,10 @@ struct DBXPOC {
         let cowRoot = try optionURL("--cow-root", in: args)
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("DeskBox/cows", isDirectory: true)
-        let registry = try SandboxRegistry(root: cowRoot)
-        let report = try registry.sweep()
+        // M20：必须经 VZRuntime.sweepOrphans，才能把崩溃残留的快照文件一起清掉
+        // （直接调 registry.sweep 会留下可被 restore 的旧 VM 状态）。
+        let runtime = try VZRuntime(cowRoot: cowRoot, enableConsole: false, enableControlSocket: false)
+        let report = try runtime.sweepOrphans()
         print(String(decoding: try JSONEncoder.pretty.encode([
             "orphanedSandboxes": report.orphanedSandboxes.map(\.raw),
             "removedCloneFiles": report.removedCloneFiles

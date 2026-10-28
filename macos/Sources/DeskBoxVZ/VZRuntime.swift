@@ -117,10 +117,37 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     /// Recover orphan resources left by SIGKILL/host crash before accepting
     /// new work. Fail-closed: a malformed registry stops startup.
     public func sweepOrphans() throws -> RegistrySweepReport {
+        let report: RegistrySweepReport
         if DispatchQueue.getSpecific(key: queueKey) != nil {
-            return try registry.sweep()
+            report = try registry.sweep()
+        } else {
+            report = try queue.sync { try registry.sweep() }
         }
-        return try queue.sync { try registry.sweep() }
+        // M20：崩溃后快照文件同样是孤儿资源，必须一并清理（否则磁盘上会留下
+        // 可被 restore 的旧 VM 状态——正是 INV-10 要阻断的「复活」路径）。
+        self.removeOrphanSnapshots(keeping: try registry.liveSandboxIDs())
+        return report
+    }
+
+    /// 删除没有活跃注册项的沙箱快照。`keeping` 之外的 *.snap/*.vzstate 一律清除。
+    private func removeOrphanSnapshots(keeping: Set<String>) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(at: snapshotRoot, includingPropertiesForKeys: nil) else {
+            return
+        }
+        for entry in entries {
+            let name = entry.lastPathComponent
+            let sandboxID: String
+            if name.hasSuffix(".snap") {
+                sandboxID = String(name.dropLast(5))
+            } else if name.hasPrefix("tmp-") || name.hasPrefix("tmp-restore-") {
+                sandboxID = ""   // 崩溃残留的临时 VZ 状态文件：无条件删除
+            } else {
+                continue
+            }
+            if !sandboxID.isEmpty && keeping.contains(sandboxID) { continue }
+            try? fm.removeItem(at: entry)
+        }
     }
 
     public func create(_ request: SandboxCreateRequest) async throws -> SandboxHandle {
