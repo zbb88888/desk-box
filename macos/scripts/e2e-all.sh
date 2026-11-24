@@ -4,6 +4,7 @@
 #   ./scripts/e2e-all.sh                 # 全部套件
 #   ./scripts/e2e-all.sh m24 m20         # 只跑名字匹配的套件
 #   E2E_ALL_LIST=1 ./scripts/e2e-all.sh  # 只列出套件
+#   E2E_EVIDENCE_DIR=<目录> ./scripts/e2e-all.sh   # 另外写一份机器可读的证据文件（M36）
 #
 # 做三件事：
 #   1) 构建并签名一次 dbx-poc（各套件 E2E_SKIP_BUILD=1 复用）；
@@ -21,23 +22,24 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# 每项：名字:脚本:它为哪些安全不变量提供证据（docs/security/threat-model.md 的 INV 编号；可为空）。
 SUITES=(
-  "selftest:e2e-harness-selftest.sh"
-  "m34-release-cli:e2e-release-cli.sh"
-  "m12-lifecycle:e2e-sandbox-lifecycle.sh"
-  "m24-concurrency:e2e-daemon-concurrency.sh"
-  "m26-boot-cancel:e2e-boot-and-cancel.sh"
-  "m27-cli-instance:e2e-cli-and-instance.sh"
-  "m35-permissions:e2e-state-permissions.sh"
-  "m20-persistence:e2e-lifecycle-persistence.sh"
-  "m20b-fault-injection:e2e-fault-injection.sh"
-  "m21-stats:e2e-resource-stats.sh"
-  "m18-kernel:e2e-kernel-hardening.sh"
-  "m23-domains:e2e-credential-domains.sh"
-  "m17-gui-buttons:e2e-gui-buttons.sh"
-  "m30-gui-app:e2e-gui-app.sh"
-  "m19-canary:security-corpus-canary.sh"
-  "m19-network:security-corpus-network.sh"
+  "selftest:e2e-harness-selftest.sh:"
+  "m34-release-cli:e2e-release-cli.sh:INV-09,INV-10"
+  "m12-lifecycle:e2e-sandbox-lifecycle.sh:INV-01,INV-08"
+  "m24-concurrency:e2e-daemon-concurrency.sh:INV-08,INV-10"
+  "m26-boot-cancel:e2e-boot-and-cancel.sh:INV-08"
+  "m27-cli-instance:e2e-cli-and-instance.sh:INV-02,INV-08,INV-10"
+  "m35-permissions:e2e-state-permissions.sh:INV-03,INV-10"
+  "m20-persistence:e2e-lifecycle-persistence.sh:INV-10"
+  "m20b-fault-injection:e2e-fault-injection.sh:INV-08,INV-10"
+  "m21-stats:e2e-resource-stats.sh:INV-08"
+  "m18-kernel:e2e-kernel-hardening.sh:INV-06,INV-08"
+  "m23-domains:e2e-credential-domains.sh:INV-02"
+  "m17-gui-buttons:e2e-gui-buttons.sh:INV-08"
+  "m30-gui-app:e2e-gui-app.sh:"
+  "m19-canary:security-corpus-canary.sh:INV-03"
+  "m19-network:security-corpus-network.sh:INV-04"
 )
 if [ "${E2E_ALL_LIST:-0}" = 1 ]; then printf '%s\n' "${SUITES[@]}"; exit 0; fi
 
@@ -71,13 +73,26 @@ export E2E_SKIP_BUILD=1
 # 套件必须自己建隔离目录；显式清掉可能从外层继承的覆盖，避免全部套件共用一个目录。
 unset DBX_SUPPORT_ROOT SOCK COW_ROOT
 
+host_locked() {
+  python3 - <<'PY'
+import plistlib, subprocess
+try:
+    d = plistlib.loads(subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True).stdout)
+    print("true" if any(u.get("CGSSessionScreenIsLocked") for u in d.get("IOConsoleUsers", []) if u.get("kCGSSessionOnConsoleKey")) else "false")
+except Exception:
+    print("false")
+PY
+}
+LOCKED_AT_START=$(host_locked)
+: > "$AUDIT/suites.tsv"; : > "$AUDIT/hygiene.tsv"
+
 snapshot "$AUDIT/before"
 
 TOTAL_FAIL=0
 LOCK_SKIPS=0
 SUMMARY=()
 for entry in "${SUITES[@]}"; do
-  name="${entry%%:*}"; script="${entry#*:}"
+  name="${entry%%:*}"; rest="${entry#*:}"; script="${rest%%:*}"; invs="${rest#*:}"
   if [ $# -gt 0 ]; then
     match=0; for want in "$@"; do case "$name" in *"$want"*) match=1;; esac; done
     [ "$match" = 1 ] || continue
@@ -98,7 +113,13 @@ for entry in "${SUITES[@]}"; do
   if [ "${n_locked:-0}" -gt 0 ]; then
     LOCK_SKIPS=$((LOCK_SKIPS + n_locked))
     grep -a 'HOST-LOCKED：' "$AUDIT/$name.out" | sed -E 's/ \[HOST-LOCKED.*//; s/^/        未验证 /'
+    # 证据文件里逐条记录「没有被验证的断言」。
+    grep -a 'HOST-LOCKED：' "$AUDIT/$name.out" | sed -E 's/ \[HOST-LOCKED.*//; s/^\[[^]]*\] SKIP: //' > "$AUDIT/$name.locked"
   fi
+  num() { printf '%s' "$result" | sed -n "s/.*$1=\([0-9]*\).*/\1/p"; }
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$script" "$invs" "$rc" \
+    "$(num PASS || true)" "$(num FAIL || true)" "$(num SKIP || true)" "$secs" \
+    | awk -F'\t' 'BEGIN{OFS="\t"} {for(i=5;i<=7;i++) if($i=="") $i=0; print}' >> "$AUDIT/suites.tsv"
   SUMMARY+=("$name|$rc|${result:-?}|$secs")
 done
 
@@ -109,7 +130,9 @@ HYGIENE=0
 audit() { # audit <kind> <label>
   if diff "$AUDIT/before.$1" "$AUDIT/after.$1" >"$AUDIT/diff.$1" 2>&1; then
     printf '[all] hygiene %-34s clean\n' "$2"
+    printf '%s\tclean\n' "$1" >> "$AUDIT/hygiene.tsv"
   else
+    printf '%s\tdirty\n' "$1" >> "$AUDIT/hygiene.tsv"
     printf '[all] hygiene %-34s DIRTY\n' "$2"
     sed 's/^/        /' "$AUDIT/diff.$1" | head -20
     HYGIENE=$((HYGIENE+1))
@@ -119,6 +142,38 @@ audit support "用户状态目录（Application Support）"
 audit tmp     "/tmp 项目相关条目"
 audit library "~/Library 下 deskbox 相关条目"
 audit procs   "dbx-poc / GUI 进程集合"
+
+# ---- 证据文件（M36）----
+# 设置 E2E_EVIDENCE_DIR 时，把这次运行写成一份机器可读的证据：commit、宿主版本、每个套件的结果、
+# 卫生审计、以及**没有被验证的断言**。按不变量的汇总见 scripts/e2e-evidence.py summarize。
+if [ -n "${E2E_EVIDENCE_DIR:-}" ]; then
+  COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  DIRTY_N=$(git -C "$ROOT" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+  {
+    printf 'generatedAtUtc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'commit\t%s\n' "$COMMIT"
+    printf 'commitDirty\t%s\n' "$([ "$DIRTY_N" = 0 ] && echo false || echo true)"
+    printf 'dirtyFiles\t%s\n' "$DIRTY_N"
+    printf 'partial\t%s\n' "$([ $# -gt 0 ] && echo true || echo false)"
+    printf 'osVersion\t%s\n' "$(sw_vers -productVersion 2>/dev/null)"
+    printf 'osBuild\t%s\n' "$(sw_vers -buildVersion 2>/dev/null)"
+    printf 'model\t%s\n' "$(sysctl -n hw.model 2>/dev/null)"
+    printf 'arch\t%s\n' "$(uname -m)"
+    printf 'lockedAtStart\t%s\n' "$LOCKED_AT_START"
+    printf 'lockedAtEnd\t%s\n' "$(host_locked)"
+    printf 'binarySha256\t%s\n' "$(shasum -a 256 .build/release/dbx-poc 2>/dev/null | awk '{print $1}')"
+    printf 'guestManifestSha256\t%s\n' "$(shasum -a 256 guest/manifest.json 2>/dev/null | awk '{print $1}')"
+  } > "$AUDIT/meta.tsv"
+  mkdir -p "$E2E_EVIDENCE_DIR"
+  EVIDENCE="$E2E_EVIDENCE_DIR/e2e-$STAMP-$COMMIT.json"
+  if python3 "$ROOT/scripts/e2e-evidence.py" build "$AUDIT" "$EVIDENCE"; then
+    printf '\n[all] 证据：%s\n' "$EVIDENCE"
+    python3 "$ROOT/scripts/e2e-evidence.py" summarize "$EVIDENCE" | sed 's/^/[all]   /'
+  else
+    printf '[all] WARN: 证据文件生成失败\n' >&2
+  fi
+fi
 
 printf '\n[all] 套件失败=%d 卫生问题=%d 因锁屏未验证=%d\n' "$TOTAL_FAIL" "$HYGIENE" "$LOCK_SKIPS"
 [ "$TOTAL_FAIL" -eq 0 ] && [ "$HYGIENE" -eq 0 ] || exit 1

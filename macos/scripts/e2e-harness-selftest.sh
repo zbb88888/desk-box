@@ -12,6 +12,7 @@
 #   C8 DBX_SUPPORT_ROOT 生效         → daemon 的 socket/状态只出现在隔离目录
 #   C9 非法 DBX_SUPPORT_ROOT         → exit 2（fail-closed），不回落默认目录
 #   C10 e2e_resume 的结果分类         → ok / locked（并检查锁屏不变量）/ failed，用桩验证
+#   C11 证据文件的结论逻辑            → 通过 / 不完整 / 失败 / 无效（含被手改的结论），用合成证据验证
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/e2e-common.sh"
@@ -146,6 +147,66 @@ expect_classify "锁屏但快照丢失（不变量被破坏）"                "
 expect_classify "其它失败（不得被当成锁屏）"                    "failed 0 0"  broken suspended yes
 # 即便宿主此刻锁屏，resume 成功也必须归为 ok（上一版按锁屏标志预测，会在边界上误报）。
 expect_classify "resume 成功（与宿主锁屏状态无关）"              "ok 0 0"      ok     suspended yes
+
+# C11：证据文件的结论逻辑（scripts/e2e-evidence.py）。用合成的证据文件，不跑任何套件。
+EVPY="$ROOT/scripts/e2e-evidence.py"
+# mkev <文件> <python 表达式：对基准证据 e 的修改>
+mkev() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+e = {
+  "schema": "deskbox-e2e-evidence/v1", "generatedAtUtc": "2026-01-01T00:00:00Z", "commit": "abc1234",
+  "commitDirty": False, "dirtyFiles": 0, "partial": False,
+  "host": {"osVersion": "27.0", "osBuild": "X", "model": "Mac", "arch": "arm64"},
+  "suites": [
+    {"name": "life", "script": "a.sh", "invariants": ["INV-01", "INV-08"], "exitCode": 0, "pass": 5, "fail": 0, "skip": 0, "seconds": 1, "lockSkipped": []},
+    {"name": "persist", "script": "b.sh", "invariants": ["INV-10"], "exitCode": 0, "pass": 5, "fail": 0, "skip": 0, "seconds": 1, "lockSkipped": []},
+    {"name": "sweep", "script": "c.sh", "invariants": ["INV-08", "INV-10"], "exitCode": 0, "pass": 5, "fail": 0, "skip": 0, "seconds": 1, "lockSkipped": []},
+    {"name": "infra", "script": "d.sh", "invariants": [], "exitCode": 0, "pass": 5, "fail": 0, "skip": 0, "seconds": 1, "lockSkipped": []},
+  ],
+  "hygiene": {"support": "clean", "tmp": "clean", "library": "clean", "procs": "clean"},
+}
+exec(sys.argv[2])
+json.dump(e, open(sys.argv[1], "w"))
+PY
+}
+# ev_expect <描述> <修改> <期望 check 退出码> <summarize 输出里必须出现的若干片段...>
+ev_expect() {
+  local what="$1" mutate="$2" want_rc="$3"; shift 3
+  local f="$SCRATCH/ev-$RANDOM.json"
+  mkev "$f" "$mutate"
+  python3 "$EVPY" check "$f" >"$SCRATCH/ev.check" 2>&1; local rc=$?
+  python3 "$EVPY" summarize "$f" >"$SCRATCH/ev.sum" 2>&1
+  local ok=1 needle
+  [ "$rc" = "$want_rc" ] || ok=0
+  for needle in "$@"; do grep -qF -- "$needle" "$SCRATCH/ev.sum" "$SCRATCH/ev.check" || ok=0; done
+  [ "$ok" = 1 ] && pass "证据：$what（check=$rc）" \
+    || fail "证据：$what → check=$rc（期望 $want_rc）；$(tr '\n' '|' < "$SCRATCH/ev.sum" | cut -c1-400) $(tr '\n' '|' < "$SCRATCH/ev.check")"
+}
+ev_expect "全部通过 → 可作为发布证据" "pass" 0 \
+  "INV-01  通过" "INV-08  通过" "INV-10  通过" "INV-02  未覆盖" "整体结论：完整通过" "可作为发布证据"
+ev_expect "有断言因锁屏未验证 → 该不变量不完整，整体不完整" \
+  "e['suites'][1]['lockSkipped'] = ['原始快照可恢复']" 3 \
+  "INV-10  不完整" "未验证: persist: 原始快照可恢复" "INV-01  通过" "整体结论：无失败但不完整" "1 项断言因宿主锁屏未验证"
+ev_expect "套件失败 → 该不变量失败，整体失败" \
+  "e['suites'][0]['exitCode'] = 1; e['suites'][0]['fail'] = 2" 1 \
+  "INV-01  失败" "INV-08  失败" "INV-10  通过" "整体结论：失败"
+ev_expect "同一不变量既有失败又有跳过 → 取最糟的（失败）" \
+  "e['suites'][1]['lockSkipped'] = ['x']; e['suites'][2]['exitCode'] = 1" 1 "INV-10  失败" "INV-08  失败"
+ev_expect "退出码 0 但有 FAIL 计数 → 仍算失败" "e['suites'][1]['fail'] = 1" 1 "INV-10  失败"
+ev_expect "卫生审计不干净 → 整体失败（即便套件全过）" "e['hygiene']['tmp'] = 'dirty'" 1 "整体结论：失败" "INV-10  通过"
+ev_expect "工作区有未提交改动 → 不能作为发布证据" "e['commitDirty'] = True; e['dirtyFiles'] = 3" 3 \
+  "整体结论：完整通过" "工作区有未提交的改动（3 个文件）"
+ev_expect "只跑了部分套件 → 不能作为发布证据" "e['partial'] = True" 3 "只运行了部分套件"
+ev_expect "没有任何套件 → 不能作为发布证据" "e['suites'] = []" 3 "没有任何套件结果" "INV-01  未覆盖"
+ev_expect "不提供不变量证据的套件失败 → 整体仍失败" "e['suites'][3]['exitCode'] = 2" 1 "整体结论：失败" "INV-01  通过"
+# 篡改：把结论手改成 complete，但明细里有失败。
+ev_expect "手改的 verdict 与明细不符 → 证据无效" \
+  "e['suites'][0]['exitCode'] = 1; e['verdict'] = 'complete'" 1 "记录的 verdict=complete 与明细不符"
+ev_expect "引用未知不变量 → 证据无效" "e['suites'][0]['invariants'] = ['INV-99']" 1 "未知不变量 INV-99"
+ev_expect "schema 不符 → 证据无效" "e['schema'] = 'something/else'" 1 "schema 不是"
+python3 "$EVPY" summarize --markdown "$(ls "$SCRATCH"/ev-*.json | head -1)" | grep -q '^| INV-01 |' \
+  && pass "证据：summarize --markdown 输出表格" || fail "证据：markdown 输出异常"
 
 LEFT=$(ls -d /tmp/dbx-st-* 2>/dev/null | tr '\n' ' ')
 [ -z "$LEFT" ] && pass "无 /tmp/dbx-st-* 残留" || { fail "残留：$LEFT"; rm -rf /tmp/dbx-st-*; }
