@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M43 控制面死亡与 broker 结果](design/m43-control-loss-and-broker-result.md)：guest 控制进程死亡时宿主立刻发现；`brokerreq` 的退出码反映真实结果。
 - [M42 broker 入口与客户端断开](design/m42-broker-entry-and-client-disconnect.md)：workload 可经 broker socket 杀掉 guest 控制面（已修）；exec 客户端断开后的处理。
 - [M41 取消在途的 exec](design/m41-exec-cancel.md)：`exec-cancel`、Ctrl-C、GUI Cancel；按实际结果判定旧 guest 不支持。
 - [M39 exec 的输出](design/m39-exec-output.md)：管道死锁、1023 字节静默截断、退出码被改写——修复与对旧 guest 的提示。

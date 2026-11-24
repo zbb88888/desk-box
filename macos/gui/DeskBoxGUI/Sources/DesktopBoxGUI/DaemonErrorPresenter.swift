@@ -45,6 +45,8 @@ enum DaemonErrorPresenter {
         Rule(needle: "DBX-LIFECYCLE-SUSPEND-FAILED", severity: .error, title: "挂起失败，沙箱已不可用", hint: "请移除该沙箱"),
         Rule(needle: "DBX-WS-RESYNC-UNSAFE", severity: .warning, title: "无法再次同步：沙箱已运行过程序且 guest 资产较旧",
              hint: "新建沙箱后先同步再运行，或升级 guest 资产"),
+        Rule(needle: "DBX-GUEST-CONTROL-LOST", severity: .error, title: "沙箱失去响应：guest 内的控制进程已退出",
+             hint: "移除这台沙箱后重新创建"),
         Rule(needle: "DBX-EXEC-CANCEL-UNSUPPORTED", severity: .warning, title: "无法取消：guest 资产较旧，不支持取消在途命令",
              hint: "等它结束或超时，或停止 / 移除这台沙箱"),
         Rule(needle: "DBX-EXEC-NOT-RUNNING", severity: .info, title: "没有正在运行的命令", hint: nil),

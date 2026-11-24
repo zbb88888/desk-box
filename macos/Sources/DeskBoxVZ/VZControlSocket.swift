@@ -49,6 +49,12 @@ final class VZControlSocket: NSObject, @unchecked Sendable {
         secureSession = session
     }
 
+    /// M43：连接是否已经关闭（对端断开或本端主动关闭）。
+    var isClosed: Bool {
+        writeLock.lock(); defer { writeLock.unlock() }
+        return closed
+    }
+
     func send(_ frame: ControlFrame) throws {
         try send(bytes: frame.encoded())
     }

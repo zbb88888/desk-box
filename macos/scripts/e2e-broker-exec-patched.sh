@@ -5,4 +5,4 @@ set -u
 cd "$(dirname "$0")/.."
 . scripts/lib/patched-guest.sh
 patched_guest_prepare bkp
-MANIFEST="$PATCHED_MANIFEST" RUN_FLAGS=--allow-unsigned-manifest EXPECT_BROKER_VERSION=2 ./scripts/e2e-broker-exec.sh
+MANIFEST="$PATCHED_MANIFEST" RUN_FLAGS=--allow-unsigned-manifest EXPECT_BROKER_VERSION=3 ./scripts/e2e-broker-exec.sh

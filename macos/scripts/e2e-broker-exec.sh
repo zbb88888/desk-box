@@ -2,15 +2,17 @@
 # M42：guest 内的 broker 入口（/run/deskbox-broker.sock）不能被 workload 用来搞垮控制面（真机，1–2 台 VM）。
 #
 # 脚本按 guest 的 broker 入口版本（stats 里的 brokerVersion）自动分支：
-#   版本 2（当前源码）：
-#     B1  在 exec 里调用 brokerreq：立刻返回（此前一直卡到 exec 超时），之后沙箱照常可用
+#   版本 ≥ 3（当前源码）：
+#     B1  在 exec 里调用 brokerreq：立刻返回（此前一直卡到 exec 超时），之后沙箱照常可用；
+#         被策略拒绝的请求以非零退出码和原因返回（M43；此前返回 0，只留下一个空文件）
 #     B2  broker 客户端在应答之前就退出（连上、发请求、立刻关闭）×20：bootstrap 不会被 SIGPIPE 杀掉
 #     B3  连上却什么都不发的客户端：不会把 bootstrap 卡住，宿主的请求照常得到应答
 #     B4  workload 的 SIGPIPE 行为保持默认（bootstrap 自己忽略 SIGPIPE，但不能传给子进程）
-#     B5  （需要宿主能访问 example.com）exec 里的程序请求下载后，文件在**同一条 exec 期间**到达
+#     B5  （需要宿主能访问 example.com）brokerreq 返回时文件已经完整落盘；上游 404 以非零退出码返回
 #   版本 1（旧 guest）：
 #     K1  在 exec 里调用 brokerreq → guest 的控制面被杀，沙箱进入 failed（已知缺陷，只打印，不计入 PASS）
 #     K2  宿主一侧能收拾：failed 的沙箱可以 rm，daemon 与其它沙箱不受影响
+#     K3  控制面死掉之后，宿主的请求立刻失败并说明原因（M43），不会等到超时
 #
 # B2 / B3 需要一个能直接操作 unix socket 的小程序：用本机的 aarch64-linux-musl 交叉编译器静态编译后
 # 同步进 /workspace 执行；没有交叉编译器时这两项 SKIP。
@@ -54,11 +56,13 @@ x() { # <超时> <命令>
 }
 state_of() { "$BIN" ps --daemon-sock "$SOCK" 2>/dev/null | awk -v id="$1" '$1==id {print $2}'; }
 
-if [ "$BV" -ge 2 ]; then
+if [ "$BV" -ge 3 ]; then
   # ---------- B1 ----------
   x 8 'brokerreq https://not-allowed.invalid/probe.txt; echo "rc=$?"'
-  [ "$RC" = 0 ] && [ "$(cat "$O")" = "rc=0" ] && [ "$MS" -lt 3000 ] \
+  [ "$RC" = 0 ] && [ "$MS" -lt 3000 ] \
     && pass "B1 exec 里调用 brokerreq：${MS}ms 返回（此前卡到 exec 超时）" || fail "B1 rc=$RC ${MS}ms out=[$(cat "$O")] err=[$(cat "$E")]"
+  [ "$(cat "$O")" = "rc=8" ] && grep -q 'allowlist' "$E" \
+    && pass "B1 被策略拒绝：brokerreq 退出码 8，stderr 给出原因（$(head -c 60 "$E" | tr '\n' ' ')…）" || fail "B1 拒绝结果：out=[$(cat "$O")] err=[$(cat "$E")]"
   x 5 'echo alive'
   [ "$RC" = 0 ] && [ "$(state_of "$ID")" = running ] && pass "B1 之后沙箱照常可用（state=running）" || fail "B1 之后 rc=$RC state=$(state_of "$ID")"
   sleep 0.5
@@ -118,7 +122,7 @@ C
     "$BIN" ws-sync --daemon-sock "$SOCK" "$ID" "$E2E_WORK/ws" >"$E2E_WORK/sync.out" 2>&1 || die "辅助程序同步失败：$(cat "$E2E_WORK/sync.out")"
 
     x 15 '/workspace/ubroker drop 20'
-    [ "$RC" = 0 ] && [ "$(cat "$O")" = "dropped 20" ] && pass "B2 对照：20 个「发完请求不等应答就关闭」的 broker 客户端都跑完了" || fail "B2 辅助程序 rc=$RC out=[$(cat "$O")] err=[$(cat "$E")]"
+    [ "$RC" = 0 ] && [ "$(cat "$O")" = "dropped 20" ] && pass "B2 对照：20 个「发完请求不等应答就关闭」的 broker 客户端都跑完了" || fail "B2 辅助程序 rc=$RC ${MS}ms out=[$(cat "$O")] err=[$(cat "$E")]"
     sleep 0.5
     x 5 'echo survived-drops'
     [ "$RC" = 0 ] && [ "$(cat "$O")" = survived-drops ] && [ "$(state_of "$ID")" = running ] \
@@ -141,10 +145,20 @@ C
 
   # ---------- B5：真实下载，在同一条 exec 期间到达 ----------
   if curl -fsS --max-time 8 -o /dev/null https://example.com/ 2>/dev/null; then
-    x 25 'rm -f /workspace/inbound/index.html; brokerreq https://example.com/ || exit 9; i=0; while [ ! -s /workspace/inbound/index.html ] && [ $i -lt 100 ]; do sleep 0.2; i=$((i+1)); done; sleep 1; wc -c < /workspace/inbound/index.html; grep -c -i "example" /workspace/inbound/index.html; head -c 200 /workspace/inbound/index.html >&2'
-    BYTES=$(sed -n 1p "$O" | tr -d ' '); HITS=$(sed -n 2p "$O")
-    [ "$RC" = 0 ] && [ "${BYTES:-0}" -ge 100 ] 2>/dev/null && [ "${HITS:-0}" -ge 1 ] 2>/dev/null \
-      && pass "B5 exec 里请求的下载在同一条 exec 期间到达并可读（${MS}ms；此前要等 exec 结束之后才落盘）" || fail "B5 rc=$RC out=[$(tr '\n' ' ' < "$O")] err=[$(head -c 200 "$E")]"
+    # 不轮询：brokerreq 返回 0 的那一刻文件就必须完整。
+    x 25 'rm -f /workspace/inbound/index.html; brokerreq https://example.com/ || exit 9; wc -c < /workspace/inbound/index.html; grep -c -i "example" /workspace/inbound/index.html'
+    BYTES=$(grep -E '^ *[0-9]+ *$' "$O" | sed -n 1p | tr -d ' '); HITS=$(grep -E '^ *[0-9]+ *$' "$O" | sed -n 2p | tr -d ' ')
+    HOST_BYTES=$(curl -fsS --max-time 8 https://example.com/ 2>/dev/null | wc -c | tr -d ' ')
+    [ "$RC" = 0 ] && [ "${BYTES:-0}" -ge 100 ] 2>/dev/null && [ "${HITS:-0}" -ge 1 ] 2>/dev/null && [ "$BYTES" = "$HOST_BYTES" ] \
+      && pass "B5 brokerreq 返回 0 时文件已完整落盘（$BYTES 字节，与宿主直接下载的大小一致；${MS}ms，同一条 exec 内，无需轮询）" || fail "B5 rc=$RC host=$HOST_BYTES out=[$(tr '\n' ' ' < "$O")] err=[$(head -c 200 "$E")]"
+    # brokerreq 客户端在 root 盘里：补丁版夹具只换 initrd，客户端仍是旧的（不打印结果行）；正式构建的 guest 才有新客户端。
+    if grep -q '^saved ' "$O"; then
+      grep -q "^saved $BYTES bytes (HTTP 200)\$" "$O" && pass "B5 新版 brokerreq 打印结果行（saved $BYTES bytes (HTTP 200)）" || fail "B5 结果行不符：$(grep '^saved ' "$O")"
+    else
+      log "B5 这套 guest 的 brokerreq 客户端是旧版（不打印结果行）；退出码与落盘结果已在上面验证"
+    fi
+    x 25 'brokerreq https://example.com/dbx-no-such-page-404.txt; echo "rc=$?"'
+    grep -q '^rc=8$' "$O" && grep -q '404' "$E" && pass "B5 上游 404：brokerreq 退出码 8，stderr 含状态码" || fail "B5 404：out=[$(cat "$O")] err=[$(cat "$E")]"
   else
     skip "B5 宿主访问不了 https://example.com，无法验证真实下载"
   fi
@@ -156,6 +170,8 @@ else
   x 5 'echo probe-after'      # 宿主要到下一次写控制通道时才发现对端没了
   ST=$(state_of "$ID")
   log "KNOWN-DEFECT（旧 guest）K1：exec 里调用 brokerreq → 那条 exec rc=$FIRST_RC（${FIRST_MS}ms，卡到超时）；随后的 exec rc=$RC，沙箱 state=$ST（failed = guest 的控制面被 SIGPIPE 杀掉）"
+  [ "$RC" != 0 ] && [ "$MS" -lt 2000 ] && grep -q 'DBX-GUEST-CONTROL-LOST\|control socket closed' "$E" \
+    && pass "K3 控制面死掉之后：随后的 exec ${MS}ms 内失败并说明原因（$(grep -o 'DBX-GUEST-CONTROL-LOST\|control socket closed' "$E" | head -1)）" || fail "K3 rc=$RC ${MS}ms err=[$(head -c 200 "$E")]"
   "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1 && pass "K2 宿主能收拾：那台沙箱可以 rm" || fail "K2 rm 失败"
   new_sandbox
   x 8 'echo fresh-sandbox-ok'

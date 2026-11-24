@@ -30,6 +30,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var execAssembler: ExecOutputAssembler?
         /// M41：exec 请求已发出、应答尚未被取走。只有此时 cancelExec 才会发送取消帧。
         var execInFlight = false
+        /// M43：guest 一侧关闭了**当前**控制连接（它的控制进程退出 / 崩溃 / 被杀）时的说明。
+        /// 换上新连接（resume 之后的重连）时清空。等待应答的循环据此立刻失败，而不是等到超时。
+        var controlLost: String?
         var lastStatsFrame: ControlFrame?
         var lastDecodedStats: SandboxStats?
         var pendingStatsRequestID: UUID?
@@ -737,6 +740,20 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         return assembler.finish(response)
     }
 
+    /// M43：等待 guest 应答的循环每一轮都调用。当前控制连接已被 guest 一侧关闭时，
+    /// 把沙箱标为 failed 并抛出带原因码的错误。
+    private func failIfControlLost(_ handle: SandboxHandle, waitingFor op: String) async throws {
+        try await onQueue {
+            let record = try self.require(handle)
+            guard let reason = record.controlLost else { return }
+            record.execInFlight = false
+            if record.lifecycle.state == .running {
+                record.lifecycle.forceFail(reason: .bootstrapProofMismatch)
+            }
+            throw SandboxFailure(.bootstrapProofMismatch, ControlLossPolicy.message(waitingFor: op, detail: reason))
+        }
+    }
+
     /// M41：请求 guest 取消在途的 exec（杀掉它的进程组并立刻应答）。
     /// - Returns: 是否发出了取消帧（没有在途 exec 时为 false）。发出不等于生效：旧 guest 会忽略它。
     @discardableResult
@@ -815,6 +832,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 return (decoded, assembler)
             }
             if let response { return response }
+            // M43：guest 的控制进程没了就不会再有应答——立刻失败，不等到超时。
+            try await self.failIfControlLost(handle, waitingFor: "exec")
             if Date() >= deadline {
                 _ = try? await onQueue { (try? self.require(handle))?.execInFlight = false }
                 throw SandboxFailure(.bootstrapProofMismatch,
@@ -849,6 +868,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 return decoded
             }
             if let stats { return stats }
+            try await self.failIfControlLost(handle, waitingFor: "stats")
             if Date() >= deadline {
                 throw SandboxFailure(.bootstrapProofMismatch, "stats response timeout")
             }
@@ -1318,6 +1338,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                         boxedConnection.value.close()
                         return
                     }
+                    // 失败回调里要知道「出事的是不是当前这条连接」：resume / stop 会先把 controlSocket 置空，
+                    // 旧连接随后报的 EOF 不算数。
+                    let identity = ControlSocketIdentity()
                     let socket = VZControlSocket(
                         connection: boxedConnection.value,
                         queue: self.queue,
@@ -1332,9 +1355,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                             self.queue.async { [weak self, weak record] in
                                 guard let self, let record else { return }
                                 self.recordAudit(record, action: .channelEvent, decision: .error(.bootstrapProofMismatch, message))
+                                if ControlLossPolicy.isUnexpected(
+                                    failedSocketIsCurrent: identity.socket != nil && record.controlSocket === identity.socket,
+                                    state: record.lifecycle.state) {
+                                    record.controlLost = message
+                                }
                             }
                         }
                     )
+                    identity.socket = socket
                     // Keep the first authenticated hello session. The guest may
                     // send a second hello from root init; a hello reset must not
                     // downgrade the proofed session or lose replay state.
@@ -1343,6 +1372,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                         return
                     }
                     record.controlSocket = socket
+                    record.controlLost = nil
                 }
             },
             onReject: { [weak self, weak record] message in

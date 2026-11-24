@@ -19,6 +19,8 @@ final class DaemonErrorPresenterTests: XCTestCase {
             (aborted, "DBX-LIFECYCLE-SUSPEND-ABORTED", .warning, "挂起失败，沙箱仍在运行"),
             ("request rejected (kind=execCancel): DBX-EXEC-CANCEL-UNSUPPORTED: 取消请求已发出，但命令在 3s 内没有结束…",
              "DBX-EXEC-CANCEL-UNSUPPORTED", .warning, "无法取消：guest 资产较旧，不支持取消在途命令"),
+            ("request rejected (kind=exec): DBX-GUEST-CONTROL-LOST: 等待 exec 的应答时，guest 关闭了控制连接（guest control socket closed）…",
+             "DBX-GUEST-CONTROL-LOST", .error, "沙箱失去响应：guest 内的控制进程已退出"),
             ("request rejected (kind=execCancel): DBX-EXEC-NOT-RUNNING: 这台沙箱当前没有在途的 exec",
              "DBX-EXEC-NOT-RUNNING", .info, "没有正在运行的命令"),
             ("request rejected (kind=wsSync): DBX-WS-RESYNC-UNSAFE: 这台沙箱已经运行过 workload…",
