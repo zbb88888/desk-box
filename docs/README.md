@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M32 GUI 操作全链路](design/m32-gui-operation-flow.md)：按钮逻辑移入视图模型并由自检驱动真实 daemon + VM；Exec 命令行支持引号；引导类请求的客户端超时。
 - [M31 sheet 打开时无法退出 / Open Display 崩溃](design/m31-display-cmdq.md)：⌘Q 的主因（AppKit 在有 sheet 时静默拒绝终止）与修复；⌘Q 各条根因的最终状态表。
 - [M30 GUI 可自动化验证](design/m30-gui-automation.md)：GUI 隔离启动、应用内自检（菜单 / 合成 ⌘Q / 主线程卡顿）、行内操作按状态启用；含对 ⌘Q 根因的更正。
 - [M28 suspend 失败回滚与 GUI 对齐](design/m28-suspend-rollback-and-gui-alignment.md)：suspend 中途失败回滚到 running；GUI 不再删除 daemon socket、原因码可读呈现；含 GUI 手测清单。

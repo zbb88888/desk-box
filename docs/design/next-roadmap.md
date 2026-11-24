@@ -32,7 +32,8 @@
 | M28 ✅ | suspend 失败回滚 + GUI 对齐 | INV-10 周边 + 产品面 | M | 已完成：suspend 中途失败回滚到 running（e2e 故障注入 8 项）；GUI 不再删 socket、被拒绝不再显示 daemon 已停、原因码可读呈现（`GUITests` 15）。GUI 界面行为未验证，见 `m28-suspend-rollback-and-gui-alignment.md` §4 手测清单 |
 | M30 ✅ | GUI 可自动化验证 | —（产品面） | M | 已完成：GUI 识别 `DBX_SUPPORT_ROOT`、行内操作按状态启用（含 Suspend/Resume）、应用内自检 + 真 GUI 进程 e2e 20/20（菜单 ⌘Q、合成 ⌘Q 退出、daemon 无响应时主线程不卡）。变异检查证实「主线程同步 socket」是 ⌘Q bug 的真实根因，并更正了第一轮的一条错误结论，见 `m30-gui-automation.md` §3 |
 | M31 ✅ | sheet 打开时无法退出 + Open Display 崩溃 | —（产品面） | M | 已完成：定位并修复 ⌘Q 的主因（AppKit 在有 sheet 时静默拒绝终止；所有退出请求改走 `AppQuit`）与「Open Display 必崩」（VM 在错误队列上启动）；e2e-gui-app 32/32，见 `m31-display-cmdq.md` |
-| M32 | GUI 操作全链路 | —（产品面） | M | Run/Exec/Suspend/Resume 经视图模型驱动真实 daemon 与 VM；文件选择面板打开时的退出行为 |
+| M32 ✅ | GUI 操作全链路 | —（产品面） | M | 已完成：操作逻辑移入视图模型；自检 flow 驱动真实 daemon + VM（Run→Exec→Suspend→Resume→Rm）；Exec 支持引号；引导类请求客户端超时 150s。e2e-gui-app 46 通过，见 `m32-gui-operation-flow.md` |
+| M33 | 其余面板与真实点击 | —（产品面） | M | Terminal(PTY) / Console / Stats / Workspace 拖放纳入 flow；评估是否值得引入需要辅助功能授权的真实点击测试 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 
 ---

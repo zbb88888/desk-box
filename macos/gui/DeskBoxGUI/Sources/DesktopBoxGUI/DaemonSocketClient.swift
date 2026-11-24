@@ -2,7 +2,7 @@ import Darwin
 import DeskBoxVZ
 import Foundation
 
-struct DaemonRequest: Codable {
+struct DaemonRequest: Codable, Sendable {
     let kind: String
     var sandboxId: String? = nil
     var manifestPath: String? = nil
@@ -24,7 +24,7 @@ struct DaemonRequest: Codable {
     var waitMillis: Int? = nil
 }
 
-struct DaemonResponse: Codable {
+struct DaemonResponse: Codable, Sendable {
     let ok: Bool
     var ptySessionId: String? = nil
     var outputHex: String? = nil
@@ -41,7 +41,7 @@ struct DaemonResponse: Codable {
 }
 
 /// M21：guest 资源采样（诊断用途）。
-struct SandboxStats: Codable {
+struct SandboxStats: Codable, Sendable {
     var cpuUsageUsec: UInt64? = nil
     var memoryCurrentBytes: UInt64? = nil
     var memoryMaxBytes: UInt64? = nil
@@ -51,7 +51,7 @@ struct SandboxStats: Codable {
     var statsError: String? = nil
 }
 
-struct SandboxInfo: Codable, Identifiable {
+struct SandboxInfo: Codable, Identifiable, Sendable {
     var id: String { sandboxId }
     let sandboxId: String
     let state: String
@@ -80,7 +80,7 @@ enum DaemonClientError: LocalizedError {
 }
 
 /// 与 M12 dbx-poc daemon 使用同一 JSON-lines 协议（chmod 600 的本地 UNIX socket）。
-struct DaemonSocketClient {
+struct DaemonSocketClient: Sendable {
     let sockPath: String
 
     static func defaultSockPath() -> String {

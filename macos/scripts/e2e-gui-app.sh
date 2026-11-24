@@ -12,6 +12,9 @@
 #       退出后会话私盘（rootfs 临时副本）被清除
 #   G8  任意 sheet 打开时（Settings，不依赖 VM）⌘Q 仍能退出 —— AppKit 在有 sheet 时会让 terminate 变成空操作
 #   G9  sheet 打开时收到 quit AppleEvent（Dock 的 Quit / 注销走的路）同样能退出
+#   G10 操作全链路（M32）：GUI 拉起 daemon → Run → Exec（带引号）→ Suspend → Resume → Rm，
+#       全部经由视图模型里按钮所用的同一入口，对着真实 daemon 与真实 VM
+#   G11 应用级模态面板（文件选择）打开时收到 quit AppleEvent 仍能退出
 #
 # 做法：把 GUI 二进制装进临时目录里的一个 .app（独立 bundle id、LSUIElement=后台代理：
 # 无 Dock 图标、不抢焦点），直接执行其二进制（不经 LaunchServices 注册）。
@@ -243,6 +246,58 @@ wait_gui_exit "$GUI_PID" 15
 [ "$(field "$R6" sheetAttachedBeforeQuit)" = True ] && [ "$(field "$R6" quitVia)" = appleevent ] \
   && pass "G9 对照：sheet 打开，退出请求经 quit AppleEvent 发出" || fail "G9 场景无效：sheet=$(field "$R6" sheetAttachedBeforeQuit) via=$(field "$R6" quitVia)"
 assert_quit "G9 sheet 打开时的 quit AppleEvent（Dock Quit / 注销）" "$R6"
+
+# ================= G10：操作全链路（真实 daemon + 真实 VM） =================
+R7="$E2E_WORK/report-7.json"
+launch_gui "$R7" 150 YES flow        # 150s 只是保险丝；flow 走完会自己发 ⌘Q
+GUI7=$GUI_PID
+for _ in $(seq 1 80); do "$BIN" ps >/dev/null 2>&1 && break; sleep 0.1; done
+SPAWNED7=$(pgrep -f "$APP/Contents/MacOS/dbx-poc daemon" | head -1)
+[ -n "$SPAWNED7" ] && { E2E_DAEMON_PIDS="$E2E_DAEMON_PIDS $SPAWNED7"; E2E_DAEMON_SOCKS="$E2E_DAEMON_SOCKS $DEFAULT_SOCK"; }
+wait_gui_exit "$GUI7" 170
+[ -s "$R7" ] || fail "G10 自检报告未生成：$(head -c 300 "$R7.stdout" 2>/dev/null)"
+python3 - "$R7" >"$E2E_WORK/flow.out" 2>&1 <<'PY'
+import json, sys
+flow = json.load(open(sys.argv[1])).get("flow", [])
+for s in flow:
+    print(("PASS" if s["ok"] else "FAIL") + "\t" + s["name"] + "\t" + s.get("detail", "").replace("\n", " ⏎ ")[:200])
+PY
+step_ok() { grep -q "^PASS	$1	" "$E2E_WORK/flow.out"; }
+step_detail() { grep "	$1	" "$E2E_WORK/flow.out" | head -1 | cut -f3; }
+FAILED_STEP=$(grep '^FAIL' "$E2E_WORK/flow.out" | head -1)
+[ -z "$FAILED_STEP" ] || fail "G10 流程在这一步失败：$FAILED_STEP"
+step_ok daemon-connected && pass "G10 GUI 自动拉起的 daemon 已连接" || fail "G10 daemon 未连接"
+step_ok run && step_ok listed-running && pass "G10 Run New Sandbox：真实 VM 引导完成并出现在列表（$(step_detail run)）" || fail "G10 run 未完成"
+step_ok exec-quoted && pass "G10 Exec：带引号的命令行在 guest 内正确执行（/bin/sh -c 'echo flow-ok; id -u' → uid 65534）" || fail "G10 exec 失败：$(step_detail exec-quoted)"
+step_ok exec-bad-quoting-rejected && pass "G10 Exec：引号未闭合的命令行在本地被拒" || fail "G10 非法命令行未被拒"
+step_ok rejection-keeps-daemon-connected && pass "G10 被 daemon 拒绝的请求显示可读原因，daemon 状态保持 connected" || fail "G10 拒绝处理异常：$(step_detail rejection-keeps-daemon-connected)"
+step_ok suspend && [ "$(step_detail suspend)" = "console,resume,rm" ] \
+  && pass "G10 Suspend：状态变为 suspended，行内操作变为 console,resume,rm" || fail "G10 suspend：$(step_detail suspend)"
+if step_ok resume && step_ok exec-after-resume; then
+  pass "G10 Resume：恢复为 running，之后 exec 正常"
+elif step_ok resume-host-locked-presented; then
+  pass "G10 宿主锁屏：Resume 的失败以可读原因呈现（$(step_detail resume-host-locked-presented)），沙箱保持 suspended"
+  skip_locked "G10 Resume 成功 + 之后 exec 正常"
+else
+  fail "G10 resume 步骤缺失"
+fi
+step_ok rm && step_ok flow-complete && pass "G10 Rm：沙箱从列表消失，流程完整走完" || fail "G10 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
+assert_quit "G10 流程结束后的 ⌘Q" "$R7"
+[ "$("$BIN" ps 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && pass "G10 daemon 上没有遗留沙箱" || fail "G10 遗留沙箱：$("$BIN" ps 2>&1 | head -2)"
+"$BIN" shutdown >/dev/null 2>&1 && e2e_wait_exit "${SPAWNED7:-0}" 100 && pass "G10 daemon 正常 shutdown" || fail "G10 daemon shutdown 失败"
+LEFT=$(find "$DBX_SUPPORT_ROOT/cows" -type f ! -name 'registry.json' ! -name 'registry.lock' 2>/dev/null | tr '\n' ' ')
+[ -z "$LEFT" ] && pass "G10 cow-root 零残留" || fail "G10 cow-root 残留：$LEFT"
+
+# ================= G11：应用级模态面板打开时的 quit AppleEvent =================
+R8="$E2E_WORK/report-8.json"
+launch_gui "$R8" 5 NO modal appleevent
+wait_gui_exit "$GUI_PID" 15
+[ -s "$R8" ] || fail "G11 自检报告未生成：$(head -c 300 "$R8.stdout" 2>/dev/null)"
+[ "$(field "$R8" appModalBeforeQuit)" = True ] && pass "G11 对照：退出请求发出时文件选择面板（应用级模态）处于打开状态" || fail "G11 模态面板未打开（场景无效）"
+HOW=$(cat "$R8.terminated" 2>/dev/null)
+[ "$GUI_RC" = 0 ] && { [ "$HOW" = terminate ] || [ "$HOW" = forced ]; } \
+  && pass "G11 模态面板打开时收到 quit AppleEvent 仍能退出（rc=0，退出方式=$HOW）" \
+  || fail "G11 未能退出：rc=$GUI_RC 退出方式=${HOW:-none} phase=$(field "$R8" phase)"
 
 # ================= 收尾自检 =================
 sleep 1   # 崩溃报告由 ReportCrash 异步落盘

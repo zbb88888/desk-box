@@ -57,6 +57,7 @@ struct DockerMainView: View {
             if manifestPath.isEmpty {
                 manifestPath = resolvedManifestPath()
             }
+            GUISelfTest.shared?.attach(viewModel: viewModel, daemonManager: daemonManager)
             daemonManager.refresh()
             viewModel.refresh()
             if autostartDaemon && daemonManager.status != .connected {
@@ -229,9 +230,7 @@ struct DockerMainView: View {
     }
 
     private func run(manifestPath: String) {
-        var req = DaemonRequest(kind: "run")
-        req.manifestPath = manifestPath
-        send(req, toast: "run started")
+        send(SandboxViewModel.runRequest(manifestPath: manifestPath), toast: "run started")
     }
 
     /// M30：行内操作统一入口。界面动作在此处理，其余转成 daemon 请求。
@@ -247,32 +246,8 @@ struct DockerMainView: View {
     }
 
     private func exec() {
-        var req = DaemonRequest(kind: "exec")
-        req.sandboxId = execSandboxId
-        req.argv = execCommand.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard !(req.argv?.isEmpty ?? true) else { viewModel.execOutput = "argv empty"; return }
-        // Cmd+Q bug fix：exec 可能跑很久（daemon 串行 queue 背压），绝不在主线程同步 send。
-        let client = viewModel.client
-        let viewModel = self.viewModel
-        let daemonManager = self.daemonManager
-        viewModel.execOutput = "running…"
-        let request = req
-        DispatchQueue.global().async {
-            do {
-                let resp = try client.send(request)
-                let text = "exit=\(resp.exitCode ?? 0)\n---stdout---\n\(resp.stdout ?? "")\n---stderr---\n\(resp.stderr ?? "")"
-                Task { @MainActor in viewModel.execOutput = text }
-            } catch {
-                Task { @MainActor in
-                    let shown = DaemonErrorPresenter.present(error)
-                    viewModel.execOutput = "\(shown.logLine)\n\(shown.detail)"
-                    // M28：只有「连不上」才说明 daemon 不在；被拒绝说明它活着。
-                    if (error as? DaemonClientError)?.indicatesDaemonUnreachable ?? false {
-                        daemonManager.status = .stopped
-                    }
-                }
-            }
-        }
+        // M32：分词（支持引号）与执行都在视图模型里。
+        viewModel.exec(sandboxId: execSandboxId, commandLine: execCommand, daemonManager: daemonManager)
     }
 
     private func openDisplay() {
@@ -286,34 +261,8 @@ struct DockerMainView: View {
     }
 
     private func send(_ req: DaemonRequest, toast: String) {
-        // Cmd+Q bug fix：run/stop/rm/restart 都可能被 daemon 串行 queue 阻塞 30–50s，
-        // 之前在主线程同步 send 会把整个 runloop（含 ⌘Q 事件分发）卡死。
-        let client = viewModel.client
-        let viewModel = self.viewModel
-        let daemonManager = self.daemonManager
-        let kind = req.kind
-        DispatchQueue.global().async {
-            do {
-                let resp = try client.send(req)
-                Task { @MainActor in
-                    if let newId = resp.sandboxId { LogStore.shared.append("\(kind): \(toast) -> \(newId)") }
-                    else { LogStore.shared.append("\(kind): \(toast)") }
-                    viewModel.refresh()
-                }
-            } catch {
-                Task { @MainActor in
-                    let shown = DaemonErrorPresenter.present(error)
-                    LogStore.shared.append("\(kind) \(shown.severity.rawValue): \(shown.logLine)")
-                    viewModel.execOutput = "\(shown.logLine)\n\(shown.detail)"
-                    // M28：只有「连不上」才说明 daemon 不在（M17 hotfix 把任何失败都当成 stopped，
-                    // 于是一次被拒绝的 run 会让界面显示 daemon 已停并触发自动重启逻辑）。
-                    if (error as? DaemonClientError)?.indicatesDaemonUnreachable ?? false {
-                        daemonManager.status = .stopped
-                    }
-                    viewModel.refresh()
-                }
-            }
-        }
+        // M32：逻辑在 SandboxViewModel.submit（后台线程 I/O、主线程回写）。
+        viewModel.submit(req, label: toast, daemonManager: daemonManager)
     }
 }
 

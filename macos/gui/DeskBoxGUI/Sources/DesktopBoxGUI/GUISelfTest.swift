@@ -44,10 +44,45 @@ final class GUISelfTest: @unchecked Sendable {
     private var displayFacts: [String: Any] = [:]
     private var lateFacts: [String: Any] = [:]
 
+    // M32：`DBX_GUI_SELFTEST_SCENARIO=flow` 用视图模型驱动真实 daemon / VM（与按钮走同一段代码）。
+    private weak var viewModel: SandboxViewModel?
+    private weak var daemonManager: DaemonProcessManager?
+    private var flowStarted = false
+    private var flowSteps: [[String: Any]] = []
+    private var quitFired = false
+
+    /// 主界面出现时调用（DockerMainView.onAppear）。
+    @MainActor
+    func attach(viewModel: SandboxViewModel, daemonManager: DaemonProcessManager) {
+        self.viewModel = viewModel
+        self.daemonManager = daemonManager
+        guard scenario == "flow", !flowStarted else { return }
+        flowStarted = true
+        Task { @MainActor in
+            await self.runFlow()
+            self.fireCommandQ()
+        }
+    }
+
     func start() {
         startLagSampler()
         let raw = ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_QUIT_AFTER"] ?? ""
         guard let seconds = Double(raw), seconds > 0, seconds <= 120 else { return }
+        if scenario == "modal" {
+            // 应用级模态（等价于 Settings 里「Pick…」弹出的文件选择面板）。runModal 会在这里嵌套运行
+            // runloop 直到面板关闭；主队列上的定时任务在模态 runloop 里照常执行。
+            // 必须用 runloop 定时器触发，而不是主 dispatch 队列的 block：主队列是串行的，
+            // 若 runModal 卡在某个主队列 block 里，其它主队列任务（包括到点发退出请求的那个）永远排不上。
+            // 真实的按钮点击来自事件回调，同样不是 dispatch block。
+            let timer = Timer(timeInterval: 1.5, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    let panel = NSOpenPanel()
+                    panel.canChooseDirectories = true
+                    _ = panel.runModal()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+        }
         if scenario == "display" || scenario == "sheet" {
             // 等主窗口就绪后打开对应的 sheet；到点再发退出请求。
             let name = scenario == "display" ? Self.openDisplayRequest : Self.openSettingsRequest
@@ -62,11 +97,14 @@ final class GUISelfTest: @unchecked Sendable {
 
     @MainActor
     private func fireCommandQ() {
+        guard !quitFired else { return }
+        quitFired = true
         var target: NSWindow? = nil
         if scenario == "display" { target = focusDisplayView() }
         if scenario == "sheet" { target = NSApp.windows.first { $0.sheetParent != nil } }
         let sheetOpen = AppQuit.anySheetAttached
-        writeReport(extra: ["phase": "before-cmd-q", "sheetAttachedBeforeQuit": sheetOpen, "quitVia": quitVia])
+        writeReport(extra: ["phase": "before-cmd-q", "sheetAttachedBeforeQuit": sheetOpen, "quitVia": quitVia,
+                            "appModalBeforeQuit": NSApp.modalWindow != nil])
         if quitVia == "appleevent" {
             let quit = NSAppleEventDescriptor(
                 eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEQuitApplication),
@@ -118,6 +156,146 @@ final class GUISelfTest: @unchecked Sendable {
                 self.writeReport(extra: late)
             }
         }
+    }
+
+    // MARK: - M32 flow
+
+    @MainActor
+    private func step(_ name: String, _ ok: Bool, _ detail: String = "") {
+        flowSteps.append(["name": name, "ok": ok, "detail": String(detail.prefix(400))])
+        writeReport(extra: ["phase": "flow"])
+    }
+
+    @MainActor
+    private func waitUntil(_ timeout: TimeInterval, _ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return condition()
+    }
+
+    @MainActor
+    private func submit(_ request: DaemonRequest, label: String) async -> Result<DaemonResponse, Error> {
+        guard let viewModel else { return .failure(DaemonClientError.weird("view model gone")) }
+        return await withCheckedContinuation { continuation in
+            viewModel.submit(request, label: label, daemonManager: daemonManager) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
+    @MainActor
+    private func exec(_ sandboxId: String, _ line: String) async -> Result<DaemonResponse, Error> {
+        guard let viewModel else { return .failure(DaemonClientError.weird("view model gone")) }
+        return await withCheckedContinuation { continuation in
+            viewModel.exec(sandboxId: sandboxId, commandLine: line, daemonManager: daemonManager) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
+    @MainActor
+    private func state(of id: String) -> String {
+        viewModel?.sandboxes.first { $0.sandboxId == id }?.state ?? "(absent)"
+    }
+
+    /// Run → Exec → Suspend → Resume → Rm，每一步都经由视图模型里按钮所用的同一入口。
+    /// 任何一步失败即停止（后续步骤不执行，报告里看不到它们 = 未通过）。
+    @MainActor
+    private func runFlow() async {
+        guard let viewModel, let daemonManager else { return step("attach", false, "no view model") }
+
+        // 1) GUI 自动拉起的 daemon 就绪
+        guard await waitUntil(20, { daemonManager.status == .connected }) else {
+            return step("daemon-connected", false, "status=\(daemonManager.status.rawValue)")
+        }
+        step("daemon-connected", true)
+
+        // 2) Run New Sandbox
+        let manifest = UserDefaults.standard.string(forKey: "manifestPath") ?? ""
+        let run = await submit(SandboxViewModel.runRequest(manifestPath: manifest), label: "run started")
+        guard case .success(let created) = run, let id = created.sandboxId else {
+            return step("run", false, "\(run)")
+        }
+        step("run", true, id)
+        guard await waitUntil(5, { self.state(of: id) == "running" }) else {
+            return step("listed-running", false, "state=\(state(of: id))")
+        }
+        step("listed-running", true, SandboxRowActions.available(forState: "running").map(\.rawValue).joined(separator: ","))
+
+        // 3) Exec：带引号的命令行（旧的按空格拆分做不到）
+        _ = await exec(id, "/bin/sh -c 'echo flow-ok; id -u'")
+        let out = viewModel.execOutput
+        guard out.contains("exit=0"), out.contains("flow-ok"), out.contains("65534") else {
+            return step("exec-quoted", false, out)
+        }
+        step("exec-quoted", true)
+
+        // 3b) 非法命令行在本地被拒，不发给 daemon
+        _ = await exec(id, "/bin/echo 'unterminated")
+        guard viewModel.execOutput.contains("命令行无法解析") else {
+            return step("exec-bad-quoting-rejected", false, viewModel.execOutput)
+        }
+        step("exec-bad-quoting-rejected", true)
+
+        // 3c) daemon 拒绝的请求：界面显示可读原因，且**不**把 daemon 标成 stopped
+        _ = await exec(id, "/usr/bin/not-allowed")
+        guard viewModel.execOutput.contains("请求被 daemon 拒绝") || viewModel.execOutput.contains("["),
+              daemonManager.status == .connected else {
+            return step("rejection-keeps-daemon-connected", false,
+                        "status=\(daemonManager.status.rawValue) out=\(viewModel.execOutput)")
+        }
+        step("rejection-keeps-daemon-connected", true, viewModel.execOutput)
+
+        // 4) Suspend（行内按钮对应的请求）
+        guard SandboxRowActions.available(forState: state(of: id)).contains(.suspend),
+              let suspendRequest = SandboxRowActions.request(for: .suspend, sandboxId: id) else {
+            return step("suspend", false, "suspend 按钮在 state=\(state(of: id)) 下不可用")
+        }
+        let suspended = await submit(suspendRequest, label: "suspend")
+        guard case .success = suspended, state(of: id) == "suspended" else {
+            return step("suspend", false, "\(suspended) state=\(state(of: id))")
+        }
+        let suspendedActions = SandboxRowActions.available(forState: state(of: id))
+        step("suspend", true, suspendedActions.map(\.rawValue).joined(separator: ","))
+
+        // 5) Resume：成功，或在宿主锁屏时得到可读的原因（两者都是正确行为，分别记录）
+        guard suspendedActions.contains(.resume),
+              let resumeRequest = SandboxRowActions.request(for: .resume, sandboxId: id) else {
+            return step("resume", false, "resume 按钮不可用")
+        }
+        let resumed = await submit(resumeRequest, label: "resume")
+        switch resumed {
+        case .success:
+            guard state(of: id) == "running" else { return step("resume", false, "state=\(state(of: id))") }
+            step("resume", true, "resumed")
+            _ = await exec(id, "/bin/echo after-resume")
+            guard viewModel.execOutput.contains("after-resume") else {
+                return step("exec-after-resume", false, viewModel.execOutput)
+            }
+            step("exec-after-resume", true)
+        case .failure(let error):
+            let shown = DaemonErrorPresenter.present(error)
+            guard shown.code == "DBX-RESUME-HOST-LOCKED" else { return step("resume", false, shown.detail) }
+            // 锁屏：界面必须给出可读原因、沙箱保持 suspended、daemon 状态不变。
+            guard viewModel.execOutput.contains(shown.title), state(of: id) == "suspended",
+                  daemonManager.status == .connected else {
+                return step("resume-host-locked-presented", false,
+                            "out=\(viewModel.execOutput) state=\(state(of: id)) daemon=\(daemonManager.status.rawValue)")
+            }
+            step("resume-host-locked-presented", true, shown.logLine)
+        }
+
+        // 6) Rm
+        guard let rmRequest = SandboxRowActions.request(for: .rm, sandboxId: id) else { return step("rm", false) }
+        let removed = await submit(rmRequest, label: "rm")
+        guard case .success = removed, state(of: id) == "(absent)" else {
+            return step("rm", false, "\(removed) state=\(state(of: id))")
+        }
+        step("rm", true)
+        step("flow-complete", true)
     }
 
     /// M31：找到 guest 画面（VZVirtualMachineView），让它成为所在窗口的 first responder，
@@ -226,6 +404,8 @@ final class GUISelfTest: @unchecked Sendable {
             "menu": menuSnapshot(NSApp.mainMenu),
         ]
         report["scenario"] = scenario
+        if !flowSteps.isEmpty { report["flow"] = flowSteps }
+        if let daemonManager { report["daemonStatus"] = daemonManager.status.rawValue }
         for (k, v) in displayFacts { report[k] = v }
         for (k, v) in extra { report[k] = v }
         guard let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) else { return }
