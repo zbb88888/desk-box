@@ -36,9 +36,9 @@
 > 再对产出的文件运行 `summarize --markdown` 并替换下表。`e2e-evidence.py check <文件>` 的退出码：
 > 0 = 可作为发布证据，3 = 无失败但不完整，1 = 失败或证据无效。
 
-证据文件：[`evidence/e2e-20261124T212312Z-a58c33e.json`](evidence/e2e-20261124T212312Z-a58c33e.json)
+证据文件：[`evidence/e2e-20261124T222813Z-42df3c4.json`](evidence/e2e-20261124T222813Z-42df3c4.json)
 
-证据：commit a58c33e · 2026-11-24T21:23:12Z · macOS 27.2.1 (26B131) Mac14,6
+证据：commit 42df3c4 · 2026-11-24T22:28:13Z · macOS 27.2.1 (26B131) Mac14,6
 
 | 不变量 | e2e 结果 | 相关套件 | 未验证的断言 |
 | --- | --- | --- | --- |
@@ -49,7 +49,7 @@
 | INV-05 | 通过 | m37-workspace、m37-workspace-patched | — |
 | INV-06 | 通过 | m18-kernel | — |
 | INV-07 | 未覆盖 | — | — |
-| INV-08 | 不完整 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m37-workspace、m37-workspace-patched、m39-exec-output、m39-exec-output-patched、m41-exec-cancel、m41-exec-cancel-patched、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume |
+| INV-08 | 不完整 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m37-workspace、m37-workspace-patched、m39-exec-output、m39-exec-output-patched、m41-exec-cancel、m41-exec-cancel-patched、m42-broker-exec、m42-broker-exec-patched、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume |
 | INV-09 | 通过 | m34-release-cli、m38-guest-install | — |
 | INV-10 | 不完整 | m34-release-cli、m24-concurrency、m27-cli-instance、m35-permissions、m20-persistence、m20b-fault-injection | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume<br>m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件<br>m20-persistence: 原始快照可恢复 / 恢复后状态 running<br>m20-persistence: 恢复后可以打开新终端（suspend 前的终端没有占住 pty）<br>m20-persistence: 恢复后数据仍在、权限未复活<br>m20-persistence: 二次 suspend/resume |
 
