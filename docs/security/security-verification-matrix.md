@@ -1,7 +1,7 @@
 # 安全验证追踪矩阵
 
-状态：测试计划基线，证据待实现
-日期：2026-10-23
+状态：测试计划基线；§2 为各阶段的历史结论，**当前自动化证据见 §2.1**
+日期：2026-10-23（§2.1 更新于 2026-11-24，M36）
 
 ## 1. 使用方式
 
@@ -28,6 +28,60 @@
 | INV-08 | 资源和生命周期由宿主强制 | Controller、Platform Adapter、guest cgroup | CPU/内存/磁盘/PID/日志耗尽、卡死关机、崩溃恢复 | 压力测试与孤儿资源清单 | Runtime 负责人 | **M1-3/M1-4/M2-2b 已验证（macOS）**——exec/PTY child 均为 nobody 65534 + rlimit 上限 + no_new_privs + env-cwd 白名单 + timeout kill 上线进程组；exec 子进程进一步 clone-NEWPID/NEWNS/NEWUTS/NEWIPC + cgroup v2 限额（cpu.max=50%、memory.max=256MiB、pids.max=64）fail-closed。M18 追加内核级纵深：Landlock 路径白名单 + seccomp-bpf deny-list，与 namespaces/cgroup 串联且 fail-closed（`e2e-kernel-hardening.sh` 12/12）。M21 补齐资源统计上报：guest cgroup v2 → 加密通道 `statsRequest/statsResponse` → daemon `stats` → CLI/GUI，`e2e-resource-stats.sh` 7/7（CPU 压力后 `cpuUsageUsec` 增长、内存写入后 `memoryCurrentBytes` 不下降、未知沙箱 fail-soft 不崩 daemon）。注：本内核 root cgroup 不暴露 `memory.current`/`pids.current`，分别以 `memory.stat(anon+file)` 回退与 `null` 如实上报，不做估算。 |
 | INV-09 | 构建域与运行域隔离 | Builder Service、Artifact Import | Build secret canary、cache 跨构建、runtime 磁盘读取、产物篡改 | Builder 销毁和 artifact provenance | 构建供应链负责人 | **M1-5+M3+M5+M7+M8 部分已验证（macOS + CI）**——manifest 信任根已落地（Ed25519 签名 canonical payload + trusted-key 允许列表 + 防降级 + 默认拒绝未签名 manifest + `--allow-unsigned-manifest` 显式开发降级）；供给锁定/SBOM 已落地（下载 sha256 记录 + `guest/sbom.json` + `verify-sbom` fail-closed）；release 签名链骨架已落地（release-keys.json + active/retired/revoked/notBefore/notAfter + rotate/revoke CLI + `ManifestSigner.verify(manifest:chain:)` 路运作）。bit-for-bit 确定性 reproducibility 与公工发布管道仍属后续。 |
 | INV-10 | 更新、持久化和销毁不复活权限 | Updater、Snapshot、Controller | 签名失败、降级、旧 snapshot、撤销后恢复、清理失败 | 更新/回滚/销毁故障注入报告 | 发布安全负责人 | **M20 已验证（macOS）**——VZ `saveMachineStateTo`/`restoreMachineStateFrom` 接入 daemon，快照磁盘态为 ChaChaPoly 密文（`0600`，AAD 绑定 sandboxID/bootID/manifestDigest/guestAssetVersion/keyID）；恢复前三道闸（manifestDigest 不符 / assetVersion 过旧 / key revoked）fail-closed；`e2e-lifecycle-persistence.sh` 15/15（含篡改快照被拒、恢复后 uid 仍 65534、二次 suspend/resume、rm 后快照零残留）。M20b 故障注入矩阵 6/6（run/exec/suspend 各阶段 `kill -9` 后 sweep 收敛、快照归零、重启不复活旧沙箱）；顺带修复「快照不参与 sweep」与「CLI sweep 绕过 runtime」两个真实缺口。剩余边界：撤销链路（release-keys revoked）真机串联回归、跨 macOS 版本快照兼容矩阵。 |
+
+## 2.1 自动化真机 e2e 的当前证据（M36 起，由证据文件生成）
+
+> 本节不是手写的结论，而是 `macos/scripts/e2e-evidence.py summarize --markdown` 对证据文件的输出。
+> 重新生成：在干净的工作区执行 `cd macos && E2E_EVIDENCE_DIR=../docs/security/evidence ./scripts/e2e-all.sh`，
+> 再对产出的文件运行 `summarize --markdown` 并替换下表。`e2e-evidence.py check <文件>` 的退出码：
+> 0 = 可作为发布证据，3 = 无失败但不完整，1 = 失败或证据无效。
+
+证据文件：[`evidence/e2e-20261124T161558Z-8213149.json`](evidence/e2e-20261124T161558Z-8213149.json)
+
+证据：commit 8213149 · 2026-11-24T16:15:58Z · macOS 27.2.1 (26B131) Mac14,6
+
+| 不变量 | e2e 结果 | 相关套件 | 未验证的断言 |
+| --- | --- | --- | --- |
+| INV-01 | 通过 | m12-lifecycle | — |
+| INV-02 | 不完整 | m27-cli-instance、m23-domains | m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume<br>m23-domains: 同域恢复成功 |
+| INV-03 | 不完整 | m35-permissions、m19-canary | m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件 |
+| INV-04 | 通过 | m19-network | — |
+| INV-05 | 未覆盖 | — | — |
+| INV-06 | 通过 | m18-kernel | — |
+| INV-07 | 未覆盖 | — | — |
+| INV-08 | 不完整 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume |
+| INV-09 | 通过 | m34-release-cli | — |
+| INV-10 | 不完整 | m34-release-cli、m24-concurrency、m27-cli-instance、m35-permissions、m20-persistence、m20b-fault-injection | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume<br>m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件<br>m20-persistence: 原始快照可恢复 / 恢复后状态 running<br>m20-persistence: 恢复后可以打开新终端（suspend 前的终端没有占住 pty）<br>m20-persistence: 恢复后数据仍在、权限未复活<br>m20-persistence: 二次 suspend/resume |
+
+整体结论：无失败但不完整
+不能作为发布证据：9 项断言因宿主锁屏未验证
+
+**如何读这张表**
+
+- 「e2e 结果」只说明自动化真机套件的结果。它不等于 §1 的 `已验证`——后者还要求双平台、独立评估等条件；
+  但反过来，**e2e 结果不是「通过」的不变量，不能标为 `已验证`**。
+- 「不完整」= 相关套件没有失败，但其中有断言因宿主登录会话锁屏而被跳过（Virtualization.framework 在锁屏期间
+  拒绝恢复已保存的 VM 状态，见 `design/m27-host-robustness.md` §5）。归属按**套件**计：一个套件里只要有断言被跳过，
+  它所支撑的全部不变量都记为不完整，哪怕被跳过的断言与其中某个不变量无关。这是有意的保守。
+- 「未覆盖」= `e2e-all.sh` 里没有套件为它提供证据。INV-05（宿主侧文件系统 corpus）与 INV-07（控制通道）
+  的证据来自 `swift test` 与 `security-corpus.sh`，不在这张表里。
+
+**自 M23 以来影响证据的变更（按 §1「任何关键控制变更都会使关联证据过期」）**
+
+M24–M35 改动了生命周期、清理、快照、PTY、宿主侧状态文件与发布 CLI，并发现和修复了下列直接关系到不变量的问题。
+受影响的不变量在 §2 表中的历史结论（「M20 已验证」等）描述的是当时的代码；当前代码以本节的证据为准。
+
+| 不变量 | 发现并修复的问题 | 里程碑 |
+| --- | --- | --- |
+| INV-10 | 销毁 suspended 沙箱不删除其快照（加密 VM 状态残留到下一次 sweep） | M27 |
+| INV-10 | `sweep` 读脏 `errno` 把活沙箱判为孤儿并删除其 COW 盘；崩溃清理遗漏域标记；跨进程 sweep 删除在途快照临时文件 | M24 / M27 |
+| INV-10 | suspend 中途失败后沙箱停在 `suspending`，无法恢复也无法继续使用 | M28 |
+| INV-10 / INV-09 | `publish` 等命令静默忽略拼错的选项，防回滚下限可被悄悄放宽；私钥文件 0644 | M34 |
+| INV-03 / INV-10 | 沙箱盘、快照密钥、明文 VM 状态临时文件的保密性依赖父目录与 umask | M35 |
+| INV-08 | daemon 串行处理导致生命周期操作互相阻塞；拆除操作要等在途 exec；第二个 daemon 可抢占 socket；终端关闭后 guest 内 shell 不退出 | M24 / M26 / M27 / M33 |
+| INV-02 | `rm` 不比对声明的凭据域 | M27 |
+
+按 §6 的发布规则，在得到一份 `check` 退出码为 0 的证据之前，INV-02、INV-03、INV-08、INV-10 应按 `已实现待验证` 对待。
 
 ## 3. 跨组件发布套件
 
