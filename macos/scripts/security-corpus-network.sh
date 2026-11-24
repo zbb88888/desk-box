@@ -3,35 +3,16 @@
 # 断言：沙箱内除 lo（DOWN）外没有任何网络接口，且无法建立出站连接。
 # 宿主策略层（allowlist / HTTPS / rebinding / redirect / 上限）由
 # Tests/DeskBoxCoreTests/SecurityCorpusNetworkTests.swift 覆盖。
+# M25：隔离运行（scripts/lib/e2e-common.sh）——状态全在临时目录，退出自动清理。
 set -u
-
-BIN="${BIN:-./.build/release/dbx-poc}"
-SOCK="${SOCK:-/tmp/dbx-corpus-network.sock}"  # 独立 socket：避免与 GUI 自启 daemon 抢同一路径
-MANIFEST="${MANIFEST:-$PWD/guest/manifest.json}"
 JSON_MODE=0
 [ "${1:-}" = "--json" ] && JSON_MODE=1
-
-PASS=0; FAIL=0
+. "$(dirname "$0")/lib/e2e-common.sh"
+e2e_init net
+e2e_build_sign
+cd "$E2E_ROOT"
 pass() { PASS=$((PASS+1)); [ "$JSON_MODE" = "1" ] || printf '[net] PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '[net] FAIL: %s\n' "$1"; }
-
-OWN_DAEMON=0
-if ! "$BIN" ps --daemon-sock "$SOCK" >/dev/null 2>&1; then
-  rm -f "$SOCK"
-  "$BIN" daemon --daemon-sock "$SOCK" > /tmp/net-corpus-daemon.log 2>&1 &
-  OWN_DAEMON=1
-  for _ in $(seq 1 40); do
-    "$BIN" ps --daemon-sock "$SOCK" >/dev/null 2>&1 && break
-    sleep 0.5
-  done
-fi
-
-cleanup() {
-  [ -n "${ID:-}" ] && "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1
-  [ "$OWN_DAEMON" = "1" ] && "$BIN" shutdown --daemon-sock "$SOCK" >/dev/null 2>&1
-  true
-}
-trap cleanup EXIT
+e2e_start_daemon || die "daemon 未就绪"
 
 OUT=$("$BIN" run --daemon-sock "$SOCK" "$MANIFEST" 2>&1)
 ID=$(printf '%s' "$OUT" | sed -n 's/.*sandboxId=\([A-F0-9-]*\).*/\1/p')
@@ -68,7 +49,6 @@ case "$DNS" in
 esac
 
 # 5) 宿主 VZ 配置断言：沙箱 manifest 无网络设备（间接证据：daemon 起沙箱日志无 net 设备）
-if grep -qa 'network\|entropyDevices' /tmp/net-corpus-daemon.log 2>/dev/null; then :; fi
 pass "daemon 默认零网络设备（VZ networking: .none）"
 
 if [ "$JSON_MODE" = "1" ]; then
@@ -76,4 +56,5 @@ if [ "$JSON_MODE" = "1" ]; then
 else
   printf '\n[net] 结果：PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 fi
-exit "$FAIL"
+[ "$FAIL" -eq 0 ] || exit 1
+exit 0

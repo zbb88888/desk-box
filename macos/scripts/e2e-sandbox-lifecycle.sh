@@ -1,34 +1,17 @@
 #!/bin/sh
 # M12：sandbox 基本操作 run/ps/exec/stop/rm 的端到端测试。
 # 默认严格只在真机（codesign VZ entitlement）运行；ARS 附驻 daemon 会话开始/结束。
+# M25：隔离运行（scripts/lib/e2e-common.sh）——状态全在临时目录，退出自动清理。
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-Apple Development: 1220582684@qq.com (9LM4RS5GL6)}"
-SOCK="${DBX_E2E_SOCK:-/tmp/dbxd-e2e-$$.sock}"
-MANIFEST="${1:-$ROOT/guest/manifest.json}"
-PASS=0
-FAIL=0
-
-log()  { printf '[e2e] %s\n' "$1"; }
-pass() { PASS=$((PASS+1)); printf '[e2e] PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '[e2e] FAIL: %s\n' "$1" >&2; }
-die()  { printf '[e2e] FATAL: %s\n' "$1" >&2; exit 1; }
-
-[ -f "$MANIFEST" ] || die "manifest not found: $MANIFEST (run ./scripts/build-alpine-guest.sh ./guest first)"
-
-cd "$ROOT"
-swift build -c release > /dev/null 2>&1 || die "swift build failed"
-codesign --force --sign "$CODESIGN_IDENTITY" --entitlements Resources/DeskBox.entitlements --timestamp .build/release/dbx-poc > /dev/null 2>&1 || die "codesign failed"
-BIN=.build/release/dbx-poc
+[ -n "${1:-}" ] && MANIFEST="$1"
+. "$(dirname "$0")/lib/e2e-common.sh"
+e2e_init e2e
+e2e_build_sign
+cd "$E2E_ROOT"
 
 # daemon 后台起（crash 路径：进程结束 VM 也同时结束）
-rm -f "$SOCK"
-"$BIN" daemon --daemon-sock "$SOCK" > /tmp/dbxd-e2e.log 2>&1 &
-DAEMON_PID=$!
-cleanup() { "$BIN" shutdown --daemon-sock "$SOCK" > /dev/null 2>&1 || true; kill $DAEMON_PID 2> /dev/null || true; rm -f "$SOCK"; }
-trap cleanup EXIT
-sleep 2
+e2e_start_daemon || die "daemon 未就绪"
 
 # T1 run → ps
 OUT=$("$BIN" run --daemon-sock "$SOCK" "$MANIFEST")
@@ -92,9 +75,11 @@ PS2=$("$BIN" ps --daemon-sock "$SOCK" | wc -l | tr -d ' ')
 
 # T6 daemon shutdown + sweep
 "$BIN" shutdown --daemon-sock "$SOCK" > /dev/null && pass "shutdown 正常" || fail "shutdown 失败"
-sleep 2
+e2e_wait_exit "$DAEMON_PID" 100 && pass "daemon 进程已退出" || fail "daemon 在 shutdown 后仍存活"
+[ ! -e "$SOCK" ] && pass "shutdown 后 socket 已清除" || fail "socket 残留"
 SWEEP_OK=$("$BIN" sweep | python3 -c "import json,sys;d=json.load(sys.stdin);sys.stdout.write('OK' if len(d['orphanedSandboxes'])==0 else 'LEAK')" 2>/dev/null || echo LEAK)
 [ "$SWEEP_OK" = "OK" ] && pass "shutdown + sweep 后无孤儿" || fail "shutdown 后尚有孤儿"
+LEFT=$(find "$COW_ROOT" -type f ! -name 'registry.json' ! -name 'registry.lock' 2>/dev/null | tr '\n' ' ')
+[ -z "$LEFT" ] && pass "cow-root 零残留（clone / 域标记 / 快照）" || fail "cow-root 残留：$LEFT"
 
-printf '\n[e2e] 结果：PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
-exit "$FAIL"
+e2e_finish

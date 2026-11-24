@@ -174,10 +174,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             FileManager.default.createFile(atPath: url.path, contents: nil,
                                            attributes: [.posixPermissions: 0o600])
         }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: Data(line.utf8))
+        // M24b：O_APPEND 原子追加——并发 run 不会互相覆盖证据行。
+        let fd = open(url.path, O_WRONLY | O_APPEND | O_CLOEXEC)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        let bytes = Array(line.utf8)
+        _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
     }
 
     /// Recover orphan resources left by SIGKILL/host crash before accepting
@@ -201,18 +203,15 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         guard let entries = try? fm.contentsOfDirectory(at: snapshotRoot, includingPropertiesForKeys: nil) else {
             return
         }
+        let now = Date()
         for entry in entries {
-            let name = entry.lastPathComponent
-            let sandboxID: String
-            if name.hasSuffix(".snap") {
-                sandboxID = String(name.dropLast(5))
-            } else if name.hasPrefix("tmp-") || name.hasPrefix("tmp-restore-") {
-                sandboxID = ""   // 崩溃残留的临时 VZ 状态文件：无条件删除
-            } else {
-                continue
-            }
-            if !sandboxID.isEmpty && keeping.contains(sandboxID) { continue }
-            try? fm.removeItem(at: entry)
+            // M27：判定下沉到 SnapshotSweepPolicy（属主 PID 存活 → 在途，跨进程成立）。
+            let mtime = (try? fm.attributesOfItem(atPath: entry.path)[.modificationDate]) as? Date
+            let verdict = SnapshotSweepPolicy.verdict(
+                name: entry.lastPathComponent, liveSandboxIDs: keeping,
+                age: mtime.map { now.timeIntervalSince($0) },
+                isProcessAlive: SandboxRegistry.processIsAlive)
+            if verdict == .remove { try? fm.removeItem(at: entry) }
         }
     }
 
@@ -389,6 +388,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     /// M20：暂停并把 VZ 状态加密落盘（INV-10）。COW 盘保留，供 resume 使用。
     public func suspend(_ handle: SandboxHandle) async throws {
         let snapshotURL = snapshotURL(for: handle.sandboxID)
+        // 前置条件失败（状态不对 / 沙箱不存在）不改变任何东西，无需回滚。
         try await onQueue {
             let record = try self.require(handle)
             guard record.lifecycle.state == .running else {
@@ -396,6 +396,26 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                                      "suspend 仅允许 running 状态，当前 \(record.lifecycle.state)")
             }
             try record.lifecycle.transition(to: .suspending, reason: .lifecycleStopRequested)
+        }
+        do {
+            try await self.performSuspend(handle, snapshotURL: snapshotURL)
+        } catch {
+            // M28：此前任何一步失败（pause / 保存 / 读回 / 加密落盘）都直接上抛——VM 停在 paused、
+            // 状态停在 suspending：既不能 exec（不是 running），也不能 resume（不是 suspended），
+            // 再 suspend 也被拒，只剩 rm。现在回滚到 running；回滚不了就明确进入 failed。
+            let restored = await self.rollbackFailedSuspend(handle)
+            if restored {
+                throw SandboxFailure(.lifecycleSuspendAborted,
+                                     "suspend 失败，已回滚到 running（沙箱可继续使用）| cause: \(error)")
+            }
+            throw SandboxFailure(.lifecycleSuspendFailed,
+                                 "suspend 失败且无法回滚，沙箱已进入 failed（请 rm）| cause: \(error)")
+        }
+    }
+
+    private func performSuspend(_ handle: SandboxHandle, snapshotURL: URL) async throws {
+        try await onQueue {
+            let record = try self.require(handle)
             try self.registry.upsert(RegisteredSandbox(
                 sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
                 status: .stopped, clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
@@ -415,13 +435,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
 
         let tempURL = snapshotURL.deletingLastPathComponent()
-            .appendingPathComponent("tmp-\(UUID().uuidString).vzstate")
+            .appendingPathComponent(SnapshotSweepPolicy.suspendTempName())
         try? FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
+        // defer 必须在保存之前登记：保存中途失败留下的半截文件也要删。
+        defer { try? FileManager.default.removeItem(at: tempURL) }
         try await self.vzOperation { completion in
             machine.saveMachineStateTo(url: tempURL) { error in completion(error) }
         }
-        defer { try? FileManager.default.removeItem(at: tempURL) }
 
         let payload = try Data(contentsOf: tempURL)
         let metadata = try await onQueue { () -> SnapshotMetadata in
@@ -454,6 +475,61 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 hostPID: ProcessInfo.processInfo.processIdentifier,
                 domainID: record.domain.domainID))
         }
+    }
+
+    /// M28：suspend 失败后的回滚。返回 true = 沙箱已回到 running。
+    ///
+    /// 只处理「仍停在 suspending」的情况：已经走到 suspended（快照已加密落盘，只是收尾的
+    /// registry 写入失败）不回滚——那一刻再把 VM 拉起来反而会让磁盘上留下一份与运行态分叉的快照。
+    private func rollbackFailedSuspend(_ handle: SandboxHandle) async -> Bool {
+        guard let machine = try? await onQueue({ try self.require(handle).machine }) else { return false }
+        let vmState: VZVirtualMachine.State = await withCheckedContinuation { continuation in
+            self.queue.async { continuation.resume(returning: machine.state) }
+        }
+        var vmRunning = (vmState == .running)
+        if vmState == .paused {
+            do {
+                try await self.vzOperation { completion in
+                    machine.resume { result in
+                        switch result {
+                        case .success: completion(nil)
+                        case .failure(let error): completion(error)
+                        }
+                    }
+                }
+                vmRunning = true
+            } catch {
+                vmRunning = false
+            }
+        }
+        let running = vmRunning
+        let outcome = try? await onQueue { () -> Bool in
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .suspending else {
+                return record.lifecycle.state == .running
+            }
+            if running, let proof = record.lastAcceptedProof {
+                do {
+                    // 进入 running 仍然必须带与当前 boot 绑定的 proof：同一 boot、同一会话、未曾 restore。
+                    try record.lifecycle.transition(to: .running, reason: .lifecycleSuspendAborted, proof: proof)
+                    try? self.registry.upsert(RegisteredSandbox(
+                        sandboxID: record.request.sandboxID, bootID: record.boot.bootID,
+                        status: .running, clonePath: record.cowLease.cloneURL.standardizedFileURL.path,
+                        hostPID: ProcessInfo.processInfo.processIdentifier,
+                        domainID: record.domain.domainID))
+                    self.recordAudit(record, action: .channelEvent,
+                                     decision: .error(.lifecycleSuspendAborted, "suspend 失败，已回滚到 running"))
+                    return true
+                } catch {
+                    // 落到下面的 forceFail。
+                }
+            }
+            record.lifecycle.forceFail(reason: .lifecycleSuspendFailed)
+            self.recordAudit(record, action: .channelEvent,
+                             decision: .error(.lifecycleSuspendFailed, "suspend 失败且无法回滚"))
+            return false
+        }
+        return outcome ?? false
     }
 
     /// M20：从快照恢复。三道闸（manifestDigest / assetVersion / key 撤销）先过，再交给 VZ。
@@ -499,7 +575,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         // 2) 解密 + VZ 恢复（这一步失败也只回到 suspended）。
         let payload = try self.snapshots.open(at: snapshotURL)
         let tempURL = snapshotURL.deletingLastPathComponent()
-            .appendingPathComponent("tmp-restore-\(UUID().uuidString).vzstate")
+            .appendingPathComponent(SnapshotSweepPolicy.restoreTempName())
         try payload.write(to: tempURL, options: [.atomic])
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
@@ -592,6 +668,21 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             } catch {
                 record.lifecycle.forceFail(reason: .platformCowCleanupFailed)
                 self.recordAudit(record, action: .destroy, decision: .error(.platformCowCleanupFailed, error.localizedDescription))
+                throw error
+            }
+            // M27 fix（INV-10）：销毁必须连同快照一起清除。此前 destroy 不碰 `.snap`——对
+            // suspended 沙箱执行 rm / shutdown 后，其加密 VM 状态仍留在磁盘上，直到之后某次
+            // run 触发的 sweep 才被顺带清掉。之所以一直没暴露，是因为测试总是先 resume 再 rm
+            //（resume 成功时会删快照）。
+            let snapshot = self.snapshotURL(for: handle.sandboxID)
+            do {
+                try FileManager.default.removeItem(at: snapshot)
+            } catch CocoaError.fileNoSuchFile {
+                // 没有快照（从未 suspend，或已在 resume 时删除）。
+            } catch {
+                record.lifecycle.forceFail(reason: .platformCowCleanupFailed)
+                self.recordAudit(record, action: .destroy,
+                                 decision: .error(.platformCowCleanupFailed, "snapshot cleanup: \(error.localizedDescription)"))
                 throw error
             }
             self.recordAudit(record, action: .destroy, decision: .allow())
@@ -1467,3 +1558,4 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 }
+

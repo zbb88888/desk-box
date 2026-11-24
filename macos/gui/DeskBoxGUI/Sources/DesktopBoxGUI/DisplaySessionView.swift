@@ -17,7 +17,7 @@ struct DisplaySessionView: View {
             .padding(.horizontal)
 
             if let machine = model.machine {
-                NSViewWrapper(machine: machine)
+                DisplayWindow(machine: machine)
                     .frame(minWidth: 1280 / 1.25, minHeight: 800 / 1.25)
                     .cornerRadius(6)
                     .padding(.horizontal)
@@ -35,21 +35,5 @@ struct DisplaySessionView: View {
         }
         .padding(.vertical)
         .frame(minWidth: 800, minHeight: 520)
-    }
-}
-
-private struct NSViewWrapper: NSViewRepresentable {
-    let machine: VZVirtualMachine
-
-    func makeNSView(context: Context) -> VZVirtualMachineView {
-        let view = VZVirtualMachineView()
-        view.virtualMachine = machine
-        view.capturesSystemKeys = true
-        view.translatesAutoresizingMaskIntoConstraints = false
-        return view
-    }
-
-    func updateNSView(_ nsView: VZVirtualMachineView, context: Context) {
-        nsView.virtualMachine = machine
     }
 }

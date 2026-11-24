@@ -1,4 +1,5 @@
 import Darwin
+import DeskBoxVZ
 import Foundation
 
 struct DaemonRequest: Codable {
@@ -83,8 +84,9 @@ struct DaemonSocketClient {
     let sockPath: String
 
     static func defaultSockPath() -> String {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("DeskBox/dbxd.sock").path
+        // M30：与 daemon/CLI 同一解析点（含 DBX_SUPPORT_ROOT；非法值直接 exit 2，不回落默认目录）。
+        // GUI 拉起的 daemon 继承同一环境变量，因此两边看到的是同一个 socket。
+        DeskBoxPaths.daemonSocketURL.path
     }
 
     func probing() -> Bool {
@@ -171,16 +173,11 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
         self.clientPath = path
     }
 
-    /// M17 hotfix：发现 daemon 死但 socket 残留时，清残留并允许重开。
-    private func clearStaleSocket() {
-        let path = self.clientPath
-        if FileManager.default.fileExists(atPath: path) {
-            try? FileManager.default.removeItem(atPath: path)
-            DispatchQueue.main.async {
-                LogStore.shared.append("stale daemon sock removed: \(path)")
-            }
-        }
-    }
+    // M28：GUI **不再删除 socket 文件**。
+    // 旧逻辑（M17 hotfix）在探活失败且 GUI 不持有 daemon 进程时 unlink socket。探活失败并不等于
+    // daemon 已死（2s 读超时、daemon 由别处启动且正忙……）；删掉一个活 daemon 的 socket 会让它
+    // 连同 VM 变成不可达的孤儿。而且 M27 起 daemon 有单实例守卫：真正的 stale socket 由新 daemon
+    // 在启动时探活后自行接管，GUI 侧没有任何理由再碰这个文件。
 
     func refresh() {
         // M17 hotfix：GUI 自持的 daemon 以 process.isRunning 为连注目（期间run 忙 socket 的 probing 会超时）。
@@ -188,16 +185,21 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
             self.status = .connected
             return
         }
-        let on = client.probing()
-        self.status = on ? .connected : .stopped
-        if !on && process == nil { clearStaleSocket() }
+        // Cmd+Q bug fix：probing 带 2s 读超时，每 3s 的定时器在主线程调它会卡死 runloop。
+        let client = self.client
+        DispatchQueue.global().async { [weak self] in
+            let on = client.probing()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.status = on ? .connected : .stopped
+            }
+        }
     }
 
     /// daemon 死处理：若已死，重置 process 引用使 startDaemon 工作。
     func noteDiedIfNeeded() {
         if let p = process, !p.isRunning {
             process = nil
-            clearStaleSocket()
         }
     }
 
@@ -273,12 +275,17 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
     }
 
     func stopDaemon() {
-        if let response = try? client.send(DaemonRequest(kind: "shutdown")) {
-            LogStore.shared.append("shutdown ack pid=\(response.pid ?? 0)")
-            self.status = .stopped
-        }
-        process?.terminate()
+        // Cmd+Q bug fix：shutdown 请求离主线程（默认 30s 超时足以卡死 UI）。
+        let client = self.client
+        let p = process
         process = nil
+        self.status = .stopped
+        DispatchQueue.global().async {
+            if let response = try? client.send(DaemonRequest(kind: "shutdown"), timeoutSec: 5) {
+                LogStore.shared.append("shutdown ack pid=\(response.pid ?? 0)")
+            }
+            p?.terminate()
+        }
     }
 }
 

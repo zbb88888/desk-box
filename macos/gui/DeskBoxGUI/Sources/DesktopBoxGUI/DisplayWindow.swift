@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Virtualization
+import DeskBoxVZ
 
 /// M14b：guest display 窗（virtio-gpu → NSView 展示）。
 /// Host side display window是移动 AppKit 体确定，不在 daemon 进程;此窗归 GUI 中的 App-process VM。
@@ -10,7 +11,9 @@ struct DisplayWindow: NSViewRepresentable {
     func makeNSView(context: Context) -> VZVirtualMachineView {
         let view = VZVirtualMachineView()
         view.virtualMachine = machine
-        view.capturesSystemKeys = true
+        // Cmd+Q bug fix：capturesSystemKeys=true 会把 ⌘Q/⌘Tab 等系统快捷键转发进 guest，
+        // 导致 Display 窗口聚焦时无法退出 App。fbcon guest 不需要系统热键。
+        view.capturesSystemKeys = false
         return view
     }
 
@@ -32,9 +35,31 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
     private var runtimeSandboxId: String? = nil
     private let animQueue = DispatchQueue(label: "deskbox.gui.displayvm")
     private var consolePipe: (fh: FileHandle?, cleanup: (() -> Void)?) = (nil, nil)
+    /// 会话私盘（rootfs 临时副本）：stop/退出时必须删，否则每次 Open Display 泄漏一份 512MiB。
+    private var sessionDisk: URL? = nil
+    private var terminateObserver: NSObjectProtocol? = nil
+
+    init() {
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+        ) { [weak self] _ in self?.cleanupSessionDisk() }
+    }
+
+    deinit {
+        if let o = terminateObserver { NotificationCenter.default.removeObserver(o) }
+        cleanupSessionDisk()
+    }
+
+    private func cleanupSessionDisk() {
+        if let disk = sessionDisk {
+            try? FileManager.default.removeItem(at: disk)
+            sessionDisk = nil
+        }
+    }
 
     func start(kernelPath: URL, initrdPath: URL?, rootDiskPath: URL, cpu: Int = 2, memMiB: Int = 2048) {
         // 会话私盘：rootfs base 不可写（strategies 一致）。
+        cleanupSessionDisk()
         let sessionDisk = FileManager.default.temporaryDirectory
             .appendingPathComponent("deskbox-display-root-\(UUID().uuidString).raw")
         do {
@@ -47,6 +72,7 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
             return
         }
         let activeRootDisk = sessionDisk
+        self.sessionDisk = sessionDisk
         DispatchQueue.main.async { self.busy = true; self.status = "starting" }
         animQueue.async {
             do {
@@ -74,7 +100,11 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
     func stop() {
         guard let machine else { return }
         if machine.canStop {
-            machine.stop { _ in DispatchQueue.main.async { self.status = "stopped"; self.machine = nil } }
+            machine.stop { _ in DispatchQueue.main.async {
+                self.status = "stopped"
+                self.machine = nil
+                self.cleanupSessionDisk()
+            } }
         } else if machine.canPause {
             machine.pause { _ in }
         }
@@ -120,8 +150,7 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
     }
 
     private func consoleFileHandle() throws -> FileHandle {
-        let path = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DeskBox/display-console.log")
+        let path = DeskBoxPaths.supportRoot.appendingPathComponent("display-console.log")
         try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: path.path, contents: nil)
         return try FileHandle(forWritingTo: path)

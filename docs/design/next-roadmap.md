@@ -24,6 +24,15 @@
 | M21 ✅ | 资源统计与观测 | INV-08 剩余（资源统计上报） | S | guest 上报 CPU/mem/io → daemon `stats` → GUI Stats 面板；耗尽压力测试 |
 | M22 | 产品化发布 v0.2.0 | —（发布面） | M | notarized .app + DMG + 更新检查 + 正式 release assets（repro-check 通过） |
 | M23 ✅ | 多凭据域隔离 | INV-02 | L | 已完成：e2e 21/21 + 属性矩阵 11/11 |
+| M24 ✅ | daemon 并发化 + 优雅停机 + 协议决策表 | —（可用性/健壮性；修 2 个 sweep 缺陷） | M | 已完成：UT 30 + e2e 31/31，详见 `m24-daemon-concurrency.md` |
+| M25 ✅ | e2e 隔离化 + 卫生审计 | —（测试基建） | S | 已完成：`DBX_SUPPORT_ROOT` + 公共 harness + `e2e-all.sh`（11 套件全绿、卫生 clean）；M23 e2e 已在并发 daemon 上复验 21/21，详见 `m25-e2e-isolation.md` |
+| M26 ✅ | exec 取消 + 引导失败快速诊断 | INV-08 周边 | M | 已完成：UT 27 + e2e 48/48；拆除类操作 ~40ms 返回（旧 ~39s），512MiB 引导 10s 报因（旧 90s），详见 `m26-boot-diagnosis-and-cancel.md` |
+| M27 ✅ | 宿主侧健壮性收尾：CLI fail-closed / daemon 单实例守卫 / 跨进程 sweep 安全 / 销毁 suspended 沙箱删快照（INV-10）/ 锁屏 resume 诊断 | INV-10 + 可用性 | M | 已完成：UT 38 + e2e 54；当时因锁屏未验证的 6 项已在 M28 解锁后复验通过（`e2e-all.sh` 退出码 0） |
+| M29 | guest 侧 exec kill 协议 | INV-08 周边 | L | 需重建 guest 资产 + `guestAssetVersion` 变更；客户端断开/显式 cancel 能杀掉 guest 内进程且保留沙箱。**需确认后再做** |
+| M28 ✅ | suspend 失败回滚 + GUI 对齐 | INV-10 周边 + 产品面 | M | 已完成：suspend 中途失败回滚到 running（e2e 故障注入 8 项）；GUI 不再删 socket、被拒绝不再显示 daemon 已停、原因码可读呈现（`GUITests` 15）。GUI 界面行为未验证，见 `m28-suspend-rollback-and-gui-alignment.md` §4 手测清单 |
+| M30 ✅ | GUI 可自动化验证 | —（产品面） | M | 已完成：GUI 识别 `DBX_SUPPORT_ROOT`、行内操作按状态启用（含 Suspend/Resume）、应用内自检 + 真 GUI 进程 e2e 20/20（菜单 ⌘Q、合成 ⌘Q 退出、daemon 无响应时主线程不卡）。变异检查证实「主线程同步 socket」是 ⌘Q bug 的真实根因，并更正了第一轮的一条错误结论，见 `m30-gui-automation.md` §3 |
+| M31 | Display 窗口与点击流程的验证 | —（产品面） | M | Display 聚焦时 ⌘Q（`capturesSystemKeys`）；Run/Exec/Suspend/Resume 的界面流程。需要视图模型层自检或你授权的界面自动化 |
+| M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 
 ---
 
@@ -95,9 +104,20 @@
 
 ## 3. 常驻工程债（穿插进行，不单独开阶段）
 
+> **2026-11 GUI hotfix（Cmd+Q 无法退出）**：根因有三——① GUI 多处在主线程同步调 daemon socket
+> （run/stop/rm/exec/wsSync/shutdown/probing，最长 30s 超时，叠加 daemon 串行 queue 背压后主 runloop
+> 卡死，⌘Q 事件无法分发）；② `VZVirtualMachineView.capturesSystemKeys=true` 把 ⌘Q 转发进 guest；
+> ③ Quit 被放在 `.appSettings` 菜单槽且无快捷键。修复：全部 socket I/O 移到 global queue +
+> 主线程回写；`capturesSystemKeys=false`；显式 `.appTermination` + ⌘Q；顺带修 display 会话私盘
+> （512MiB 临时副本）泄漏——stop/退出时删除。daemon 侧的队列背压已由 M24 解决。
+
 - GUI display 窗口交互的**人工视觉验证**（本机无屏幕录制权限，需你手动过一遍并记录）。
-- `swift test` 中 18 个 suite 的覆盖盲区：daemon 协议层（`SandboxDaemon`）尚无单元测试，只有 e2e；建议补 `Dispatch` 决策表测试。
-- daemon 单进程串行 queue 的**背压**：run 期间 30–50s 阻塞整个 queue（hotfix 绕过了 GUI 误判，但 `ps` 也被阻塞）。建议：VM 生命周期操作移出 queue（每沙箱 actor）+ queue 只做状态簿记。
+- ~~daemon 协议层无单元测试~~ → M24a 已补决策表 + serve 测试（`Tests/DaemonTests`）。
+- ~~daemon 单进程串行 queue 背压~~ → M24b 已并发化（每沙箱 opQueue + stateQueue 簿记）。
+- ~~既有 e2e 脚本共用用户真实状态、留 `/tmp` 日志、`pkill` 用户 daemon~~ → M25 已隔离化。
+- ~~跨进程 `sweep` 删除在途快照临时文件~~ → M27 已解决（属主 PID 判定）。
+- 锁屏期间 suspend 的沙箱解锁后能否 resume：未验证（见 `m27-host-robustness.md` §5）。
+- ~~suspend 失败后沙箱停在 `suspending`~~ → M28 已回滚到 running。
 - `consoleTail` 环形缓冲 128KiB 固定；长时运行沙箱的滚动与落盘策略待定。
 
 ## 4. 建议执行顺序与节奏

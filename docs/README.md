@@ -44,6 +44,12 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M30 GUI 可自动化验证](design/m30-gui-automation.md)：GUI 隔离启动、应用内自检（菜单 / 合成 ⌘Q / 主线程卡顿）、行内操作按状态启用；含对 ⌘Q 根因的更正。
+- [M28 suspend 失败回滚与 GUI 对齐](design/m28-suspend-rollback-and-gui-alignment.md)：suspend 中途失败回滚到 running；GUI 不再删除 daemon socket、原因码可读呈现；含 GUI 手测清单。
+- [M27 宿主侧健壮性收尾](design/m27-host-robustness.md)：CLI 参数 fail-closed、daemon 单实例守卫、跨进程 sweep 安全、销毁 suspended 沙箱删快照、锁屏 resume 诊断。
+- [M26 引导失败诊断与在途操作取消](design/m26-boot-diagnosis-and-cancel.md)：静默引导看门狗 + 内存估算提示；`rm --force`/`stop`/`shutdown` 打断在途 exec。
+- [M25 E2E 隔离化与卫生审计](design/m25-e2e-isolation.md)：`DBX_SUPPORT_ROOT` + 公共 harness + `e2e-all.sh`（运行前后基线比对，残留即失败）。
+- [M24 daemon 并发化与优雅停机](design/m24-daemon-concurrency.md)：每沙箱 opQueue + 协议决策表 + draining 停机；修复 sweep 误删活沙箱（脏 errno）与域标记泄漏。
 - [M23 多凭据域隔离](design/m23-credential-domains.md)：凭据域一等化 + COW/快照/会话/调度四层跨域拒绝（INV-02）。
 - [M22 分发与公证](design/m22-distribution-notarization.md)：自包含 `.app` + DMG + hardened runtime + 公证 fail-closed + 更新检查（拒绝回滚）。
 - [M20 生命周期持久化](design/m20-lifecycle-persistence.md)：VZ suspend/resume + 快照 AEAD 信封 + 「不复活权限」三道闸。

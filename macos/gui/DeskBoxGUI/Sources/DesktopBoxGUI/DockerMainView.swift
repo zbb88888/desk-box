@@ -26,7 +26,6 @@ struct DockerMainView: View {
     @State private var consoleSandboxId: String?
     @State private var execSandboxId = ""
     @State private var execCommand = ""
-    @State private var execOutput = ""
     @State private var settingsPresented = false
     @State private var displayPresented = false
 
@@ -155,13 +154,12 @@ struct DockerMainView: View {
                 }
                 .width(min: 160)
                 TableColumn("Actions") { sb in
+                    // M30：按生命周期状态启用（SandboxRowActions）；新增 Suspend / Resume。
                     HStack(spacing: 8) {
-                        Button("Terminal") { terminalSandboxId = sb.sandboxId }
-                        Button("Console") { consoleSandboxId = sb.sandboxId }
-                        Button("Exec") { execSandboxId = sb.sandboxId }
-                        Button("Restart") { restart(sb.sandboxId) }
-                        Button("Stop") { stop(sb.sandboxId) }
-                        Button("Rm") { rm(sb.sandboxId) }.foregroundColor(.red)
+                        ForEach(SandboxRowActions.available(forState: sb.state)) { action in
+                            Button(action.label) { perform(action, on: sb.sandboxId) }
+                                .foregroundColor(action.isDestructive ? .red : nil)
+                        }
                     }
                 }
             }
@@ -176,9 +174,9 @@ struct DockerMainView: View {
                 Button("Exec") { exec() }.disabled(execSandboxId.isEmpty || execCommand.isEmpty)
             }
             .padding(.horizontal)
-            if !execOutput.isEmpty {
+            if !viewModel.execOutput.isEmpty {
                 ScrollView {
-                    Text(execOutput).font(.system(.caption, design: .monospaced))
+                    Text(viewModel.execOutput).font(.system(.caption, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
                 .frame(maxHeight: 120)
@@ -219,32 +217,44 @@ struct DockerMainView: View {
         send(req, toast: "run started")
     }
 
-    private func stop(_ id: String) {
-        var req = DaemonRequest(kind: "stop"); req.sandboxId = id
-        send(req, toast: "stopped \(id)")
-    }
-
-    private func rm(_ id: String) {
-        var req = DaemonRequest(kind: "rm"); req.sandboxId = id; req.force = true
-        send(req, toast: "removed \(id)")
-    }
-
-    private func restart(_ id: String) {
-        var req = DaemonRequest(kind: "restart"); req.sandboxId = id
-        send(req, toast: "restart ack")
+    /// M30：行内操作统一入口。界面动作在此处理，其余转成 daemon 请求。
+    private func perform(_ action: SandboxAction, on id: String) {
+        switch action {
+        case .terminal: terminalSandboxId = id
+        case .console: consoleSandboxId = id
+        case .exec: execSandboxId = id
+        default:
+            guard let request = SandboxRowActions.request(for: action, sandboxId: id) else { return }
+            send(request, toast: "\(action.rawValue) \(id)")
+        }
     }
 
     private func exec() {
         var req = DaemonRequest(kind: "exec")
         req.sandboxId = execSandboxId
         req.argv = execCommand.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard !(req.argv?.isEmpty ?? true) else { execOutput = "argv empty"; return }
-        do {
-            let resp = try viewModel.client.send(req)
-            execOutput = "exit=\(resp.exitCode ?? 0)\n---stdout---\n\(resp.stdout ?? "")\n---stderr---\n\(resp.stderr ?? "")"
-        } catch {
-            execOutput = "daemon: \(error.localizedDescription)"
-            daemonManager.status = .stopped
+        guard !(req.argv?.isEmpty ?? true) else { viewModel.execOutput = "argv empty"; return }
+        // Cmd+Q bug fix：exec 可能跑很久（daemon 串行 queue 背压），绝不在主线程同步 send。
+        let client = viewModel.client
+        let viewModel = self.viewModel
+        let daemonManager = self.daemonManager
+        viewModel.execOutput = "running…"
+        let request = req
+        DispatchQueue.global().async {
+            do {
+                let resp = try client.send(request)
+                let text = "exit=\(resp.exitCode ?? 0)\n---stdout---\n\(resp.stdout ?? "")\n---stderr---\n\(resp.stderr ?? "")"
+                Task { @MainActor in viewModel.execOutput = text }
+            } catch {
+                Task { @MainActor in
+                    let shown = DaemonErrorPresenter.present(error)
+                    viewModel.execOutput = "\(shown.logLine)\n\(shown.detail)"
+                    // M28：只有「连不上」才说明 daemon 不在；被拒绝说明它活着。
+                    if (error as? DaemonClientError)?.indicatesDaemonUnreachable ?? false {
+                        daemonManager.status = .stopped
+                    }
+                }
+            }
         }
     }
 
@@ -259,16 +269,33 @@ struct DockerMainView: View {
     }
 
     private func send(_ req: DaemonRequest, toast: String) {
-        do {
-            let resp = try viewModel.client.send(req)
-            if let newId = resp.sandboxId { LogStore.shared.append("\(req.kind): \(toast) -> \(newId)") }
-            else { LogStore.shared.append("\(req.kind): \(toast)") }
-            viewModel.refresh()
-        } catch {
-            LogStore.shared.append("\(req.kind) fail: \(error.localizedDescription)")
-            execOutput = "daemon: \(error.localizedDescription)"
-            // M17 hotfix：发送失败也应立即表状态而不是仍是 connected
-            daemonManager.status = .stopped
+        // Cmd+Q bug fix：run/stop/rm/restart 都可能被 daemon 串行 queue 阻塞 30–50s，
+        // 之前在主线程同步 send 会把整个 runloop（含 ⌘Q 事件分发）卡死。
+        let client = viewModel.client
+        let viewModel = self.viewModel
+        let daemonManager = self.daemonManager
+        let kind = req.kind
+        DispatchQueue.global().async {
+            do {
+                let resp = try client.send(req)
+                Task { @MainActor in
+                    if let newId = resp.sandboxId { LogStore.shared.append("\(kind): \(toast) -> \(newId)") }
+                    else { LogStore.shared.append("\(kind): \(toast)") }
+                    viewModel.refresh()
+                }
+            } catch {
+                Task { @MainActor in
+                    let shown = DaemonErrorPresenter.present(error)
+                    LogStore.shared.append("\(kind) \(shown.severity.rawValue): \(shown.logLine)")
+                    viewModel.execOutput = "\(shown.logLine)\n\(shown.detail)"
+                    // M28：只有「连不上」才说明 daemon 不在（M17 hotfix 把任何失败都当成 stopped，
+                    // 于是一次被拒绝的 run 会让界面显示 daemon 已停并触发自动重启逻辑）。
+                    if (error as? DaemonClientError)?.indicatesDaemonUnreachable ?? false {
+                        daemonManager.status = .stopped
+                    }
+                    viewModel.refresh()
+                }
+            }
         }
     }
 }

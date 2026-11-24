@@ -9,22 +9,18 @@
 #   5) 跨域 COW 复用被拒（cow-domain-mismatch）
 #   6) 调度决策记录里同域 VM 实例唯一、域标签正确
 #   7) 域 A 的 broker 凭据不出现在域 B 的请求/文件里（canary）
+# M25：隔离运行（scripts/lib/e2e-common.sh）。domains.json / 凭据表 / cows 都写在临时
+#      support-root（DBX_SUPPORT_ROOT）里：不再改写用户真实 domains.json，也不再 pkill
+#      用户的 daemon。
 set -u
-cd "$(dirname "$0")/.."
-BIN="${BIN:-./.build/release/dbx-poc}"
-MANIFEST="${MANIFEST:-$PWD/guest/manifest.json}"
-SUPPORT="$HOME/Library/Application Support/DeskBox"
-SOCK="${SOCK:-/tmp/dbx-m23.sock}"
-COW_ROOT="${COW_ROOT:-$SUPPORT/cows}"
-PASS=0; FAIL=0
-pass() { PASS=$((PASS+1)); printf '[m23] PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '[m23] FAIL: %s\n' "$1"; }
+. "$(dirname "$0")/lib/e2e-common.sh"
+e2e_init m23
+e2e_build_sign
+cd "$E2E_ROOT"
+SUPPORT="$DBX_SUPPORT_ROOT"
 
 # ---------- 0) 准备域配置 ----------
-mkdir -p "$SUPPORT"
 DOMAINS="$SUPPORT/domains.json"
-BACKUP=""
-if [ -f "$DOMAINS" ]; then BACKUP="$DOMAINS.bak.$$"; cp "$DOMAINS" "$BACKUP"; fi
 cat > "$DOMAINS" <<EOF
 {"schema":"deskbox-domains/v1","defaultDomain":"personal",
  "domains":[{"domainID":"personal","brokerPolicyFile":"broker-policy.json"},
@@ -38,12 +34,6 @@ EOF
 CANARY="M23-CANARY-$(openssl rand -hex 8)"
 printf 'work.example.invalid:%s\n' "$CANARY" > "$SUPPORT/broker-credentials.work.local"
 chmod 600 "$SUPPORT/broker-credentials.work.local"
-
-restore_domains() {
-  if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then mv "$BACKUP" "$DOMAINS"; else rm -f "$DOMAINS"; fi
-  rm -f "$SUPPORT/broker-policy.work.json" "$SUPPORT/broker-credentials.work.local"
-}
-trap restore_domains EXIT
 
 # ---------- 1) domains 命令 + fail-closed ----------
 OUT=$("$BIN" domains --json 2>&1)
@@ -74,20 +64,8 @@ if "$BIN" domains --json >/dev/null 2>&1; then fail "路径穿越竟然被接受
 mv "$DOMAINS.good.$$" "$DOMAINS"
 
 # ---------- 2) 起 daemon ----------
-pkill -f 'dbx-poc daemo' 2>/dev/null; sleep 1
-rm -f "$SOCK"
-"$BIN" daemon --daemon-sock "$SOCK" > /tmp/m23-daemon.log 2>&1 &
-DAEMON_PID=$!
-for _ in $(seq 1 40); do "$BIN" ps --daemon-sock "$SOCK" >/dev/null 2>&1 && break; sleep 0.5; done
-grep -q 'daemon domains: loaded' /tmp/m23-daemon.log && pass "daemon 加载 domains.json" || fail "daemon 未加载 domains.json"
-
-cleanup() {
-  [ -n "${ID_A:-}" ] && "$BIN" rm --daemon-sock "$SOCK" "$ID_A" --force >/dev/null 2>&1
-  [ -n "${ID_B:-}" ] && "$BIN" rm --daemon-sock "$SOCK" "$ID_B" --force >/dev/null 2>&1
-  "$BIN" shutdown --daemon-sock "$SOCK" >/dev/null 2>&1
-  restore_domains
-}
-trap cleanup EXIT
+e2e_start_daemon || die "daemon 未就绪"
+grep -q 'daemon domains: loaded' "$DAEMON_LOG" && pass "daemon 加载 domains.json" || fail "daemon 未加载 domains.json"
 
 # ---------- 3) 两个域并发创建 ----------
 ID_A=$("$BIN" run --daemon-sock "$SOCK" --domain personal "$MANIFEST" 2>&1 | sed -n 's/.*sandboxId=\([A-F0-9-]*\).*/\1/p')
@@ -100,14 +78,14 @@ echo "$PS" | grep -q "personal" && pass "ps 显示 personal 域" || fail "ps 缺
 echo "$PS" | grep -q "work" && pass "ps 显示 work 域" || fail "ps 缺 work"
 
 # ---------- 4) 跨域会话拒绝 ----------
-if "$BIN" exec --daemon-sock "$SOCK" --domain work "$ID_A" -- /bin/sh -c 'id -u' >/tmp/m23-x1.log 2>&1; then
+if "$BIN" exec --daemon-sock "$SOCK" --domain work "$ID_A" -- /bin/sh -c 'id -u' >"$E2E_WORK/x1.log" 2>&1; then
   fail "跨域 exec 竟然成功"
 else
-  grep -q 'DBX-DOMAIN-SESSION-MISMATCH\|DOMAIN-SESSION-MISMATCH' /tmp/m23-x1.log \
-    && pass "跨域 exec 被拒（原因码正确）" || fail "跨域 exec 被拒但原因不明：$(head -1 /tmp/m23-x1.log)"
+  grep -q 'DBX-DOMAIN-SESSION-MISMATCH\|DOMAIN-SESSION-MISMATCH' "$E2E_WORK/x1.log" \
+    && pass "跨域 exec 被拒（原因码正确）" || fail "跨域 exec 被拒但原因不明：$(head -1 "$E2E_WORK/x1.log")"
 fi
-"$BIN" exec --daemon-sock "$SOCK" --domain personal "$ID_A" -- /bin/sh -c 'id -u' >/tmp/m23-x2.log 2>&1 \
-  && grep -q '65534' /tmp/m23-x2.log && pass "同域 exec 正常（uid=65534）" || fail "同域 exec 失败：$(head -1 /tmp/m23-x2.log)"
+"$BIN" exec --daemon-sock "$SOCK" --domain personal "$ID_A" -- /bin/sh -c 'id -u' >"$E2E_WORK/x2.log" 2>&1 \
+  && grep -q '65534' "$E2E_WORK/x2.log" && pass "同域 exec 正常（uid=65534）" || fail "同域 exec 失败：$(head -1 "$E2E_WORK/x2.log")"
 
 # ---------- 5) 跨域快照恢复拒绝 ----------
 "$BIN" suspend --daemon-sock "$SOCK" --domain work "$ID_B" >/dev/null 2>&1
@@ -120,17 +98,22 @@ SNAP="$COW_ROOT/snapshots/$ID_B.snap"
 if [ -f "$SNAP" ]; then
   cp "$SNAP" "$COW_ROOT/snapshots/$ID_A.snap"
 fi
-if "$BIN" resume --daemon-sock "$SOCK" --domain personal "$ID_A" >/tmp/m23-x3.log 2>&1; then
+if "$BIN" resume --daemon-sock "$SOCK" --domain personal "$ID_A" >"$E2E_WORK/x3.log" 2>&1; then
   fail "跨域快照恢复竟然成功"
 else
-  grep -qi 'domain' /tmp/m23-x3.log \
-    && pass "跨域快照恢复被拒（域不匹配）" || fail "跨域恢复被拒但原因不明：$(head -1 /tmp/m23-x3.log)"
+  grep -qi 'domain' "$E2E_WORK/x3.log" \
+    && pass "跨域快照恢复被拒（域不匹配）" || fail "跨域恢复被拒但原因不明：$(head -1 "$E2E_WORK/x3.log")"
 fi
 rm -f "$COW_ROOT/snapshots/$ID_A.snap"
 
 # 同域恢复仍然可用
-"$BIN" resume --daemon-sock "$SOCK" --domain work "$ID_B" >/dev/null 2>&1 \
-  && pass "同域恢复成功" || fail "同域恢复失败"
+if e2e_screen_locked; then
+  expect_locked_resume "$SOCK" "$ID_B" --domain work
+  skip_locked "同域恢复成功"
+else
+  "$BIN" resume --daemon-sock "$SOCK" --domain work "$ID_B" >/dev/null 2>&1 \
+    && pass "同域恢复成功" || fail "同域恢复失败"
+fi
 
 # ---------- 6) 调度决策记录 ----------
 LOG="$SUPPORT/scheduler-decisions.jsonl"
@@ -154,7 +137,7 @@ PY
 # ---------- 7) broker 凭据跨域不可见（canary） ----------
 HIT=0
 grep -rqa "$CANARY" "$COW_ROOT" 2>/dev/null && HIT=1
-grep -qa "$CANARY" /tmp/m23-daemon.log 2>/dev/null && HIT=1
+grep -qa "$CANARY" "$DAEMON_LOG" 2>/dev/null && HIT=1
 HOME_DIRS=$(ls -d "$COW_ROOT"/sandbox-*.vhd 2>/dev/null | head -5)
 for f in $HOME_DIRS; do grep -qa "$CANARY" "$f" 2>/dev/null && HIT=1; done
 [ "$HIT" = "0" ] && pass "domain A 凭据未出现在 COW/日志" || fail "凭据 canary 泄漏"
@@ -169,5 +152,4 @@ else
   fail "ci 域创建失败"
 fi
 
-printf '\n[m23] 结果：PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
-exit "$FAIL"
+e2e_finish

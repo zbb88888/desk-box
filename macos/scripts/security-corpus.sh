@@ -14,11 +14,13 @@ HOST_ONLY=0
 
 COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
 STAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-EVIDENCE_DIR="$ROOT/../docs/security/evidence"
+# EVIDENCE_DIR 可覆盖：试跑/回归时指向临时目录，避免每次都往仓库里添一个证据文件。
+EVIDENCE_DIR="${EVIDENCE_DIR:-$ROOT/../docs/security/evidence}"
 mkdir -p "$EVIDENCE_DIR"
 OUT="$EVIDENCE_DIR/$(date -u +%Y%m%dT%H%M%SZ)-${COMMIT}.json"
 
 TMPLOG=$(mktemp)
+trap 'rm -f "$TMPLOG"' EXIT
 TOTAL_FAIL=0
 declare -a RESULTS=()
 
@@ -51,11 +53,10 @@ run_vm_corpus() {
     RESULTS+=("{\"corpus\":\"$label\",\"kind\":\"vm\",\"ok\":true,\"summary\":\"${summary:-pass}\"}")
   else
     printf 'FAILED\n'
-    grep -aE 'FAIL' "$log" | head -10
+    grep -aE 'FAIL|FATAL|LEAK' "$log" | head -20
     RESULTS+=("{\"corpus\":\"$label\",\"kind\":\"vm\",\"ok\":false}")
     TOTAL_FAIL=$((TOTAL_FAIL+1))
   fi
-  cp "$log" "/tmp/corpus-${label}.log" 2>/dev/null || true
   rm -f "$log"
 }
 

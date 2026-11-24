@@ -95,10 +95,18 @@ struct SettingsWorkspaceTab: View {
                     var req = DaemonRequest(kind: "wsSync")
                     req.sandboxId = sandboxId
                     req.workspaceDir = path
-                    do {
-                        let resp = try client.send(req)
-                        status = resp.stdout ?? "ok"
-                    } catch { status = "sync fail: \(error.localizedDescription)" }
+                    // Cmd+Q bug fix：wsSync 可能耗时很长，离主线程 send。
+                    status = "syncing…"
+                    let client = self.client
+                    let statusBinding = self.$status
+                    DispatchQueue.global().async {
+                        let text: String
+                        do {
+                            let resp = try client.send(req, timeoutSec: 120)
+                            text = resp.stdout ?? "ok"
+                        } catch { text = "sync fail: \(error.localizedDescription)" }
+                        Task { @MainActor in statusBinding.wrappedValue = text }
+                    }
                 }
             }
             if !status.isEmpty { Text(status).font(.caption).foregroundColor(.secondary) }

@@ -1,8 +1,24 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// M22+ hotfix：显式 AppDelegate，保证 terminate 永不被挂起（即便 display VM 在跑）。
+final class DeskBoxAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // M30：仅当设置了 DBX_GUI_SELFTEST 时启用（见 GUISelfTest）。
+        GUISelfTest.shared?.start()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        GUISelfTest.shared?.noteTerminating()
+        // 通知各持有者（display VM / 临时私盘）做同步清理；daemon 是独立进程，不随 GUI 退出。
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: sender)
+        return .terminateNow
+    }
+}
+
 @main
 struct DeskBoxGUIApp: App {
+    @NSApplicationDelegateAdaptor(DeskBoxAppDelegate.self) private var appDelegate
     @StateObject private var daemonManager = DaemonProcessManager()
     @StateObject private var viewModel = SandboxViewModel()
 
@@ -12,8 +28,11 @@ struct DeskBoxGUIApp: App {
                 .frame(minWidth: 760, minHeight: 480)
         }
         .commands {
-            CommandGroup(replacing: .appSettings) {
+            // Cmd+Q bug fix：之前把 Quit 塞在 .appSettings（⌘, 槽位）且无快捷键。
+            // 改为显式替换 .appTermination 并绑定 ⌘Q，保证菜单项始终存在。
+            CommandGroup(replacing: .appTermination) {
                 Button("Quit Desk Box") { NSApplication.shared.terminate(nil) }
+                    .keyboardShortcut("q", modifiers: .command)
             }
         }
         MenuBarExtra("Desk Box", systemImage: "shippingbox") {
@@ -27,6 +46,8 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
     @Published var sandboxes: [SandboxInfo] = []
     @Published var busy = false
     @Published var errorText: String? = nil
+    /// 一次性 exec 的输出（移入 viewModel：exec 必须离主线程，@State 不便跨线程回写）。
+    @Published var execOutput: String = ""
 
     let client = DaemonSocketClient(sockPath: DaemonSocketClient.defaultSockPath())
 
@@ -44,7 +65,7 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
                 DispatchQueue.main.async {
                     self.sandboxes = []
                     self.busy = false
-                    self.errorText = error.localizedDescription
+                    self.errorText = DaemonErrorPresenter.present(error).logLine
                 }
             }
         }

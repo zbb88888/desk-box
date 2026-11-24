@@ -83,8 +83,7 @@ public struct SnapshotStore: Sendable {
     }
 
     public static func defaultKeyURL() -> URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("DeskBox/snapshot.key")
+        DeskBoxPaths.snapshotKeyURL
     }
 
     /// 读取既有 key；不存在则生成并落盘（0600）。

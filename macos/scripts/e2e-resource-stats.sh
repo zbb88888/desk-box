@@ -1,26 +1,12 @@
 #!/usr/bin/env bash
 # M21：资源统计 e2e（guest cgroup → daemon stats → CLI）。
+# M25：隔离运行（scripts/lib/e2e-common.sh）——状态全在临时目录，退出自动清理。
 set -u
-BIN="${BIN:-./.build/release/dbx-poc}"
-SOCK="${SOCK:-/tmp/dbx-stats.sock}"
-MANIFEST="${MANIFEST:-$PWD/guest/manifest.json}"
-PASS=0; FAIL=0
-pass() { PASS=$((PASS+1)); printf '[stats] PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '[stats] FAIL: %s\n' "$1"; }
-
-OWN=0
-if ! "$BIN" ps --daemon-sock "$SOCK" >/dev/null 2>&1; then
-  rm -f "$SOCK"
-  "$BIN" daemon --daemon-sock "$SOCK" > /tmp/stats-daemon.log 2>&1 &
-  OWN=1
-  for _ in $(seq 1 40); do "$BIN" ps --daemon-sock "$SOCK" >/dev/null 2>&1 && break; sleep 0.5; done
-fi
-cleanup() {
-  [ -n "${ID:-}" ] && "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1
-  [ "$OWN" = "1" ] && "$BIN" shutdown --daemon-sock "$SOCK" >/dev/null 2>&1
-  true
-}
-trap cleanup EXIT
+. "$(dirname "$0")/lib/e2e-common.sh"
+e2e_init stats
+e2e_build_sign
+cd "$E2E_ROOT"
+e2e_start_daemon || die "daemon 未就绪"
 
 ID=$("$BIN" run --daemon-sock "$SOCK" "$MANIFEST" 2>&1 | sed -n 's/.*sandboxId=\([A-F0-9-]*\).*/\1/p')
 [ -z "$ID" ] && { echo '[stats] FATAL: run failed'; exit 2; }

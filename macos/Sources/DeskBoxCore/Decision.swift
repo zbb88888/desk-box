@@ -50,6 +50,10 @@ public struct ReasonCode: Hashable, Sendable, Codable, CustomStringConvertible {
     public static let lifecycleStopped = ReasonCode("DBX-LIFECYCLE-STOPPED")
     public static let lifecycleSuspended = ReasonCode("DBX-LIFECYCLE-SUSPENDED")
     public static let lifecycleResuming = ReasonCode("DBX-LIFECYCLE-RESUMING")
+    /// M28：suspend 中途失败，已回滚到 running（VM 已恢复运行，会话未变）。
+    public static let lifecycleSuspendAborted = ReasonCode("DBX-LIFECYCLE-SUSPEND-ABORTED")
+    /// M28：suspend 中途失败且无法回滚，沙箱进入 failed（只能 rm）。
+    public static let lifecycleSuspendFailed = ReasonCode("DBX-LIFECYCLE-SUSPEND-FAILED")
     public static let lifecycleUnexpectedExit = ReasonCode("DBX-LIFECYCLE-UNEXPECTED-EXIT")
     public static let lifecycleDestroyCleanupFailed = ReasonCode("DBX-LIFECYCLE-DESTROY-CLEANUP-FAILED")
     public static let lifecycleDestroyed = ReasonCode("DBX-LIFECYCLE-DESTROYED")

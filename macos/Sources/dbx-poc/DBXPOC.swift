@@ -62,7 +62,8 @@ struct DBXPOC {
             case "sweep":
                 try sweep(args: Array(args.dropFirst()))
             case "daemon":
-                let sockPath = (try? optionString("--daemon-sock", in: args)) ?? SandboxDaemon.defaultSockPath()
+                // M27：缺值/空值/未知选项一律报错，不回落到默认 socket。
+                let sockPath = try DaemonCLI.daemonSocket(Array(args.dropFirst())) ?? SandboxDaemon.defaultSockPath()
                 try SandboxDaemon(sockPath: sockPath).serve()
             case "run":   try daemonRunCli(args: Array(args.dropFirst()))
             case "ps":    try daemonPsCli(args: Array(args.dropFirst()))
@@ -73,8 +74,8 @@ struct DBXPOC {
             case "restart": try daemonRestartCli(args: Array(args.dropFirst()))
             case "console": try daemonConsoleCli(args: Array(args.dropFirst()))
             case "stats": try daemonStatsCli(args: Array(args.dropFirst()))
-            case "suspend": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "suspend", usage: "suspend")
-            case "resume": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "resume", usage: "resume")
+            case "suspend": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "suspend", spec: DaemonCLISpecs.suspend)
+            case "resume": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "resume", spec: DaemonCLISpecs.resume)
             case "help", "-h", "--help":
                 printUsage()
             default:
@@ -357,8 +358,7 @@ struct DBXPOC {
         let manifestURL = URL(fileURLWithPath: manifestPath).standardizedFileURL
         let manifest = try loadManifest(at: manifestURL)
         let cowRoot = try optionURL("--cow-root", in: args)
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("DeskBox/cows", isDirectory: true)
+            ?? DeskBoxPaths.cowRoot
         let memoryMiB = try optionInt("--memory-mib", in: args) ?? 2048
         let cpus = try optionInt("--cpus", in: args) ?? 2
         guard memoryMiB > 0, cpus > 0 else {
@@ -671,8 +671,7 @@ struct DBXPOC {
     private static func listDomains(args: [String]) throws {
         let asJSON = args.contains("--json")
         let root = try optionURL("--root", in: args)
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("DeskBox", isDirectory: true)
+            ?? DeskBoxPaths.supportRoot
         let manifestURL = root.appendingPathComponent("domains.json")
         let registry: DomainRegistry
         if FileManager.default.fileExists(atPath: manifestURL.path) {
@@ -754,9 +753,7 @@ struct DBXPOC {
     }
 
     private static func sweep(args: [String]) throws {
-        let cowRoot = try optionURL("--cow-root", in: args)
-            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("DeskBox/cows", isDirectory: true)
+        let cowRoot = try DaemonCLI.sweepCowRoot(args) ?? DeskBoxPaths.cowRoot
         // M20：必须经 VZRuntime.sweepOrphans，才能把崩溃残留的快照文件一起清掉
         // （直接调 registry.sweep 会留下可被 restore 的旧 VM 状态）。
         let runtime = try VZRuntime(cowRoot: cowRoot, enableConsole: false, enableControlSocket: false)
@@ -833,66 +830,25 @@ private struct LaunchOutput: Codable {
 // MARK: - M12 daemon CLI glue
 
 private extension DBXPOC {
+    // M27：参数解析统一走 DaemonCLI（声明式规格 + fail-closed），这里只负责发送与打印。
+
     static func daemonRunCli(args: [String]) throws {
-        let cleaned = try dropSockOption(from: args)
-        guard let manifestPath = cleaned.first else {
-            throw CLIError.usage("dbx-poc run <manifest.json> [--workspace dir] [--oci-bundle b] [--daemon-sock p] [--allow-plaintext] [--allow-unsigned-manifest] [--release-keys f] [--memory-mib N] [--cpus N] [--cow-root d]")
-        }
-        var request = DaemonRequest(kind: "run")
-        request.manifestPath = manifestPath
-        request.workspaceDir = try? optionString("--workspace", in: args)
-        request.ociBundlePath = try? optionString("--oci-bundle", in: args)
-        request.allowPlaintext = args.contains("--allow-plaintext")
-        request.allowUnsignedManifest = args.contains("--allow-unsigned-manifest")
-        request.releaseKeysPath = try? optionString("--release-keys", in: args)
-        request.memoryMiB = try? optionInt("--memory-mib", in: args)
-        request.cpus = try? optionInt("--cpus", in: args)
-        request.cowRoot = try? optionString("--cow-root", in: args)
-        request.domain = try? optionString("--domain", in: args)
-        let sock = try? optionString("--daemon-sock", in: args)
-        let response = try DaemonClient.send(request: request, sockPath: sock)
+        let inv = try DaemonCLI.run(args)
+        let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         print("run ok sandboxId=\(response.sandboxId ?? "?") state=\(response.state ?? "?")")
     }
 
     static func daemonPsCli(args: [String]) throws {
-        let sock = try? optionString("--daemon-sock", in: args)
-        let response = try DaemonClient.send(request: DaemonRequest(kind: "ps"), sockPath: sock)
+        let inv = try DaemonCLI.bare(args, spec: DaemonCLISpecs.ps, kind: "ps")
+        let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         for info in response.sandboxes ?? [] {
             print("\(info.sandboxId)\t\(info.state)\t\(info.bootedAtUtc)\t\(info.manifestPath)\t\(info.domain ?? "-")")
         }
     }
 
     static func daemonExecCli(args: [String]) throws {
-        let cleaned = try dropSockOption(from: args)
-        guard let sandboxId = cleaned.first else {
-            throw CLIError.usage("dbx-poc exec <sandbox-id> [--cwd d] [--timeout N] -- <argv...>")
-        }
-        var rest = Array(args.dropFirst())
-        var timeout: Int? = nil
-        var cwd: String? = nil
-        var envPairs: [String] = []
-        var domain: String? = nil
-        rest = try parseFlags(rest, "--timeout", &timeout)
-        rest = try parseFlags(rest, "--cwd", &cwd)
-        rest = try parseFlagsMulti(rest, "--env", &envPairs)
-        rest = try parseFlags(rest, "--domain", &domain)
-        var argv = rest
-        if let dashIdx = argv.firstIndex(of: "--") { argv = Array(argv.dropFirst(dashIdx + 1)) }
-        guard !argv.isEmpty else { throw CLIError.usage("exec requires argv via '-- ...'") }
-        var envDict: [String: String]? = nil
-        for pair in envPairs {
-            let parts = pair.split(separator: "=", maxSplits: 1).map(String.init)
-            if parts.count == 2 { envDict = (envDict ?? [:]).merging([parts[0]: parts[1]]) { $1 } }
-        }
-        var request = DaemonRequest(kind: "exec")
-        request.sandboxId = sandboxId
-        request.argv = argv
-        request.cwd = cwd
-        request.timeoutSeconds = timeout
-        request.env = envDict
-        request.domain = domain
-        let sock = try? optionString("--daemon-sock", in: args)
-        let response = try DaemonClient.send(request: request, sockPath: sock)
+        let inv = try DaemonCLI.exec(args)
+        let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         if let out = response.stdout { print(out, terminator: "") }
         if let err = response.stderr, !err.isEmpty { fputs(err + "\n", stderr) }
         if response.exitCode ?? 1 != 0 {
@@ -901,55 +857,28 @@ private extension DBXPOC {
     }
 
     static func daemonStopCli(args: [String]) throws {
-        let cleaned = try dropSockOption(from: args)
-        guard let sandboxId = cleaned.first else { throw CLIError.usage("dbx-poc stop <sandbox-id> [--daemon-sock p]") }
-        var request = DaemonRequest(kind: "stop")
-        request.sandboxId = sandboxId
-        let sock = try? optionString("--daemon-sock", in: args)
-        _ = try DaemonClient.send(request: request, sockPath: sock)
-        print("stopped \(sandboxId)")
+        let inv = try DaemonCLI.single(args, spec: DaemonCLISpecs.stop, kind: "stop")
+        _ = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+        print("stopped \(inv.request.sandboxId ?? "?")")
     }
 
     static func daemonRmCli(args: [String]) throws {
-        let cleaned = try dropSockOption(from: args)
-        guard let sandboxId = cleaned.first else { throw CLIError.usage("dbx-poc rm <sandbox-id> [--force] [--daemon-sock p]") }
-        var request = DaemonRequest(kind: "rm")
-        request.sandboxId = sandboxId
-        request.force = args.contains("--force")
-        let sock = try? optionString("--daemon-sock", in: args)
-        _ = try DaemonClient.send(request: request, sockPath: sock)
-        print("removed \(sandboxId)")
+        let inv = try DaemonCLI.rm(args)
+        _ = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+        print("removed \(inv.request.sandboxId ?? "?")")
     }
 
     /// M16：restart（stop+rm+重建，新 sandboxId）
     static func daemonRestartCli(args: [String]) throws {
-        let sock = (try? optionString("--daemon-sock", in: args))
-        // 踢出任何带 /, --skip 伻记夺 pairing
-        var rest: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == "--daemon-sock" { i += 2 } else { rest.append(args[i]); i += 1 }
-        }
-        guard let id = rest.first else { throw CLIError.usage("restart: sandbox id required") }
-        var req = DaemonRequest(kind: "restart")
-        req.sandboxId = id
-        let resp = try DaemonClient.send(request: req, sockPath: sock)
-        print("restarted -> \(resp.sandboxId ?? id)")
+        let inv = try DaemonCLI.single(args, spec: DaemonCLISpecs.restart, kind: "restart")
+        let resp = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+        print("restarted -> \(resp.sandboxId ?? inv.request.sandboxId ?? "?")")
     }
 
-    /// M16：console tail（guest serial的诊断回损）。
+    /// M16：console tail（guest serial 的诊断输出）。
     static func daemonConsoleCli(args: [String]) throws {
-        let sock = (try? optionString("--daemon-sock", in: args))
-        var rest: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == "--daemon-sock" { i += 2 } else { rest.append(args[i]); i += 1 }
-        }
-        guard let id = rest.first else { throw CLIError.usage("console: sandbox id required") }
-        var req = DaemonRequest(kind: "consoleLog")
-        req.sandboxId = id
-        req.waitMillis = 16384
-        let resp = try DaemonClient.send(request: req, sockPath: sock)
+        let inv = try DaemonCLI.console(args)
+        let resp = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         let hex = resp.outputHex ?? ""
         var bytes = Data()
         var j = hex.startIndex
@@ -961,42 +890,22 @@ private extension DBXPOC {
     }
 
     /// 通用单 id 端点（suspend / resume）。
-    static func daemonSimpleCli(args: [String], kind: String, usage: String) throws {
-        let sock = (try? optionString("--daemon-sock", in: args))
-        var rest: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == "--daemon-sock" { i += 2; continue }
-            if args[i] == "--domain" { i += 2; continue }
-            if args[i].hasPrefix("--") { i += 1; continue }
-            rest.append(args[i]); i += 1
-        }
-        guard let id = rest.first else { throw CLIError.usage("\(usage): sandbox id required") }
-        var req = DaemonRequest(kind: kind)
-        req.sandboxId = id
-        req.domain = try? optionString("--domain", in: args)
-        let resp = try DaemonClient.send(request: req, sockPath: sock)
-        print("\(kind) ok sandboxId=\(resp.sandboxId ?? id) state=\(resp.state ?? "?")")
+    static func daemonSimpleCli(args: [String], kind: String, spec: CLISpec) throws {
+        let inv = try DaemonCLI.single(args, spec: spec, kind: kind)
+        let resp = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+        print("\(kind) ok sandboxId=\(resp.sandboxId ?? inv.request.sandboxId ?? "?") state=\(resp.state ?? "?")")
     }
 
     /// M21：资源统计（--json 输出机器可读）。
     static func daemonStatsCli(args: [String]) throws {
-        let sock = (try? optionString("--daemon-sock", in: args))
-        let asJSON = args.contains("--json")
-        var rest: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == "--daemon-sock" { i += 2 } else if args[i] == "--json" { i += 1 } else { rest.append(args[i]); i += 1 }
-        }
-        guard let id = rest.first else { throw CLIError.usage("stats: sandbox id required") }
-        var req = DaemonRequest(kind: "stats")
-        req.sandboxId = id
-        let resp = try DaemonClient.send(request: req, sockPath: sock)
+        let inv = try DaemonCLI.stats(args)
+        let id = inv.request.sandboxId ?? "?"
+        let resp = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         guard let stats = resp.stats else {
             print("stats: 无数据")
             return
         }
-        if asJSON {
+        if inv.json {
             let data = try JSONEncoder().encode(stats)
             print(String(decoding: data, as: UTF8.self))
             return
@@ -1012,66 +921,9 @@ private extension DBXPOC {
     }
 
     static func daemonShutdownCli(args: [String]) throws {
-        let sock = try? optionString("--daemon-sock", in: args)
-        let response = try DaemonClient.send(request: DaemonRequest(kind: "shutdown"), sockPath: sock)
+        let inv = try DaemonCLI.bare(args, spec: DaemonCLISpecs.shutdown, kind: "shutdown")
+        let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         print("shutdown ack pid=\(response.pid ?? 0)")
     }
-
-    static func parseFlags(_ args: [String], _ name: String, _ out: inout Int?) throws -> [String] {
-        var result: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == name {
-                guard i + 1 < args.count, let v = Int(args[i + 1]) else { throw CLIError.usage("missing value for \(name)") }
-                out = v; i += 2
-            } else if args[i] == "--daemon-sock" {
-                i += 2
-            } else { result.append(args[i]); i += 1 }
-        }
-        return result
-    }
-
-    static func parseFlags(_ args: [String], _ name: String, _ out: inout String?) throws -> [String] {
-        var result: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == name {
-                guard i + 1 < args.count else { throw CLIError.usage("missing value for \(name)") }
-                out = args[i + 1]; i += 2
-            } else if args[i] == "--daemon-sock" {
-                i += 2
-            } else { result.append(args[i]); i += 1 }
-        }
-        return result
-    }
-
-    static func parseFlagsMulti(_ args: [String], _ name: String, _ out: inout [String]) throws -> [String] {
-        var result: [String] = []
-        var i = 0
-        while i < args.count {
-            if args[i] == name {
-                guard i + 1 < args.count else { throw CLIError.usage("missing value for \(name)") }
-                out.append(args[i + 1]); i += 2
-            } else { result.append(args[i]); i += 1 }
-        }
-        return result
-    }
 }
 
-
-private extension DBXPOC {
-    /// 丢弃「带值且不属于位置参数」的选项（`--daemon-sock` / `--domain`）。
-    /// M23：`run` 的第一个位置参数必须是 manifest 路径，`--domain X` 不能被当成路径。
-    static func dropSockOption(from args: [String]) throws -> [String] {
-        let valueOptions: Set<String> = ["--daemon-sock", "--domain"]
-        var out: [String] = []
-        var i = 0
-        while i < args.count {
-            if valueOptions.contains(args[i]) {
-                guard i + 1 < args.count else { throw CLIError.usage("missing value for \(args[i])") }
-                i += 2
-            } else { out.append(args[i]); i += 1 }
-        }
-        return out
-    }
-}

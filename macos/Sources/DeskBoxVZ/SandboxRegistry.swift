@@ -64,17 +64,40 @@ public struct RegistrySweepReport: Sendable, Equatable {
     public var isEmpty: Bool { orphanedSandboxes.isEmpty && removedCloneFiles.isEmpty }
 }
 
-/// JSON-file registry. All mutations are serialized by callers (the VZ queue);
+/// JSON-file registry.
+///
+/// M24b：daemon 并发化后，多个 VZRuntime 实例（每沙箱一个，各自独立 queue）以及独立的
+/// CLI `sweep` 进程会同时对同一个 registry.json 做 read-modify-write。所有变更统一经
+/// `withFileLock`（flock 独占锁，跨线程 + 跨进程）串行化，避免 lost update。
 /// the sweep API tolerates a missing/corrupt file by rebuilding it from the
 /// COW directory instead of deleting anything it can't attribute.
 public final class SandboxRegistry: @unchecked Sendable {
     private let fileURL: URL
     private let cowRoot: URL
+    private let lockURL: URL
 
     public init(root: URL) throws {
         self.cowRoot = root
         self.fileURL = root.appendingPathComponent("registry.json", isDirectory: false)
+        self.lockURL = root.appendingPathComponent("registry.lock", isDirectory: false)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    }
+
+    /// flock 按 open-file-description 计：每次调用各自 open，同进程线程间也互斥。
+    private func withFileLock<T>(_ body: () throws -> T) throws -> T {
+        let fd = open(lockURL.path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            throw SandboxFailure(.bootstrapProofMismatch,
+                                 "sandbox registry 锁文件无法打开：errno=\(errno)")
+        }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 {
+            if errno == EINTR { continue }
+            throw SandboxFailure(.bootstrapProofMismatch,
+                                 "sandbox registry 加锁失败：errno=\(errno)")
+        }
+        defer { flock(fd, LOCK_UN) }
+        return try body()
     }
 
     public func load() throws -> [RegisteredSandbox] {
@@ -91,26 +114,32 @@ public final class SandboxRegistry: @unchecked Sendable {
     }
 
     public func upsert(_ entry: RegisteredSandbox) throws {
-        var entries = try load()
-        if let index = entries.firstIndex(where: { $0.sandboxID == entry.sandboxID }) {
-            entries[index] = entry
-        } else {
-            entries.append(entry)
+        try withFileLock {
+            var entries = try load()
+            if let index = entries.firstIndex(where: { $0.sandboxID == entry.sandboxID }) {
+                entries[index] = entry
+            } else {
+                entries.append(entry)
+            }
+            try persist(entries)
         }
-        try persist(entries)
     }
 
     public func markDestroyed(sandboxID: SandboxID) throws {
-        var entries = try load()
-        entries.removeAll { $0.sandboxID == sandboxID }
-        try persist(entries)
+        try withFileLock {
+            var entries = try load()
+            entries.removeAll { $0.sandboxID == sandboxID }
+            try persist(entries)
+        }
     }
 
     private func persist(_ entries: [RegisteredSandbox]) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let tmpURL = fileURL.appendingPathExtension("tmp")
+        // 临时文件名带 UUID：即便锁失效也不会两个 writer 写同一个 tmp。
+        let tmpURL = fileURL.appendingPathExtension("tmp-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
         try encoder.encode(entries).write(to: tmpURL, options: .atomic)
         _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tmpURL)
     }
@@ -118,8 +147,10 @@ public final class SandboxRegistry: @unchecked Sendable {
     public static func processIsAlive(_ pid: Int32) -> Bool {
         // kill(pid, 0) reports liveness without signaling; EPERM still counts
         // as alive because the process exists but isn't ours.
-        kill(pid, 0)
-        return errno == 0 || errno == EPERM
+        // M24b fix：必须看返回值——kill 成功时不会清 errno，此前读到的是本线程上一次失败
+        // 调用留下的脏 errno，会把「活着的」沙箱误判为孤儿并删掉它的 COW 盘。
+        if kill(pid, 0) == 0 { return true }
+        return errno == EPERM
     }
 
     /// Remove COW clones of registries whose host process is dead. Never
@@ -135,6 +166,10 @@ public final class SandboxRegistry: @unchecked Sendable {
     }
 
     public func sweep(now: Date = Date()) throws -> RegistrySweepReport {
+        try withFileLock { try sweepLocked() }
+    }
+
+    private func sweepLocked() throws -> RegistrySweepReport {
         let entries = try load()
         var survivors: [RegisteredSandbox] = []
         var orphans: [SandboxID] = []
@@ -162,7 +197,12 @@ public final class SandboxRegistry: @unchecked Sendable {
                 // Already gone; still an orphan worth dropping from the registry.
             } catch {
                 survivors.append(entry)
+                continue
             }
+            // M24 fix：M23 的域标记文件（`<clone>.domain`）与 clone 同生共死。此前崩溃清理
+            // 只删 clone，每次崩溃都在 cow-root 留下一个孤儿 sidecar。路径由已校验在
+            // cowRoot 内的 clonePath 派生，不会越界。
+            try? FileManager.default.removeItem(at: CowDiskManager.domainMarkerURL(forClone: cloneURL))
         }
         try persist(survivors)
         return RegistrySweepReport(orphanedSandboxes: orphans, removedCloneFiles: removed)

@@ -44,6 +44,9 @@ public struct LifecycleMachine: Sendable, Equatable {
         Edge(from: .running, to: .stopping),
         Edge(from: .running, to: .failed),
         Edge(from: .suspending, to: .suspended),
+        // M28：suspend 中途失败的回滚。与任何进入 running 的转换一样必须带与当前 boot 绑定的
+        // proof（见 transition）——回滚复用的是同一 boot、同一会话的已接受 proof，不放宽该不变量。
+        Edge(from: .suspending, to: .running),
         Edge(from: .suspending, to: .stopping),
         Edge(from: .suspending, to: .failed),
         Edge(from: .suspended, to: .resuming),

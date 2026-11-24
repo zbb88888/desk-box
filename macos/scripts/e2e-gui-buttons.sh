@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
 # M17 buttons-e2e：GUI 每个按钮的功能路径用同一 daemon socket 协议验证。
-# 前提：GUI 已经 launch 且 autostartDaemon=true（在生产环境同一 daemon 域）。
+#
+# M25：默认**隔离运行**——自起一个私有 daemon（临时 support-root），不碰用户的 GUI daemon。
+#      旧行为（对着用户真实 daemon 跑，并在最后把它 shutdown）必须显式选择：
+#        E2E_GUI_LIVE=1 ./scripts/e2e-gui-buttons.sh
+#      该模式要求 GUI 已 launch 且 autostartDaemon=true，且会停掉该 daemon。
 set -u
+. "$(dirname "$0")/lib/e2e-common.sh"
+e2e_init btn
+e2e_build_sign
+cd "$E2E_ROOT"
 
-BIN="${BIN:-./.build/release/dbx-poc}"
-SOCK="${SOCK:-$HOME/Library/Application Support/DeskBox/dbxd.sock}"
-MANIFEST="${MANIFEST:-$PWD/guest/manifest.json}"
-PASS=0; FAIL=0
-pass() { PASS=$((PASS+1)); printf '[btn] PASS: %s\n' "$1"; }
-fail() { FAIL=$((FAIL+1)); printf '[btn] FAIL: %s\n' "$1"; }
-
-printf '[btn] sock=%s manifest=%s\n' "$SOCK" "$MANIFEST"
-
-# --- 0. GUI/daemon 存活（Start Daemon / autostart path）
-if ps aux | grep -q 'DeskBoxGU[I]'; then pass "GUI 进程在"; else fail "GUI 不在"; fi
+if [ "${E2E_GUI_LIVE:-0}" = 1 ]; then
+  unset DBX_SUPPORT_ROOT
+  SOCK="$HOME/Library/Application Support/DeskBox/dbxd.sock"
+  printf '[btn] LIVE 模式 sock=%s\n' "$SOCK"
+  # --- 0. GUI/daemon 存活（Start Daemon / autostart path）
+  if ps aux | grep -q 'DeskBoxGU[I]'; then pass "GUI 进程在"; else fail "GUI 不在"; fi
+else
+  e2e_start_daemon || die "daemon 未就绪"
+  skip "GUI 进程检查（隔离模式不依赖 GUI；E2E_GUI_LIVE=1 时检查）"
+fi
 if "$BIN" ps --daemon-sock "$SOCK" > /dev/null 2>&1; then pass "Start Daemon/autotart 充 daemon 可连（client.probing ok)"; else fail "daemon 不可连"; fi
 
 # B1 Refresh (ps)
@@ -40,13 +47,13 @@ case "$PY" in
 esac
 
 # B6 wsSync ("Sync to /workspace" + drag&drop 同源)
-TMPDIR_WS=$(mktemp -d)
+TMPDIR_WS="$E2E_WORK/ws"; mkdir -p "$TMPDIR_WS"
 echo "btn-ws-marker" > "$TMPDIR_WS/hello.txt"
 python3 -c "import json,socket
 s=socket.socket(socket.AF_UNIX); s.connect('$SOCK'); s.settimeout(30)
 s.sendall((json.dumps({'kind':'wsSync','sandboxId':'$ID','workspaceDir':'$TMPDIR_WS'})+'\n').encode())
-print(s.recv(65536).decode())" > /tmp/btn-ws.json 2>/dev/null
-grep -q ws-sync /tmp/btn-ws.json && pass "wsSync (Sync to workspace / drag-drop 同源)" || fail "wsSync=$(cat /tmp/btn-ws.json)"
+print(s.recv(65536).decode())" > "$E2E_WORK/ws.json" 2>/dev/null
+grep -q ws-sync "$E2E_WORK/ws.json" && pass "wsSync (Sync to workspace / drag-drop 同源)" || fail "wsSync=$(cat "$E2E_WORK/ws.json")"
 
 # B7 Restart
 R1=$("$BIN" restart --daemon-sock "$SOCK" "$ID" 2>/dev/null)
@@ -65,5 +72,4 @@ MS=$(find "$(dirname "$MANIFEST")" -maxdepth 1 -name 'manifest*.json' ! -name '*
 # B10 Shutdown Daemon
 "$BIN" shutdown --daemon-sock "$SOCK" > /dev/null 2>&1 && pass "Shutdown Daemon" || fail "shutdown"
 
-printf '\n[btn] 结果：PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
-exit "$FAIL"
+e2e_finish

@@ -24,11 +24,16 @@ let package = Package(
         ),
         .executableTarget(
             name: "DeskBoxGUI",
-            dependencies: [],
+            // M30：复用 DeskBoxPaths（DBX_SUPPORT_ROOT 的唯一解析点），GUI 与 daemon/CLI 对同一状态根目录。
+            dependencies: ["DeskBoxVZ"],
             path: "gui/DeskBoxGUI/Sources/DesktopBoxGUI"
         ),
         .testTarget(name: "DeskBoxCoreTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),
         .testTarget(name: "ConformanceTests", dependencies: ["DeskBoxCore"]),
         .testTarget(name: "FuzzTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),
+        // M24a：daemon 协议决策表 + 并发/停机行为（不起 VM）。
+        .testTarget(name: "DaemonTests", dependencies: ["dbx-poc", "DeskBoxCore", "DeskBoxVZ"]),
+        // M28：GUI 里不依赖界面的逻辑（daemon 客户端 / 进程管理 / 错误呈现）。
+        .testTarget(name: "GUITests", dependencies: ["DeskBoxGUI"]),
     ]
 )
