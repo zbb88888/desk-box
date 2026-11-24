@@ -283,7 +283,14 @@ step_ok pty-roundtrip-2 && pass "G10 Terminal：关闭后再次打开仍可用�
 step_ok console && pass "G10 Console：guest serial 内容可读（$(step_detail console)）" || fail "G10 console：$(step_detail console)"
 step_ok stats && pass "G10 Stats：两次采样后有内存与 CPU%（$(step_detail stats)）" || fail "G10 stats：$(step_detail stats)"
 step_ok stats-error-visible && pass "G10 Stats：沙箱不存在时错误可见、旧数字被清掉（$(step_detail stats-error-visible)）" || fail "G10 stats 错误不可见：$(step_detail stats-error-visible)"
-step_ok workspace-sync && pass "G10 Workspace 同步：宿主文件出现在 guest 的 /workspace（$(step_detail workspace-sync)）" || fail "G10 workspace 同步：$(step_detail workspace-sync)"
+step_ok workspace-sync && step_ok workspace-sync-content \
+  && pass "G10 Workspace 同步（在运行任何程序之前）：宿主文件出现在 guest 的 /workspace（$(step_detail workspace-sync)）" \
+  || fail "G10 workspace 同步：$(step_detail workspace-sync) $(step_detail workspace-sync-content)"
+case "$(step_detail workspace-resync)" in
+  allowed) step_ok workspace-resync && pass "G10 运行过程序之后再次同步：guest 是新接收端，允许" || fail "G10 再次同步失败" ;;
+  gated*)  step_ok workspace-resync && pass "G10 运行过程序之后再次同步：旧 guest 被挡住，界面显示可读原因（$(step_detail workspace-resync | cut -c8-60)…）" || fail "G10 再次同步闸门异常" ;;
+  *)       fail "G10 再次同步步骤缺失或失败：$(step_detail workspace-resync)" ;;
+esac
 step_ok workspace-sync-precheck && pass "G10 Workspace 同步：把文件当目录会在本地被拒" || fail "G10 workspace 前置检查：$(step_detail workspace-sync-precheck)"
 step_ok suspend && [ "$(step_detail suspend)" = "console,resume,rm" ] \
   && pass "G10 Suspend：状态变为 suspended，行内操作变为 console,resume,rm" || fail "G10 suspend：$(step_detail suspend)"

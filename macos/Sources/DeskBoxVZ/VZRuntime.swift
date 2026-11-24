@@ -725,13 +725,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
         // M18：/bin/hardening-probe 是随签名 rootfs 一起下发的固定自检二进制
         // （只执行预置的测例，不接受任意代码），用于验证内核级加固是否生效。
-        let allowedFirst = first == "/bin/echo"
-            || first == "/bin/sh"
-            || first == "/bin/hardening-probe"
-            || first.hasPrefix("/workspace/")
-        let cwdOK = (request.cwd == nil)
-            || request.cwd == "/workspace"
-            || (request.cwd?.hasPrefix("/workspace/") ?? false)
+        // M37：规范路径判断（此前是 hasPrefix，`/workspace/../bin/x` 能绕过）。
+        let allowedFirst = ExecPathPolicy.allowsExecutable(first)
+        let cwdOK = ExecPathPolicy.allowsWorkingDirectory(request.cwd)
         guard allowedFirst && cwdOK else {
             throw SandboxFailure(.bootstrapProofMissing, "MVP exec only accepts echo/sh or workspace-scoped argv")
         }
@@ -1076,8 +1072,10 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             try self.sendFrameOnQueue(record, frame: frame)
         }
         for file in snapshot.files {
-            let full = snapshot.rootURL.appendingPathComponent(file.relativePath)
-            let data = try Data(contentsOf: full)
+            // M37：只推送快照构建时读入的字节。此前这里按路径重新 `Data(contentsOf:)`——跟随符号链接、
+            // 不检查大小、也不与快照里的摘要比对：校验之后把文件换成指向别处的链接，就能把任意
+            // 宿主文件送进 guest（INV-05 的 TOCTOU）。
+            let data = file.contents
             var offset: UInt64 = 0
             if data.isEmpty {
                 let payload = try JSONEncoder().encode(WsPutRequest(path: file.relativePath, offset: 0, mode: file.mode, dataHex: ""))

@@ -104,10 +104,14 @@ public struct SandboxStats: Sendable, Codable, Equatable {
     public let activeExecGroups: Int?
     /// 采集失败原因；成功后为 nil。
     public let statsError: String?
+    /// M37：guest 的 workspace 接收端版本。旧 guest 不上报（nil，按 1 处理）；
+    /// 2 起逐级 O_NOFOLLOW、首块截断。宿主据此决定是否允许「workload 运行之后」的再次同步。
+    public let workspaceSyncVersion: Int?
 
     public init(cpuUsageUsec: UInt64?, memoryCurrentBytes: UInt64?, memoryMaxBytes: UInt64?,
                 pidsCurrent: Int?, pidsMax: Int?, activeExecGroups: Int? = nil,
-                statsError: String? = nil) {
+                statsError: String? = nil, workspaceSyncVersion: Int? = nil) {
+        self.workspaceSyncVersion = workspaceSyncVersion
         self.cpuUsageUsec = cpuUsageUsec
         self.memoryCurrentBytes = memoryCurrentBytes
         self.memoryMaxBytes = memoryMaxBytes

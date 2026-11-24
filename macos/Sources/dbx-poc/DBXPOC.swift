@@ -77,6 +77,10 @@ struct DBXPOC {
             case "restart": try daemonRestartCli(args: Array(args.dropFirst()))
             case "console": try daemonConsoleCli(args: Array(args.dropFirst()))
             case "stats": try daemonStatsCli(args: Array(args.dropFirst()))
+            case "ws-sync":
+                let inv = try DaemonCLI.wsSync(Array(args.dropFirst()))
+                let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+                print(response.stdout ?? "ws-sync ok")
             case "suspend": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "suspend", spec: DaemonCLISpecs.suspend)
             case "resume": try daemonSimpleCli(args: Array(args.dropFirst()), kind: "resume", spec: DaemonCLISpecs.resume)
             case "help", "-h", "--help":

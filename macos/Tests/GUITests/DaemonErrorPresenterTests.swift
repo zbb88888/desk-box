@@ -17,6 +17,8 @@ final class DaemonErrorPresenterTests: XCTestCase {
             (cancelled, "DBX-OP-CANCELLED", .info, "操作已取消"),
             (locked, "DBX-RESUME-HOST-LOCKED", .warning, "无法恢复：Mac 处于锁屏状态"),
             (aborted, "DBX-LIFECYCLE-SUSPEND-ABORTED", .warning, "挂起失败，沙箱仍在运行"),
+            ("request rejected (kind=wsSync): DBX-WS-RESYNC-UNSAFE: 这台沙箱已经运行过 workload…",
+             "DBX-WS-RESYNC-UNSAFE", .warning, "无法再次同步：沙箱已运行过程序且 guest 资产较旧"),
             ("request rejected (kind=run): DBX-BOOT-TIMEOUT: bootstrap did not reach running within 90s | console: x",
              "DBX-BOOT-TIMEOUT", .error, "沙箱引导超时"),
             ("request rejected (kind=suspend): DBX-LIFECYCLE-SUSPEND-FAILED: suspend 失败且无法回滚",

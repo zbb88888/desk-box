@@ -25,6 +25,8 @@ struct DaemonRequest: Codable {
     var ptySessionId: String? = nil
     var dataHex: String? = nil
     var waitMillis: Int? = nil
+    /// M37：明确接受「workload 运行之后、对旧 guest 再次同步」的风险（见 WorkspaceResyncPolicy）。
+    var allowUnsafeResync: Bool? = nil
     var graphics: Bool? = nil
     /// M23（INV-02）：凭据域。run 用它定域；其余操作用它做会话比对。
     var domain: String? = nil
@@ -82,6 +84,12 @@ final class SandboxSession: @unchecked Sendable {
     let opQueue: DispatchQueue
     /// M26b：拆除类操作用它打断在途/排队中的 guest 操作。
     let cancellation = OpCancellation()
+    /// M37：这台沙箱里是否已经运行过 workload（exec / pty）。一旦为 true，/workspace 的内容
+    /// 就可能被不可信代码动过手脚。只增不减。
+    private let workloadLock = NSLock()
+    private var _workloadStarted = false
+    var workloadStarted: Bool { workloadLock.lock(); defer { workloadLock.unlock() }; return _workloadStarted }
+    func markWorkloadStarted() { workloadLock.lock(); _workloadStarted = true; workloadLock.unlock() }
     init(id: String, runtime: VZRuntime, handle: SandboxHandle, manifestPath: String,
          runOptions: SandboxRunOptions, domainID: CredentialDomainID) {
         self.id = id
@@ -600,6 +608,7 @@ final class SandboxDaemon: @unchecked Sendable {
             env: request.env, cwd: request.cwd,
             timeoutSeconds: request.timeoutSeconds ?? 30
         )
+        session.markWorkloadStarted()
         let response = try self.guestOp(session, op: "exec") {
             try await session.runtime.execute(session.handle, request: controlRequest)
         }
@@ -748,6 +757,7 @@ final class SandboxDaemon: @unchecked Sendable {
         guard let argv = request.argv, !argv.isEmpty else {
             throw CLIError.usage("ptyOpen: argv required")
         }
+        session.markWorkloadStarted()
         // opQueue 内「查重 → 打开 → 登记」：同沙箱并发 ptyOpen 只会成功一个。
         let sid: String = try session.opQueue.sync {
             // 已有会话：还活着（客户端在 poll）就拒绝；已被遗弃（客户端没关就消失了）就先在 guest 里
@@ -839,6 +849,19 @@ final class SandboxDaemon: @unchecked Sendable {
         let sandboxId = session.id
         guard let workspacePath = request.workspaceDir else {
             throw CLIError.usage("wsSync: workspaceDir required")
+        }
+        // M37：workload 运行之后的再次同步，只有在 guest 的接收端不跟随符号链接时才安全。
+        if session.workloadStarted {
+            let guestVersion = (try? self.guestOp(session, op: "wsSync") {
+                try await session.runtime.stats(session.handle)
+            })?.workspaceSyncVersion
+            if let refusal = WorkspaceResyncPolicy.refusal(workloadStarted: true, guestReceiverVersion: guestVersion,
+                                                           allowUnsafe: request.allowUnsafeResync ?? false) {
+                throw CLIError.usage(refusal)
+            }
+            if (guestVersion ?? 1) < WorkspaceResyncPolicy.safeReceiverVersion {
+                fputs("daemon: UNSAFE workspace re-sync explicitly allowed for sandbox \(sandboxId)\n", stderr)
+            }
         }
         let root = URL(fileURLWithPath: workspacePath).standardizedFileURL
         let snapshot = try WorkspaceSyncService.buildSnapshot(root: root)

@@ -32,6 +32,11 @@
 #include <string.h>
 #include <unistd.h>
 
+/* M37：workspace 接收端版本，经 stats 应答上报给宿主（旧 guest 没有这个字段）。
+ *   1 = 历史行为：按路径 open，跟随符号链接，不截断；
+ *   2 = 逐级 O_NOFOLLOW、仅普通单链接文件、首块截断（ws_open_beneath）。 */
+#define DBX_WS_RECEIVER_VERSION 2
+
 static uint16_t be16(uint16_t x) { return (uint16_t)((x >> 8) | (x << 8)); }
 static uint32_t be32(uint32_t x) { return __builtin_bswap32(x); }
 static uint64_t be64(uint64_t x) { return __builtin_bswap64(x); }
@@ -552,7 +557,8 @@ static int collect_stats_json(char *out, size_t cap) {
     unsigned long long pids_total = cg_read_u64("/sys/fs/cgroup/pids.current", NULL, &pids_found);
 
     if (!cpu_found && !mem_found && !pids_found) {
-        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\"}");
+        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d}",
+                         DBX_WS_RECEIVER_VERSION);
         return n > 0 ? n : -1;
     }
 
@@ -612,8 +618,9 @@ static int collect_stats_json(char *out, size_t cap) {
     int n = snprintf(out, cap,
                      "{\"cpuUsageUsec\":%s,\"memoryCurrentBytes\":%s,"
                      "\"memoryMaxBytes\":%s,\"pidsCurrent\":%s,\"pidsMax\":%s,"
-                     "\"activeExecGroups\":%d}",
-                     cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups);
+                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d}",
+                     cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups,
+                     DBX_WS_RECEIVER_VERSION);
     return n > 0 ? n : -1;
 #else
     (void)out; (void)cap;
@@ -982,6 +989,60 @@ static int ws_path_ok(const char *rel) {
         }
     }
     return 1;
+}
+
+/* 在 /workspace 之下打开（必要时创建）rel 用于写入，**全程不跟随符号链接**。
+ *
+ * 背景：/workspace 对沙箱内的 workload（uid 65534）可写，而写入这里的是以 root 运行的 bootstrap。
+ * 旧实现是 open("/workspace/<rel>", O_WRONLY|O_CREAT)：workload 只要在自己建的子目录里放一个
+ * 指向别处的符号链接，下一次同步就会让 root 把宿主 workspace 的文件内容写到它指定的任意路径，
+ * 并把目标 fchown 给 65534。内核的 protected_symlinks 只保护粘滞位目录（/workspace 本身），
+ * 不保护 workload 自己创建的子目录。
+ *
+ * 返回 fd；任何一级是符号链接 / 不是目录、或最终对象不是「普通文件且只有一个硬链接」都返回 -1。
+ * 调用方把它当作「这个文件没收到」→ wsEnd 时计数不符 → 宿主侧同步失败（fail-closed）。 */
+static int ws_open_beneath(const char *rel, mode_t mode, int do_truncate) {
+    char buf[224];
+    size_t len = strlen(rel);
+    if (len == 0 || len >= sizeof(buf)) return -1;
+    memcpy(buf, rel, len + 1);
+    int dirfd = open("/workspace", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dirfd < 0) return -1;
+    char *component = buf;
+    for (;;) {
+        char *slash = strchr(component, '/');
+        if (!slash) break;
+        *slash = 0;
+        if (component[0] == 0 || strcmp(component, ".") == 0 || strcmp(component, "..") == 0) {
+            close(dirfd);
+            return -1;
+        }
+        (void)mkdirat(dirfd, component, 0755);
+        int next = openat(dirfd, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        close(dirfd);
+        if (next < 0) return -1;
+        dirfd = next;
+        component = slash + 1;
+    }
+    if (component[0] == 0 || strcmp(component, ".") == 0 || strcmp(component, "..") == 0) {
+        close(dirfd);
+        return -1;
+    }
+    /* O_NONBLOCK：若 workload 在这里放了一个 FIFO，open 不会挂住（随后的类型检查会拒绝它）。
+     * 不在 open 时带 O_TRUNC：先确认对象可信，再截断。 */
+    int fd = openat(dirfd, component, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, mode);
+    close(dirfd);
+    if (fd < 0) return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        close(fd);
+        return -1;
+    }
+    if (do_truncate && ftruncate(fd, 0) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
 }
 
 static int ws_emit_ack(int fd, int encrypted, uint64_t *sequence, const uint8_t *request_id,
@@ -1393,9 +1454,9 @@ reconnect:
                                                      NULL, body, (size_t)bn);
                                 /* guest 侧 immediately 以 in-place fd 预开（待 brokerData 逐块写） */
                                 char mkdir_line[256];
-                                int mn = snprintf(mkdir_line, sizeof(mkdir_line), "/workspace/inbound/%s", base);
-                                if (mn > 0) { (void)mkdir("/workspace/inbound", 0755); }
-                                int ofd = open(save, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                                /* M37：与 workspace 同步同一个问题——这里由 workload 自己触发，且带 O_TRUNC。 */
+                                int mn = snprintf(mkdir_line, sizeof(mkdir_line), "inbound/%s", base);
+                                int ofd = (mn > 0 && (size_t)mn < sizeof(mkdir_line)) ? ws_open_beneath(mkdir_line, 0644, 1) : -1;
                                 if (ofd >= 0) {
                                     (void)fchown(ofd, 65534, 65534);
                                     int placed = 0;
@@ -1524,14 +1585,10 @@ reconnect:
                     int rc = ws_extract_string((const char *)(incoming + 36), "\"path\"", rel, sizeof(rel));
                     int blen = (rc >= 0) ? extract_hex_field((const char *)(incoming + 36), "\"dataHex\"", bytes, sizeof(bytes)) : -1;
                     if (rc >= 0 && blen >= 0 && ws_path_ok(rel)) {
-                        char full[320];
-                        int n = snprintf(full, sizeof(full), "/workspace/%s", rel);
-                        if (n > 0 && (size_t)n < sizeof(full)) {
-                            /* 确保父目录存在（只允许 newdir；无符号链接路径问题） */
-                            for (char *p = full + 11; *p; p++) {
-                                if (*p == '/') { *p = 0; (void)mkdir(full, 0755); *p = '/'; }
-                            }
-                            int ofd = open(full, O_WRONLY | O_CREAT, (mode_t)mode);
+                        {
+                            /* M37：逐级 O_NOFOLLOW；文件的首块（offset 0）截断旧内容——否则宿主文件变短后
+                             * 重新同步，guest 里会留下旧内容的尾巴。 */
+                            int ofd = ws_open_beneath(rel, (mode_t)mode, off == 0);
                             if (ofd >= 0) {
                                 (void)fchown(ofd, 65534, 65534);
                                 ssize_t w = (blen > 0) ? pwrite(ofd, bytes, (size_t)blen, (off_t)off) : 0;

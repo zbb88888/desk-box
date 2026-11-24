@@ -56,7 +56,17 @@ python3 -c "import json,socket
 s=socket.socket(socket.AF_UNIX); s.connect('$SOCK'); s.settimeout(30)
 s.sendall((json.dumps({'kind':'wsSync','sandboxId':'$ID','workspaceDir':'$TMPDIR_WS'})+'\n').encode())
 print(s.recv(65536).decode())" > "$E2E_WORK/ws.json" 2>/dev/null
-grep -q ws-sync "$E2E_WORK/ws.json" && pass "wsSync (Sync to workspace / drag-drop 同源)" || fail "wsSync=$(cat "$E2E_WORK/ws.json")"
+# M37：此时这台沙箱已经运行过 exec / pty。结果取决于 guest 的 workspace 接收端：
+#   新接收端 → 允许；旧 guest → 以 DBX-WS-RESYNC-UNSAFE 拒绝（GUI 的 Sync 按钮看到的就是这个）。
+if grep -q ws-sync "$E2E_WORK/ws.json"; then
+  pass "wsSync（workload 运行之后；guest 是新接收端，允许）"
+elif grep -q 'DBX-WS-RESYNC-UNSAFE' "$E2E_WORK/ws.json"; then
+  pass "wsSync（workload 运行之后；旧 guest → 被 DBX-WS-RESYNC-UNSAFE 挡住）"
+  "$BIN" ws-sync --daemon-sock "$SOCK" "$ID" "$TMPDIR_WS" --allow-unsafe-resync >"$E2E_WORK/ws2.out" 2>&1 \
+    && grep -q ws-sync "$E2E_WORK/ws2.out" && pass "wsSync 显式放行后可用（CLI ws-sync --allow-unsafe-resync）" || fail "显式放行失败：$(cat "$E2E_WORK/ws2.out")"
+else
+  fail "wsSync=$(cat "$E2E_WORK/ws.json")"
+fi
 
 # B7 Restart
 R1=$("$BIN" restart --daemon-sock "$SOCK" "$ID" 2>/dev/null)

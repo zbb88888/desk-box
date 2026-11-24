@@ -246,6 +246,22 @@ final class GUISelfTest: @unchecked Sendable {
         }
         step("listed-running", true, SandboxRowActions.available(forState: "running").map(\.rawValue).joined(separator: ","))
 
+        // 2b) Workspace 同步——必须在任何 exec / pty **之前**：对旧 guest，workload 运行之后的
+        //     再次同步会被宿主拒绝（M37）。「先同步、再运行」也是正常的使用顺序。
+        let workspaceDirectory: String? = {
+            let value = ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_WORKSPACE"] ?? ""
+            return value.isEmpty ? nil : value
+        }()
+        if let workspace = workspaceDirectory {
+            let synced: (String, Bool) = await withCheckedContinuation { continuation in
+                WorkspaceSync.sync(client: viewModel.client, sandboxId: id, path: workspace) { text, ok in
+                    continuation.resume(returning: (text, ok))
+                }
+            }
+            guard synced.1 else { return step("workspace-sync", false, synced.0) }
+            step("workspace-sync", true, synced.0)
+        }
+
         // 3) Exec：带引号的命令行（旧的按空格拆分做不到）
         _ = await exec(id, "/bin/sh -c 'echo flow-ok; id -u'")
         let out = viewModel.execOutput
@@ -311,19 +327,27 @@ final class GUISelfTest: @unchecked Sendable {
         }
         step("stats-error-visible", true, stats.statsError ?? "")
 
-        // 3g) Workspace 同步：宿主目录里的文件出现在 guest 的 /workspace
-        if let workspace = ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_WORKSPACE"], !workspace.isEmpty {
-            let synced: (String, Bool) = await withCheckedContinuation { continuation in
+        // 3g) 再次同步（此时已经运行过 exec / pty）。结果取决于 guest 的 workspace 接收端：
+        //     新接收端 → 成功；旧 guest → 被宿主拒绝，界面给出可读原因。两者都是正确行为。
+        if let workspace = workspaceDirectory {
+            _ = await exec(id, "/bin/sh -c 'cat /workspace/marker.txt'")
+            guard viewModel.execOutput.contains("gui-flow-marker") else {
+                return step("workspace-sync-content", false, viewModel.execOutput)
+            }
+            step("workspace-sync-content", true)
+            let again: (String, Bool) = await withCheckedContinuation { continuation in
                 WorkspaceSync.sync(client: viewModel.client, sandboxId: id, path: workspace) { text, ok in
                     continuation.resume(returning: (text, ok))
                 }
             }
-            guard synced.1 else { return step("workspace-sync", false, synced.0) }
-            _ = await exec(id, "/bin/sh -c 'cat /workspace/marker.txt'")
-            guard viewModel.execOutput.contains("gui-flow-marker") else {
-                return step("workspace-sync", false, "sync=\(synced.0) cat=\(viewModel.execOutput)")
+            if again.1 {
+                step("workspace-resync", true, "allowed")
+            } else if again.0.contains("无法再次同步"), again.0.contains("DBX-WS-RESYNC-UNSAFE"),
+                      daemonManager.status == .connected {
+                step("workspace-resync", true, "gated: \(again.0)")
+            } else {
+                return step("workspace-resync", false, again.0)
             }
-            step("workspace-sync", true, synced.0)
             let bad: (String, Bool) = await withCheckedContinuation { continuation in
                 WorkspaceSync.sync(client: viewModel.client, sandboxId: id, path: workspace + "/marker.txt") { text, ok in
                     continuation.resume(returning: (text, ok))

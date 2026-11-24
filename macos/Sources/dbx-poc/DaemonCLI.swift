@@ -60,6 +60,18 @@ enum DaemonCLI {
         return DaemonInvocation(request: request, sock: p.string("--daemon-sock"), json: p.flag("--json"))
     }
 
+    /// M37：把宿主目录同步进沙箱的 /workspace。
+    static func wsSync(_ args: [String]) throws -> DaemonInvocation {
+        let p = try CLIArgs.parse(args, spec: DaemonCLISpecs.wsSync)
+        var request = DaemonRequest(kind: "wsSync")
+        request.sandboxId = p.positional(0)
+        request.workspaceDir = URL(fileURLWithPath: p.positional(1)).standardizedFileURL.path
+        request.domain = p.string("--domain")
+        // 只有显式给了才发送：缺省即「不接受风险」。
+        if p.flag("--allow-unsafe-resync") { request.allowUnsafeResync = true }
+        return DaemonInvocation(request: request, sock: p.string("--daemon-sock"))
+    }
+
     static func console(_ args: [String]) throws -> DaemonInvocation {
         var inv = try single(args, spec: DaemonCLISpecs.console, kind: "consoleLog")
         inv.request.waitMillis = 16384

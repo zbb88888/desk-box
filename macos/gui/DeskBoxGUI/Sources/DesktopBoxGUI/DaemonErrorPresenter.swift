@@ -43,6 +43,8 @@ enum DaemonErrorPresenter {
         Rule(needle: "DBX-RESUME-VZ-RESTORE-FAILED", severity: .error, title: "无法恢复 VM 状态", hint: "沙箱仍为 suspended，快照已保留"),
         Rule(needle: "DBX-LIFECYCLE-SUSPEND-ABORTED", severity: .warning, title: "挂起失败，沙箱仍在运行", hint: "沙箱未受影响，可继续使用或重试"),
         Rule(needle: "DBX-LIFECYCLE-SUSPEND-FAILED", severity: .error, title: "挂起失败，沙箱已不可用", hint: "请移除该沙箱"),
+        Rule(needle: "DBX-WS-RESYNC-UNSAFE", severity: .warning, title: "无法再次同步：沙箱已运行过程序且 guest 资产较旧",
+             hint: "新建沙箱后先同步再运行，或升级 guest 资产"),
         Rule(needle: "DBX-OP-CANCELLED", severity: .info, title: "操作已取消", hint: "沙箱正在被停止或移除"),
         Rule(needle: "DBX-DAEMON-ALREADY-RUNNING", severity: .info, title: "已有 daemon 在运行", hint: "将直接连接现有 daemon"),
         Rule(needle: "DBX-DOMAIN-SESSION-MISMATCH", severity: .error, title: "凭据域不匹配", hint: "该沙箱属于另一个凭据域"),
