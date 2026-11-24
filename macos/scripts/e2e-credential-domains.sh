@@ -107,13 +107,12 @@ fi
 rm -f "$COW_ROOT/snapshots/$ID_A.snap"
 
 # 同域恢复仍然可用
-if e2e_screen_locked; then
-  expect_locked_resume "$SOCK" "$ID_B" --domain work
-  skip_locked "同域恢复成功"
-else
-  "$BIN" resume --daemon-sock "$SOCK" --domain work "$ID_B" >/dev/null 2>&1 \
-    && pass "同域恢复成功" || fail "同域恢复失败"
-fi
+e2e_resume "$SOCK" "$ID_B" --domain work
+case "$RESUME_OUTCOME" in
+  ok)     pass "同域恢复成功" ;;
+  locked) skip_locked "同域恢复成功" ;;
+  *)      fail "同域恢复失败：$(head -c 300 "$E2E_WORK/resume.out")" ;;
+esac
 
 # ---------- 6) 调度决策记录 ----------
 LOG="$SUPPORT/scheduler-decisions.jsonl"

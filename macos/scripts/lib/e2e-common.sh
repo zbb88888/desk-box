@@ -38,7 +38,7 @@ sid_of() { sed -n 's/.*sandboxId=\([A-F0-9-]*\).*/\1/p' ${1:+"$1"} | head -1; }
 # e2e_screen_locked：宿主登录会话是否锁屏（返回 0 = 锁屏）。
 # 锁屏期间 Virtualization.framework 拒绝 restoreMachineStateFrom（"permission denied"），
 # 所有依赖 resume 的断言都无法成立——那是宿主状态，不是代码缺陷。
-# 套件遇到锁屏时：改为断言「锁屏下应有的行为」，并把无法验证的部分用 skip_locked 明确标出。
+# 套件不要用它来预测 resume 的结果（见 e2e_resume）；它只用于提示信息。
 e2e_screen_locked() {
   python3 - <<'PY'
 import plistlib, subprocess, sys
@@ -53,20 +53,27 @@ PY
 # 固定措辞，e2e-all.sh 据此统计「因锁屏未验证」的条目。
 skip_locked() { skip "$1 [HOST-LOCKED：宿主锁屏，VZ 无法恢复 VM 状态；解锁后重跑]"; }
 
-# expect_locked_resume <sock> <id> [额外参数...]：锁屏下 resume 必须以明确原因码失败，
-# 且沙箱仍为 suspended、快照保留。
-expect_locked_resume() {
+# e2e_resume <sock> <id> [额外参数...]：尝试 resume，并**按结果**（而不是按事先探测的锁屏状态）分类。
+# 结果写入 RESUME_OUTCOME：
+#   ok      resume 成功
+#   locked  daemon 报 DBX-RESUME-HOST-LOCKED（宿主锁屏，VZ 拒绝恢复）。此时顺带断言锁屏下应有的
+#           行为：沙箱仍为 suspended、快照保留。调用方随后用 skip_locked 标出未验证的断言。
+#   failed  其它任何失败——这是真正的失败，调用方应 fail。
+# 为什么不先探测锁屏：锁屏标志与 VZ 实际能否恢复之间有时间差（刚锁屏的几秒内仍可恢复），
+# 「预测」会在边界上误报。daemon 的诊断同时看了 VZ 的错误和会话状态，以它为准。
+e2e_resume() {
   _sock="$1"; _id="$2"; shift 2
-  if "$BIN" resume --daemon-sock "$_sock" "$@" "$_id" >"$E2E_WORK/locked-resume.out" 2>&1; then
-    fail "锁屏下 resume 竟然成功（锁屏探测与 VZ 行为不一致）"
-  elif grep -q 'DBX-RESUME-HOST-LOCKED' "$E2E_WORK/locked-resume.out"; then
-    pass "锁屏下 resume 以 DBX-RESUME-HOST-LOCKED 失败（原因明确）"
+  if "$BIN" resume --daemon-sock "$_sock" "$@" "$_id" >"$E2E_WORK/resume.out" 2>&1; then
+    RESUME_OUTCOME=ok
+  elif grep -q 'DBX-RESUME-HOST-LOCKED' "$E2E_WORK/resume.out"; then
+    RESUME_OUTCOME=locked
+    pass "宿主锁屏：resume 以 DBX-RESUME-HOST-LOCKED 失败（原因明确）"
+    "$BIN" ps --daemon-sock "$_sock" | grep "$_id" | grep -q suspended \
+      && pass "resume 失败后沙箱仍为 suspended" || fail "resume 失败后状态异常：$("$BIN" ps --daemon-sock "$_sock" | grep "$_id")"
+    [ -f "$COW_ROOT/snapshots/$_id.snap" ] && pass "resume 失败后快照保留" || fail "resume 失败后快照丢失"
   else
-    fail "锁屏下 resume 失败但原因码不符：$(head -c 300 "$E2E_WORK/locked-resume.out")"
+    RESUME_OUTCOME=failed
   fi
-  "$BIN" ps --daemon-sock "$_sock" | grep "$_id" | grep -q suspended \
-    && pass "resume 失败后沙箱仍为 suspended" || fail "resume 失败后状态异常：$("$BIN" ps --daemon-sock "$_sock" | grep "$_id")"
-  [ -f "$COW_ROOT/snapshots/$_id.snap" ] && pass "resume 失败后快照保留" || fail "resume 失败后快照丢失"
 }
 
 # e2e_init <tag>：建隔离目录、导出环境、装 trap。

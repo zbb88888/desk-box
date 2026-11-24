@@ -160,19 +160,14 @@ rm -f "$SNAPS/$LEGACY_YOUNG"
 # ---------- S2 ----------
 ( while :; do "$BIN" sweep >/dev/null 2>&1; done ) &
 SWEEPER=$!
-if e2e_screen_locked; then
-  # 锁屏：只能验证保存路径——并发 sweep 下 suspend 成功、快照完整落盘。
-  "$BIN" suspend --daemon-sock "$SOCK" "$ID" >"$E2E_WORK/s2-susp.out" 2>&1 && SUSP=0 || SUSP=1
-  kill "$SWEEPER" 2>/dev/null; wait "$SWEEPER" 2>/dev/null
-  [ "$SUSP" = 0 ] && [ -s "$SNAPS/$ID.snap" ] && pass "CLI sweep 持续并发下 suspend 成功且快照落盘" \
-    || fail "并发 sweep 下 suspend 失败：$(cat "$E2E_WORK/s2-susp.out")"
-  expect_locked_resume "$SOCK" "$ID"
-  skip_locked "CLI sweep 持续并发下 3 轮 suspend/resume"
-  LEFT=$(ls -1 "$SNAPS" | grep -v -e "^$LIVE_TMP\$" -e "^$LIVE_RESTORE\$" -e "^$ID.snap\$" | tr '\n' ' ')
-  [ -z "$LEFT" ] && pass "快照目录除植入文件与该沙箱快照外无残留" || fail "快照目录残留：$LEFT"
-else
-  CYCLES_OK=0
-  for i in 1 2 3; do
+# 第 1 轮：并发 sweep 下 suspend 必须成功且快照完整落盘（保存路径，不依赖 resume）。
+"$BIN" suspend --daemon-sock "$SOCK" "$ID" >"$E2E_WORK/s2-susp-1.out" 2>&1 && SUSP=0 || SUSP=1
+[ "$SUSP" = 0 ] && [ -s "$SNAPS/$ID.snap" ] && pass "CLI sweep 持续并发下 suspend 成功且快照落盘" \
+  || fail "并发 sweep 下 suspend 失败：$(cat "$E2E_WORK/s2-susp-1.out")"
+e2e_resume "$SOCK" "$ID"
+if [ "$RESUME_OUTCOME" = ok ]; then
+  CYCLES_OK=1
+  for i in 2 3; do
     "$BIN" suspend --daemon-sock "$SOCK" "$ID" >"$E2E_WORK/s2-susp-$i.out" 2>&1 \
       && "$BIN" resume --daemon-sock "$SOCK" "$ID" >"$E2E_WORK/s2-res-$i.out" 2>&1 \
       && CYCLES_OK=$((CYCLES_OK+1))
@@ -184,6 +179,15 @@ else
   [ "$OUT" = after-cycles ] && pass "循环之后 exec 正常" || fail "循环之后 exec=$OUT"
   LEFT=$(ls -1 "$SNAPS" | grep -v -e "^$LIVE_TMP\$" -e "^$LIVE_RESTORE\$" | tr '\n' ' ')
   [ -z "$LEFT" ] && pass "快照目录除两份植入的在途文件外无残留" || fail "快照目录残留：$LEFT"
+else
+  kill "$SWEEPER" 2>/dev/null; wait "$SWEEPER" 2>/dev/null
+  if [ "$RESUME_OUTCOME" = locked ]; then
+    skip_locked "CLI sweep 持续并发下 3 轮 suspend/resume"
+  else
+    fail "并发 sweep 下 resume 失败：$(head -c 300 "$E2E_WORK/resume.out")"
+  fi
+  LEFT=$(ls -1 "$SNAPS" | grep -v -e "^$LIVE_TMP\$" -e "^$LIVE_RESTORE\$" -e "^$ID.snap\$" | tr '\n' ' ')
+  [ -z "$LEFT" ] && pass "快照目录除植入文件与该沙箱快照外无残留" || fail "快照目录残留：$LEFT"
 fi
 
 # ---------- G2：崩溃残留可接管（顺带验证：属主死后在途文件被清） ----------

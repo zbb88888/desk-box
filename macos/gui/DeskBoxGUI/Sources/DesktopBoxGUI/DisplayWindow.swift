@@ -23,9 +23,10 @@ struct DisplayWindow: NSViewRepresentable {
 }
 
 /// GUI-in-process VM viewmodel（display sandbox 专属，daemon 的 sandbox 不相干）。
-private final class VMBox: @unchecked Sendable {
-    let machine: VZVirtualMachine
-    init(machine: VZVirtualMachine) { self.machine = machine }
+/// 把校验过的配置从后台队列带到主队列（配置对象此后只在主队列上使用）。
+private final class ConfigBox: @unchecked Sendable {
+    let value: VZVirtualMachineConfiguration
+    init(_ value: VZVirtualMachineConfiguration) { self.value = value }
 }
 
 final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
@@ -76,19 +77,29 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
         DispatchQueue.main.async { self.busy = true; self.status = "starting" }
         animQueue.async {
             do {
-                let machine = try self.makeMachine(kernel: kernelPath, initrd: initrdPath, rootDisk: activeRootDisk, cpu: cpu, memMiB: memMiB)
-                let vmBox = VMBox(machine: machine)
-                DispatchQueue.main.async { self.machine = machine }
-                vmBox.machine.start { result in
-                    DispatchQueue.main.async {
+                // 配置的构建与校验（读文件、打开磁盘）放在后台；
+                let configuration = ConfigBox(try self.makeConfiguration(
+                    kernel: kernelPath, initrd: initrdPath, rootDisk: activeRootDisk, cpu: cpu, memMiB: memMiB))
+                // M31 fix：VM 必须在它所属的队列上创建和操作。`VZVirtualMachine(configuration:)` 绑定的是
+                // **主队列**（VZVirtualMachineView 也要求如此），而此前 `start` 是在本后台队列上调用的——
+                // Virtualization.framework 的 dispatch_assert_queue 直接 SIGTRAP，点「Open Display」必崩。
+                DispatchQueue.main.async {
+                    let machine = VZVirtualMachine(configuration: configuration.value)
+                    self.machine = machine
+                    machine.start { result in
+                        // completion 在 VM 的队列（主队列）上回调。
                         self.busy = false
                         switch result {
                         case .success: self.status = "running"
-                        case .failure(let e): self.status = "boot error: \(e.localizedDescription)"
+                        case .failure(let e):
+                            self.status = "boot error: \(e.localizedDescription)"
+                            self.machine = nil
+                            self.cleanupSessionDisk()
                         }
                     }
                 }
             } catch {
+                self.cleanupSessionDisk()
                 DispatchQueue.main.async {
                     self.busy = false
                     self.status = "config error: \(error.localizedDescription)"
@@ -110,7 +121,7 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func makeMachine(kernel: URL, initrd: URL?, rootDisk: URL, cpu: Int, memMiB: Int) throws -> VZVirtualMachine {
+    private func makeConfiguration(kernel: URL, initrd: URL?, rootDisk: URL, cpu: Int, memMiB: Int) throws -> VZVirtualMachineConfiguration {
         let bootLoader = VZLinuxBootLoader(kernelURL: kernel)
         if let initrd { bootLoader.initialRamdiskURL = initrd }
         bootLoader.commandLine = "console=hvc0 console=tty0 loglevel=7 root=/dev/vda rw init=/init"
@@ -146,7 +157,7 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
         configuration.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: attachment)]
 
         try configuration.validate()
-        return VZVirtualMachine(configuration: configuration)
+        return configuration
     }
 
     private func consoleFileHandle() throws -> FileHandle {

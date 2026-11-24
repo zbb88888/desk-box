@@ -6,10 +6,20 @@ final class DeskBoxAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // M30：仅当设置了 DBX_GUI_SELFTEST 时启用（见 GUISelfTest）。
         GUISelfTest.shared?.start()
+        // M31：Dock 菜单的 Quit、注销/关机、`NSRunningApplication.terminate()` 发来的都是 quit AppleEvent，
+        // 默认处理是 `NSApp.terminate`——有 sheet 时同样无效（并且会卡住系统注销）。改由 AppQuit 处理。
+        NSAppleEventManager.shared().setEventHandler(
+            self, andSelector: #selector(handleQuitAppleEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kCoreEventClass), andEventID: AEEventID(kAEQuitApplication))
+    }
+
+    @objc func handleQuitAppleEvent(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        // AppleEvent 处理器在主线程上被调用。
+        MainActor.assumeIsolated { AppQuit.quit() }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        GUISelfTest.shared?.noteTerminating()
+        GUISelfTest.shared?.noteTerminating(path: .terminate)
         // 通知各持有者（display VM / 临时私盘）做同步清理；daemon 是独立进程，不随 GUI 退出。
         NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: sender)
         return .terminateNow
@@ -28,10 +38,10 @@ struct DeskBoxGUIApp: App {
                 .frame(minWidth: 760, minHeight: 480)
         }
         .commands {
-            // Cmd+Q bug fix：之前把 Quit 塞在 .appSettings（⌘, 槽位）且无快捷键。
-            // 改为显式替换 .appTermination 并绑定 ⌘Q，保证菜单项始终存在。
+            // M31：Quit 必须经 AppQuit（先收起 sheet 再 terminate）。系统默认的 `terminate:` 菜单项在
+            // 窗口挂着 sheet 时是个空操作——见 AppQuit 的说明。由 scripts/e2e-gui-app.sh 的 G2/G7/G8 守住。
             CommandGroup(replacing: .appTermination) {
-                Button("Quit Desk Box") { NSApplication.shared.terminate(nil) }
+                Button("Quit Desk Box") { AppQuit.quit() }
                     .keyboardShortcut("q", modifiers: .command)
             }
         }
@@ -111,7 +121,7 @@ struct MenuBarStatusView: View {
                 NSApp.activate(ignoringOtherApps: true)
                 if let window = NSApp.windows.first { window.makeKeyAndOrderFront(nil) }
             }
-            Button("Quit") { NSApplication.shared.terminate(nil) }
+            Button("Quit") { AppQuit.quit() }
         }
         .padding(12)
         .frame(width: 260)

@@ -77,19 +77,15 @@ else
 fi
 mv "$SNAP.bak" "$SNAP"
 
-if e2e_screen_locked; then
-  # 锁屏：VZ 拒绝 restore。能验证的是「失败得明确、不丢状态」。
-  expect_locked_resume "$SOCK" "$ID"
+# 4) 原始快照恢复（按结果分类，见 e2e_resume）
+e2e_resume "$SOCK" "$ID"
+if [ "$RESUME_OUTCOME" = locked ]; then
+  # 锁屏：VZ 拒绝 restore。能验证的是「失败得明确、不丢状态」（已由 e2e_resume 断言）。
   skip_locked "原始快照可恢复 / 恢复后状态 running"
   skip_locked "恢复后数据仍在、权限未复活"
   skip_locked "二次 suspend/resume"
 else
-# 4) manifest 不符 → 拒绝（用 gpu manifest 的 digest 不同来模拟）
-if "$BIN" resume --daemon-sock "$SOCK" "$ID" >/dev/null 2>&1; then
-  pass "原始快照可恢复"
-else
-  fail "原始快照恢复失败"
-fi
+[ "$RESUME_OUTCOME" = ok ] && pass "原始快照可恢复" || fail "原始快照恢复失败：$(head -c 300 "$E2E_WORK/resume.out")"
 STATE=$("$BIN" ps --daemon-sock "$SOCK" | awk '{print $2}' | head -1)
 [ "$STATE" = "running" ] && pass "恢复后状态 running" || fail "恢复后状态=$STATE"
 
@@ -102,12 +98,17 @@ esac
 
 # 6) 二次 suspend/resume（可重复）
 "$BIN" suspend --daemon-sock "$SOCK" "$ID" >/dev/null 2>&1 && pass "二次 suspend 成功" || fail "二次 suspend 失败"
-"$BIN" resume --daemon-sock "$SOCK" "$ID" >/dev/null 2>&1 && pass "二次 resume 成功" || fail "二次 resume 失败"
+e2e_resume "$SOCK" "$ID"
+case "$RESUME_OUTCOME" in
+  ok)     pass "二次 resume 成功" ;;
+  locked) skip_locked "二次 resume（会话在套件运行中途锁屏）" ;;
+  *)      fail "二次 resume 失败：$(head -c 300 "$E2E_WORK/resume.out")" ;;
+esac
 fi
 
 # 7) 对 **suspended** 沙箱直接 rm：快照必须随之删除（INV-10）。
 #    M27 之前这条路径从未被覆盖（总是先 resume 再 rm），destroy 实际上不删快照。
-if ! e2e_screen_locked; then
+if [ "$(state_of "$ID")" = running ]; then
   "$BIN" suspend --daemon-sock "$SOCK" "$ID" >/dev/null 2>&1 || fail "rm 前的 suspend 失败"
 fi
 "$BIN" ps --daemon-sock "$SOCK" | grep "$ID" | grep -q suspended && [ -f "$SNAP" ] \

@@ -106,15 +106,14 @@ D=$(sid_of "$WORK/run-d.out")
 [ "$RS" = 0 ] && pass "并发 run 期间 suspend B 成功" || fail "suspend 失败：$(cat "$WORK/susp.out")"
 [ "$RD" = 0 ] && [ -n "$D" ] && pass "suspend 期间 run D 成功" || fail "run D 失败：$(cat "$WORK/run-d.out")"
 [ -f "$COW/snapshots/$B.snap" ] && pass "B 的快照未被并发 sweep 误删" || fail "B 的快照缺失"
-if e2e_screen_locked; then
-  expect_locked_resume "$SOCK" "$B"
-  skip_locked "B resume 后 exec 正常"
-elif "$BIN" resume --daemon-sock "$SOCK" "$B" >"$WORK/resume.out" 2>&1; then
-  RB_OUT=$("$BIN" exec --daemon-sock "$SOCK" "$B" -- /bin/echo resumed-b 2>&1 || true)
-  [ "$RB_OUT" = resumed-b ] && pass "B resume 后 exec 正常" || fail "resume 后 exec=$RB_OUT"
-else
-  fail "resume B 失败：$(cat "$WORK/resume.out")"
-fi
+e2e_resume "$SOCK" "$B"
+case "$RESUME_OUTCOME" in
+  ok)
+    RB_OUT=$("$BIN" exec --daemon-sock "$SOCK" "$B" -- /bin/echo resumed-b 2>&1 || true)
+    [ "$RB_OUT" = resumed-b ] && pass "B resume 后 exec 正常" || fail "resume 后 exec=$RB_OUT" ;;
+  locked) skip_locked "B resume 后 exec 正常" ;;
+  *)      fail "resume B 失败：$(head -c 300 "$E2E_WORK/resume.out")" ;;
+esac
 TMP_LEFT=$(ls -1 "$COW/snapshots" 2>/dev/null | grep -c '^tmp-' || true)
 [ "$TMP_LEFT" = 0 ] && pass "快照目录无 tmp-* 残留" || fail "快照目录残留 $TMP_LEFT 个 tmp 文件"
 

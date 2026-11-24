@@ -1,6 +1,7 @@
 import AppKit
 import DeskBoxVZ
 import Foundation
+import Virtualization
 
 /// M30：应用内自检（仅当设置了环境变量 `DBX_GUI_SELFTEST=<报告路径>` 时启用）。
 ///
@@ -32,21 +33,124 @@ final class GUISelfTest: @unchecked Sendable {
 
     var terminatedMarkerPath: String { reportPath + ".terminated" }
 
+    /// M31：`DBX_GUI_SELFTEST_SCENARIO=display` 时，自检请求主界面打开 Display。
+    static let openDisplayRequest = Notification.Name("deskbox.selftest.open-display")
+    /// `DBX_GUI_SELFTEST_SCENARIO=sheet`：打开一个不依赖 VM 的 sheet（Settings）。
+    static let openSettingsRequest = Notification.Name("deskbox.selftest.open-settings")
+    /// `DBX_GUI_SELFTEST_QUIT_VIA=appleevent`：不发 ⌘Q，而是给自己发 quit AppleEvent
+    ///（Dock 的 Quit / 注销 / NSRunningApplication.terminate 走的那条路）。
+    private var quitVia: String { ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_QUIT_VIA"] ?? "cmd-q" }
+    private var scenario: String { ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_SCENARIO"] ?? "" }
+    private var displayFacts: [String: Any] = [:]
+    private var lateFacts: [String: Any] = [:]
+
     func start() {
         startLagSampler()
         let raw = ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_QUIT_AFTER"] ?? ""
         guard let seconds = Double(raw), seconds > 0, seconds <= 120 else { return }
+        if scenario == "display" || scenario == "sheet" {
+            // 等主窗口就绪后打开对应的 sheet；到点再发退出请求。
+            let name = scenario == "display" ? Self.openDisplayRequest : Self.openSettingsRequest
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                NotificationCenter.default.post(name: name, object: nil)
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [self] in
-            writeReport(extra: ["phase": "before-cmd-q"])
-            let handled = sendSyntheticCommandQ()
-            // 走到这里说明 ⌘Q 没有让 App 退出。
-            writeReport(extra: ["phase": "after-cmd-q", "cmdQHandledByMenu": handled, "stillRunningAfterCmdQ": true])
+            MainActor.assumeIsolated { self.fireCommandQ() }
         }
     }
 
+    @MainActor
+    private func fireCommandQ() {
+        var target: NSWindow? = nil
+        if scenario == "display" { target = focusDisplayView() }
+        if scenario == "sheet" { target = NSApp.windows.first { $0.sheetParent != nil } }
+        let sheetOpen = AppQuit.anySheetAttached
+        writeReport(extra: ["phase": "before-cmd-q", "sheetAttachedBeforeQuit": sheetOpen, "quitVia": quitVia])
+        if quitVia == "appleevent" {
+            let quit = NSAppleEventDescriptor(
+                eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEQuitApplication),
+                targetDescriptor: NSAppleEventDescriptor.currentProcess(),
+                returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+            _ = try? quit.sendEvent(options: [.noReply], timeout: 5)
+            // 发给自己的事件在本轮 runloop 之后处理；若 3s 后还活着，记下来。
+            lateFacts = ["phase": "after-quit-event", "stillRunningAfterQuitEvent": true,
+                         "sheetAttachedBeforeQuit": sheetOpen, "quitVia": quitVia]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
+                MainActor.assumeIsolated { self.writeReport(extra: self.lateFacts) }
+            }
+            return
+        }
+        let outcome = sendSyntheticCommandQ(to: target)
+        // 走到这里说明 ⌘Q 没有让 App 退出。
+        // 诊断事实：⌘Q 为什么没有生效。
+        func quitItem(_ menu: NSMenu?) -> NSMenuItem? {
+            for item in menu?.items ?? [] {
+                if item.keyEquivalent.lowercased() == "q", item.keyEquivalentModifierMask == [.command] { return item }
+                if let hit = quitItem(item.submenu) { return hit }
+            }
+            return nil
+        }
+        let item = quitItem(NSApp.mainMenu)
+        item?.menu?.update()
+        var facts: [String: Any] = [
+            "stillRunningAfterCmdQ": true,
+            "cmdQConsumedByWindow": outcome.consumedByWindow,
+            "cmdQHandledByMenu": outcome.handledByMenu,
+            "quitItemEnabledAfterValidation": item?.isEnabled ?? false,
+            "quitItemAction": item?.action.map(NSStringFromSelector) ?? "",
+            "appModalWindowPresent": NSApp.modalWindow != nil,
+            "anyWindowHasSheet": NSApp.windows.contains { $0.attachedSheet != nil },
+            "appIsActive": NSApp.isActive,
+            "keyWindowPresent": NSApp.keyWindow != nil,
+        ]
+        facts["sheetAttachedBeforeQuit"] = sheetOpen
+        facts["quitVia"] = quitVia
+        // AppQuit 需要几轮 runloop 收起 sheet；3s 后还活着才算「没退出」。
+        facts["phase"] = "quit-in-progress"
+        writeReport(extra: facts)
+        // 不把 [String: Any] 捕获进 @Sendable 闭包（旧一些的 Swift 6 编译器会拒绝）：存到实例上。
+        lateFacts = facts
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [self] in
+            MainActor.assumeIsolated {
+                var late = self.lateFacts
+                late["phase"] = "after-cmd-q"
+                self.writeReport(extra: late)
+            }
+        }
+    }
+
+    /// M31：找到 guest 画面（VZVirtualMachineView），让它成为所在窗口的 first responder，
+    /// 并记录当时的事实（VM 状态、capturesSystemKeys、焦点是否真的落在它上面）。
+    @MainActor
+    private func focusDisplayView() -> NSWindow? {
+        func find(_ view: NSView) -> VZVirtualMachineView? {
+            if let vz = view as? VZVirtualMachineView { return vz }
+            for sub in view.subviews { if let hit = find(sub) { return hit } }
+            return nil
+        }
+        for window in NSApp.windows {
+            guard let content = window.contentView, let vz = find(content) else { continue }
+            let accepted = window.makeFirstResponder(vz)
+            displayFacts = [
+                "displayViewFound": true,
+                "displayVMState": vz.virtualMachine.map { "\($0.state.rawValue)" } ?? "nil",
+                "displayVMRunning": vz.virtualMachine?.state == .running,
+                "capturesSystemKeys": vz.capturesSystemKeys,
+                "makeFirstResponderAccepted": accepted,
+                "firstResponderIsDisplayView": window.firstResponder === vz,
+                "displayWindowIsSheet": window.sheetParent != nil,
+            ]
+            return window
+        }
+        displayFacts = ["displayViewFound": false]
+        return nil
+    }
+
     /// AppDelegate 在 terminate 路径上调用：证明退出经由 `applicationShouldTerminate`，而不是崩溃或被杀。
-    func noteTerminating() {
-        FileManager.default.createFile(atPath: terminatedMarkerPath, contents: Data("terminate-path\n".utf8))
+    /// 内容是退出方式：`terminate`（正常）或 `forced`（AppQuit 的兜底）。
+    func noteTerminating(path: AppQuit.Path) {
+        FileManager.default.createFile(atPath: terminatedMarkerPath, contents: Data("\(path.rawValue)\n".utf8))
     }
 
     private func startLagSampler() {
@@ -69,15 +173,23 @@ final class GUISelfTest: @unchecked Sendable {
         thread.start()
     }
 
-    private func sendSyntheticCommandQ() -> Bool {
+    /// 按 AppKit 对带 ⌘ 的 keyDown 的处理顺序投递：
+    /// 先让目标窗口（及其视图层级，first responder 所在的那条链）决定是否消费，
+    /// 没人消费才交给主菜单。`window == nil` 时直接走主菜单。
+    @MainActor
+    private func sendSyntheticCommandQ(to window: NSWindow?) -> (consumedByWindow: Bool, handledByMenu: Bool) {
         guard let event = NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: [.command],
-            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0, context: nil,
+            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window?.windowNumber ?? 0, context: nil,
             characters: "q", charactersIgnoringModifiers: "q", isARepeat: false, keyCode: 12
-        ) else { return false }
-        return NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+        ) else { return (false, false) }
+        if let window, window.performKeyEquivalent(with: event) {
+            return (true, false)   // 被窗口里的视图吃掉了：菜单根本没机会
+        }
+        return (false, NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false)
     }
 
+    @MainActor
     private func menuSnapshot(_ menu: NSMenu?, path: String = "") -> [[String: Any]] {
         guard let menu else { return [] }
         var out: [[String: Any]] = []
@@ -99,6 +211,7 @@ final class GUISelfTest: @unchecked Sendable {
         return out
     }
 
+    @MainActor
     private func writeReport(extra: [String: Any]) {
         lock.lock(); let lag = maxLagMs; let n = samples; lock.unlock()
         var report: [String: Any] = [
@@ -112,6 +225,8 @@ final class GUISelfTest: @unchecked Sendable {
             "windowCount": NSApp.windows.count,
             "menu": menuSnapshot(NSApp.mainMenu),
         ]
+        report["scenario"] = scenario
+        for (k, v) in displayFacts { report[k] = v }
         for (k, v) in extra { report[k] = v }
         guard let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) else { return }
         try? data.write(to: URL(fileURLWithPath: reportPath), options: .atomic)

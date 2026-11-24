@@ -59,7 +59,7 @@ G6 非法 DBX_SUPPORT_ROOT → GUI exit 2
 
 第二条说明：**原始代码本来就有一个能用的 ⌘Q 菜单项**（SwiftUI 默认提供）。第一轮我把「Quit 放错菜单槽且没有快捷键」列为根因之三，是错的；那处改动无害，但没有修复任何东西。
 
-三个「根因」的实际状态：
+三个「根因」的实际状态（**M31 更新：主因另有其事——有 sheet 时 AppKit 拒绝终止，见 `m31-display-cmdq.md` §4**）：
 
 1. 主线程同步调 daemon socket —— **已证实**是真实原因，并由 G5 守住。
 2. `VZVirtualMachineView.capturesSystemKeys = true` 把 ⌘Q 转发进 guest —— 合理，但**未验证**（需要 Display 窗口获得键盘焦点，见 §4）。

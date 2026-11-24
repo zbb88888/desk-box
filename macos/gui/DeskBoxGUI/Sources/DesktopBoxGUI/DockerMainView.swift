@@ -83,6 +83,23 @@ struct DockerMainView: View {
                     .frame(minWidth: 640, minHeight: 420)
             }
         }
+        // M31：退出前由 AppQuit 请求收起所有 sheet（有 sheet 时 AppKit 拒绝终止）。
+        .onReceive(NotificationCenter.default.publisher(for: AppQuit.dismissSheetsRequest)) { _ in
+            terminalSandboxId = nil
+            consoleSandboxId = nil
+            displayPresented = false
+            settingsPresented = false
+        }
+        // M31：自检场景请求打开 Settings sheet（与点击「Settings」等价）。仅自检模式下会收到。
+        .onReceive(NotificationCenter.default.publisher(for: GUISelfTest.openSettingsRequest)) { _ in
+            selection = "sandboxes"
+            settingsPresented = true
+        }
+        // M31：自检场景请求打开 Display（与点击「Open Display」走同一段代码）。仅自检模式下会收到。
+        .onReceive(NotificationCenter.default.publisher(for: GUISelfTest.openDisplayRequest)) { _ in
+            openDisplay()
+            displayPresented = true
+        }
         .sheet(isPresented: $displayPresented) {
             DisplaySessionView(model: displayModel)
                 .frame(minWidth: 800, minHeight: 560)

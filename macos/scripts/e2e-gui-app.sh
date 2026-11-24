@@ -8,13 +8,17 @@
 #   G5  daemon 无响应（连得上、不回话）时主线程不被卡住，⌘Q 仍然即时生效
 #       —— 这是最初「⌘Q 无法退出」的根因；同时验证 GUI 不删除该 daemon 的 socket
 #   G6  非法 DBX_SUPPORT_ROOT：GUI 直接 exit 2，不回落到真实目录
+#   G7  Display（M31）：Open Display 不崩溃；guest 画面获得键盘焦点、Display sheet 打开时 ⌘Q 仍能退出；
+#       退出后会话私盘（rootfs 临时副本）被清除
+#   G8  任意 sheet 打开时（Settings，不依赖 VM）⌘Q 仍能退出 —— AppKit 在有 sheet 时会让 terminate 变成空操作
+#   G9  sheet 打开时收到 quit AppleEvent（Dock 的 Quit / 注销走的路）同样能退出
 #
 # 做法：把 GUI 二进制装进临时目录里的一个 .app（独立 bundle id、LSUIElement=后台代理：
 # 无 Dock 图标、不抢焦点），直接执行其二进制（不经 LaunchServices 注册）。
 # 应用内自检钩子见 GUISelfTest.swift（仅当设置 DBX_GUI_SELFTEST 时启用）。
 #
-# 没有覆盖：真实键盘事件的分发、Display 窗口（VZVirtualMachineView）聚焦时的 ⌘Q、
-# 任何需要点击的流程。见 docs/design/m30-gui-automation.md。
+# 没有覆盖：来自窗口服务器的真实键盘事件、任何需要点击的流程。
+# 见 docs/design/m30-gui-automation.md 与 m31-display-cmdq.md。
 #
 # 资源纪律：scripts/lib/e2e-common.sh；另外清理 macOS 按 bundle id 在 ~/Library 下生成的文件。
 set -u
@@ -35,8 +39,20 @@ library_residue() {
   done
   return 0
 }
+# Display 会话私盘落在 $TMPDIR（不在 E2E_WORK 里）：记录基线，退出时删掉本次运行新增的。
+display_disks() { ls -1 "${TMPDIR:-/tmp}" 2>/dev/null | grep '^deskbox-display-root-.*\.raw$' | sort; }
+DISKS_BEFORE="$(display_disks)"
+# GUI 崩溃会在 ~/Library/Logs/DiagnosticReports 留下 .ips；任何新增的崩溃报告都算失败。
+crash_reports() { ls -1 "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep '^DeskBoxGUI' | sort; }
+CRASHES_BEFORE="$(crash_reports)"
+new_crash_reports() { crash_reports | grep -vxF -e "$CRASHES_BEFORE" -e ''; }
+new_display_disks() { display_disks | grep -vxF -e "$DISKS_BEFORE" -e '' ; }
 e2e_extra_cleanup() {
   for p in $GUI_PIDS; do kill -9 "$p" 2>/dev/null; done
+  new_display_disks | while IFS= read -r f; do
+    printf '[gui] LEAK: display 会话私盘残留（已删除）：%s\n' "$f" >&2
+    rm -f "${TMPDIR:-/tmp}/$f"
+  done
   case "$BID" in com.deskbox.gui.e2e.[0-9]*) ;; *) return 0 ;; esac   # 只动本次运行的 bundle id
   defaults delete "$BID" >/dev/null 2>&1
   library_residue | while IFS= read -r path; do rm -rf "$path"; done
@@ -59,11 +75,15 @@ with open(sys.argv[2], "wb") as f:
     plistlib.dump(info, f)
 PY
 GUI_BIN="$APP/Contents/MacOS/DeskBoxGUI"
+# G7 要在 GUI 进程内起 display VM：需要 virtualization entitlement（与正式打包一致）。
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-Apple Development: 1220582684@qq.com (9LM4RS5GL6)}"
+codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$E2E_ROOT/Resources/DeskBox.entitlements" \
+  --timestamp "$GUI_BIN" >/dev/null 2>&1 || die "GUI codesign 失败"
 DEFAULT_SOCK="$DBX_SUPPORT_ROOT/dbxd.sock"
 
-# launch_gui <report> <quit-after-seconds> <autostart YES|NO>：后台启动，PID 记入 GUI_PID。
+# launch_gui <report> <quit-after-seconds> <autostart YES|NO> [scenario] [quit-via]：后台启动，PID 记入 GUI_PID。
 launch_gui() {
-  DBX_GUI_SELFTEST="$1" DBX_GUI_SELFTEST_QUIT_AFTER="$2" \
+  DBX_GUI_SELFTEST="$1" DBX_GUI_SELFTEST_QUIT_AFTER="$2" DBX_GUI_SELFTEST_SCENARIO="${4:-}" DBX_GUI_SELFTEST_QUIT_VIA="${5:-cmd-q}" \
     "$GUI_BIN" -autostartDaemon "$3" -manifestPath "$MANIFEST" >"$1.stdout" 2>&1 &
   GUI_PID=$!
   GUI_PIDS="$GUI_PIDS $GUI_PID"
@@ -75,6 +95,18 @@ wait_gui_exit() {
   else
     GUI_RC=alive
     kill -9 "$1" 2>/dev/null; wait "$1" 2>/dev/null
+  fi
+}
+# assert_quit <标签> <report>：退出请求之后 App 必须已经退出——
+# 退出码 0、经由 applicationShouldTerminate（标记文件内容 terminate；forced 表示走了 AppQuit 的兜底）、
+# 且自检没有写下「之后仍在运行」的报告。依赖调用方刚执行过 wait_gui_exit（读 GUI_RC）。
+assert_quit() {
+  _how=$(cat "$2.terminated" 2>/dev/null)
+  _phase=$(field "$2" phase)
+  if [ "$GUI_RC" = 0 ] && [ "$_how" = terminate ] && [ "$_phase" != after-cmd-q ] && [ "$_phase" != after-quit-event ]; then
+    pass "$1：App 经 terminate 路径退出（rc=0）"
+  else
+    fail "$1：未能正常退出 rc=$GUI_RC 退出方式=${_how:-none} phase=$_phase sheet=$(field "$2" sheetAttachedBeforeQuit) consumedByWindow=$(field "$2" cmdQConsumedByWindow) handledByMenu=$(field "$2" cmdQHandledByMenu) quitItemEnabled=$(field "$2" quitItemEnabledAfterValidation)"
   fi
 }
 field() { python3 -c "import json,sys;d=json.load(open(sys.argv[1]));v=d.get(sys.argv[2]);print('' if v is None else v)" "$1" "$2" 2>/dev/null; }
@@ -113,10 +145,8 @@ print(f"{item['path']} → {item['action'] or '(SwiftUI closure)'}")
 PY
 
 # ---------- G3 ----------
-[ "$GUI_RC" = 0 ] && pass "G3 合成 ⌘Q 后 GUI 退出，退出码 0" || fail "G3 GUI 未因 ⌘Q 退出（rc=$GUI_RC）"
-[ "$(field "$R1" phase)" = before-cmd-q ] && pass "G3 ⌘Q 之后进程没有继续运行（报告停在 before-cmd-q）" \
-  || fail "G3 ⌘Q 之后 App 仍在运行：phase=$(field "$R1" phase) handled=$(field "$R1" cmdQHandledByMenu)"
-[ -f "$R1.terminated" ] && pass "G3 退出经由 applicationShouldTerminate（不是崩溃或被杀）" || fail "G3 没有经过 terminate 路径"
+assert_quit "G3 合成 ⌘Q（无 sheet）" "$R1"
+[ "$(field "$R1" sheetAttachedBeforeQuit)" = False ] && pass "G3 对照：此场景没有 sheet" || fail "G3 意外存在 sheet"
 LAG1=$(field "$R1" maxMainThreadLagMs); LAG1=${LAG1%.*}
 [ -n "$LAG1" ] && [ "$LAG1" -lt 1000 ] && pass "G3 正常运行时主线程最大卡顿 ${LAG1}ms（$(field "$R1" lagSamples) 次采样）" || fail "G3 主线程卡顿 ${LAG1:-?}ms"
 
@@ -154,8 +184,7 @@ LAG2=$(field "$R2" maxMainThreadLagMs); LAG2=${LAG2%.*}
 # 旧实现：探活在主线程同步执行，2s 读超时 → 卡顿 ≈ 2000ms。
 [ -n "$LAG2" ] && [ "$LAG2" -lt 500 ] && pass "G5 daemon 无响应时主线程最大卡顿 ${LAG2}ms < 500ms（旧实现 ≈ 2000ms；$(field "$R2" lagSamples) 次采样）" \
   || fail "G5 主线程被卡住 ${LAG2:-?}ms（探活又回到主线程了？）"
-[ "$GUI_RC" = 0 ] && [ -f "$R2.terminated" ] && [ "$(field "$R2" phase)" = before-cmd-q ] \
-  && pass "G5 daemon 无响应时 ⌘Q 仍经 terminate 路径退出（rc=0）" || fail "G5 ⌘Q 未能退出（rc=$GUI_RC phase=$(field "$R2" phase)）"
+assert_quit "G5 daemon 无响应时的 ⌘Q" "$R2"
 # 计划 8s 后发 ⌘Q；若主线程被卡，定时器本身也会被拖后。
 [ "$G5_MS" -lt 11000 ] && pass "G5 从启动到退出 ${G5_MS}ms（计划 8000ms 发 ⌘Q，无明显拖延）" || fail "G5 退出被拖延到 ${G5_MS}ms"
 kill -0 "$FAKE" 2>/dev/null && [ -S "$DEFAULT_SOCK" ] && [ "$(stat -f '%i' "$DEFAULT_SOCK")" = "$INODE_BEFORE" ] \
@@ -173,7 +202,53 @@ wait_gui_exit "$GUI3" 8
 [ "$GUI_RC" = 2 ] && grep -q 'DBX_SUPPORT_ROOT' "$E2E_WORK/g6.out" && [ $(( $(now_ms) - t0 )) -lt 4000 ] \
   && pass "G6 非法 DBX_SUPPORT_ROOT → GUI exit 2（未回落到真实目录）" || fail "G6 rc=$GUI_RC：$(head -c 200 "$E2E_WORK/g6.out")"
 
+# ================= G7：Display 聚焦时的 ⌘Q + 会话私盘清理 =================
+GUEST_DIR="$(dirname "$MANIFEST")"
+if [ -f "$GUEST_DIR/vmlinuz-virt-gpu" ] && [ -f "$GUEST_DIR/root-disk.raw" ]; then
+  R4="$E2E_WORK/report-4.json"
+  launch_gui "$R4" 12 NO display
+  GUI4=$GUI_PID
+  # 对照：display 确实启动了——会话私盘在运行期间出现。
+  DISK_SEEN=0
+  for _ in $(seq 1 80); do [ -n "$(new_display_disks)" ] && { DISK_SEEN=1; break; }; kill -0 "$GUI4" 2>/dev/null || break; sleep 0.1; done
+  [ "$DISK_SEEN" = 1 ] && pass "G7 对照：Display 启动后会话私盘出现在 \$TMPDIR（$(new_display_disks | head -1)）" || fail "G7 Display 没有启动（没有出现会话私盘）"
+  wait_gui_exit "$GUI4" 25
+  [ -s "$R4" ] || fail "G7 自检报告未生成：$(head -c 300 "$R4.stdout" 2>/dev/null)"
+  [ "$(field "$R4" displayViewFound)" = True ] && [ "$(field "$R4" displayVMRunning)" = True ] \
+    && pass "G7 guest 画面已挂载且 display VM 处于 running" || fail "G7 display 未就绪：found=$(field "$R4" displayViewFound) vmState=$(field "$R4" displayVMState)"
+  [ "$(field "$R4" firstResponderIsDisplayView)" = True ] && pass "G7 键盘焦点（first responder）确实在 guest 画面上" \
+    || fail "G7 焦点不在 guest 画面上（accepted=$(field "$R4" makeFirstResponderAccepted)）——后面的 ⌘Q 断言不成立"
+  [ "$(field "$R4" capturesSystemKeys)" = False ] && pass "G7 capturesSystemKeys = false" || fail "G7 capturesSystemKeys=$(field "$R4" capturesSystemKeys)"
+  [ "$(field "$R4" sheetAttachedBeforeQuit)" = True ] && pass "G7 对照：发 ⌘Q 时 Display sheet 处于打开状态" || fail "G7 Display sheet 未打开"
+  assert_quit "G7 Display sheet 打开且 guest 画面聚焦时的 ⌘Q" "$R4"
+  [ -z "$(new_display_disks)" ] && pass "G7 退出后会话私盘已清除" || fail "G7 会话私盘残留：$(new_display_disks | tr '\n' ' ')"
+  [ -f "$DBX_SUPPORT_ROOT/display-console.log" ] && pass "G7 display console 日志写在隔离目录" || fail "G7 display console 日志不在隔离目录"
+else
+  skip "G7 Display：缺少 vmlinuz-virt-gpu / root-disk.raw（先 build guest）"
+fi
+
+# ================= G8：任意 sheet 打开时的 ⌘Q（不依赖 VM） =================
+R5="$E2E_WORK/report-5.json"
+launch_gui "$R5" 5 NO sheet
+wait_gui_exit "$GUI_PID" 15
+[ -s "$R5" ] || fail "G8 自检报告未生成：$(head -c 300 "$R5.stdout" 2>/dev/null)"
+[ "$(field "$R5" sheetAttachedBeforeQuit)" = True ] && pass "G8 对照：发 ⌘Q 时 Settings sheet 处于打开状态" || fail "G8 sheet 未打开（场景无效）"
+assert_quit "G8 sheet 打开时的 ⌘Q" "$R5"
+
+# ================= G9：sheet 打开时的 quit AppleEvent =================
+R6="$E2E_WORK/report-6.json"
+launch_gui "$R6" 5 NO sheet appleevent
+wait_gui_exit "$GUI_PID" 15
+[ -s "$R6" ] || fail "G9 自检报告未生成：$(head -c 300 "$R6.stdout" 2>/dev/null)"
+[ "$(field "$R6" sheetAttachedBeforeQuit)" = True ] && [ "$(field "$R6" quitVia)" = appleevent ] \
+  && pass "G9 对照：sheet 打开，退出请求经 quit AppleEvent 发出" || fail "G9 场景无效：sheet=$(field "$R6" sheetAttachedBeforeQuit) via=$(field "$R6" quitVia)"
+assert_quit "G9 sheet 打开时的 quit AppleEvent（Dock Quit / 注销）" "$R6"
+
 # ================= 收尾自检 =================
+sleep 1   # 崩溃报告由 ReportCrash 异步落盘
+NEW_CRASH="$(new_crash_reports | tr '\n' ' ')"
+[ -z "$NEW_CRASH" ] && pass "整个套件期间 GUI 没有产生崩溃报告" \
+  || fail "GUI 崩溃过，报告保留供排查：~/Library/Logs/DiagnosticReports/{$NEW_CRASH}"
 LEFT=$(pgrep -f "$APP/Contents/MacOS/" | tr '\n' ' ')
 [ -z "$LEFT" ] && pass "没有残留的 GUI / daemon 进程" || fail "残留进程：$LEFT"
 # 偏好设置等由 e2e_extra_cleanup 清理；这里先确认残留只在预期位置（清理后由 harness 报 LEAK）。
