@@ -9,6 +9,10 @@ final class PtySessionModel: ObservableObject, @unchecked Sendable {
     private let sandboxId: String
     private let client: DaemonSocketClient
     private var timer: Timer?
+    /// M33：有状态的输出净化（转义序列 / 多字节字符可能跨 poll 切开）。
+    private var filter = TerminalTextFilter()
+    /// 上一次 poll 还没回来就不再发下一次（否则 daemon 一慢，请求会越积越多）。
+    private var pollInFlight = false
 
     init(sandboxId: String, client: DaemonSocketClient) {
         self.sandboxId = sandboxId
@@ -28,7 +32,8 @@ final class PtySessionModel: ObservableObject, @unchecked Sendable {
                     self.startPolling()
                 }
             } catch {
-                DispatchQueue.main.async { self.error = error.localizedDescription }
+                let line = DaemonErrorPresenter.present(error).logLine
+                DispatchQueue.main.async { self.error = line }
             }
         }
     }
@@ -39,7 +44,8 @@ final class PtySessionModel: ObservableObject, @unchecked Sendable {
             DispatchQueue.global().async {
                 var req = DaemonRequest(kind: "ptyClose")
                 req.ptySessionId = sid
-                _ = try? client.send(req, timeoutSec: 2)
+                // daemon 会等 guest 确认 shell 已退出（最多 2s），客户端要等得更久一点。
+                _ = try? client.send(req, timeoutSec: 5)
             }
         }
         timer?.invalidate()
@@ -79,62 +85,43 @@ final class PtySessionModel: ObservableObject, @unchecked Sendable {
     }
 
     private func pollOnce() {
-        guard let sid = sessionId else { return }
+        guard let sid = sessionId, !pollInFlight else { return }
+        pollInFlight = true
         let client = self.client
         DispatchQueue.global().async {
+            let result: Result<DaemonResponse, Error>
             do {
                 var req = DaemonRequest(kind: "ptyPoll")
                 req.ptySessionId = sid
                 req.waitMillis = 120
-                let response = try client.send(req, timeoutSec: 3)
-                let out = response.outputHex.flatMap { Self.hexToData($0) } ?? Data()
-                let text = String(decoding: out, as: UTF8.self)
-                DispatchQueue.main.async {
-                    if !text.isEmpty { self.output += Self.sanitize(text) }
-                    if response.running == false {
-                        self.running = false
-                        self.output += "\n[pty exited code=\(response.exitCode ?? 0)]"
-                        self.timer?.invalidate()
-                    }
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.running = false
-                    self.error = "poll: \(error.localizedDescription)"
-                    self.timer?.invalidate()
-                }
+                result = .success(try client.send(req, timeoutSec: 3))
+            } catch { result = .failure(error) }
+            DispatchQueue.main.async {
+                self.pollInFlight = false
+                self.handlePoll(result)
             }
         }
     }
 
-    static func hexToData(_ hex: String) -> Data {
-        var bytes = Data()
-        var i = hex.startIndex
-        while i < hex.endIndex {
-            let pair = hex[i..<hex.index(i, offsetBy: 2)]
-            if let b = UInt8(pair, radix: 16) { bytes.append(b) }
-            i = hex.index(i, offsetBy: 2)
+    /// 处理一次 poll 的结果（主线程；拆出来便于单测）。
+    func handlePoll(_ result: Result<DaemonResponse, Error>) {
+        switch result {
+        case .success(let response):
+            if let hex = response.outputHex, !hex.isEmpty {
+                // M33：畸形 hex 不再崩溃（此前的手写解码在奇数长度时越界）。
+                if let data = HexCoding.decode(hex) { filter.feed(data, into: &output) }
+                else { error = "daemon 返回了无法解码的输出（已忽略 \(hex.count) 个字符）" }
+            }
+            if response.running == false {
+                running = false
+                output += "\n[pty exited code=\(response.exitCode ?? 0)]"
+                timer?.invalidate()
+            }
+        case .failure(let failure):
+            running = false
+            error = "poll: \(DaemonErrorPresenter.present(failure).logLine)"
+            timer?.invalidate()
         }
-        return bytes
-    }
-
-    /// 终端为简单 scrolldown：去除 ANSI 代码云格（本阶段无 VT100 解释）；
-    static func sanitize(_ raw: String) -> String {
-        var out = ""
-        var i = raw.startIndex
-        while i < raw.endIndex {
-            let c = raw[i]
-            if c == "\u{1B}" {
-                // CSI：跳 到 final byte [@-~]
-                var j = raw.index(after: i)
-                while j < raw.endIndex, raw[j] < "@" || raw[j] > "~" { j = raw.index(after: j) }
-                if j < raw.endIndex { j = raw.index(after: j) }
-                i = j
-            } else if c == "\r" {
-                i = raw.index(after: i)
-            } else { out.append(c); i = raw.index(after: i) }
-        }
-        return out
     }
 }
 

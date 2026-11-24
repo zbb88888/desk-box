@@ -7,14 +7,23 @@ struct StatsPanel: View {
     @ObservedObject var viewModel: SandboxViewModel
 
     @State private var selectedId: String = ""
-    @State private var cpuPercent: Double? = nil
-    @State private var memCurrent: UInt64? = nil
-    @State private var memMax: UInt64? = nil
-    @State private var pidsCurrent: Int? = nil
-    @State private var pidsMax: Int? = nil
-    @State private var activeGroups: Int? = nil
-    @State private var statsError: String? = nil
-    @State private var history: [Double] = []
+    /// M33：数据与采样逻辑在 StatsModel（切换沙箱重置基线、丢弃迟到响应、失败可见）。
+    @StateObject private var model: StatsModel
+
+    init(client: DaemonSocketClient, viewModel: SandboxViewModel) {
+        self.client = client
+        self.viewModel = viewModel
+        _model = StateObject(wrappedValue: StatsModel(client: client))
+    }
+
+    private var cpuPercent: Double? { model.cpuPercent }
+    private var memCurrent: UInt64? { model.memCurrent }
+    private var memMax: UInt64? { model.memMax }
+    private var pidsCurrent: Int? { model.pidsCurrent }
+    private var pidsMax: Int? { model.pidsMax }
+    private var activeGroups: Int? { model.activeGroups }
+    private var statsError: String? { model.statsError }
+    private var history: [Double] { model.history }
 
     private var sampleTimer: Publishers.Autoconnect<Timer.TimerPublisher> {
         Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -43,14 +52,21 @@ struct StatsPanel: View {
                 metricGrid
                 sparkline
                 if let err = statsError {
-                    Text("statsError: \(err)").font(.caption).foregroundColor(.orange)
+                    Text(err).font(.caption).foregroundColor(.orange)
                         .padding(.horizontal)
                 }
                 Spacer()
             }
         }
         .padding(.top, 8)
+        .onChange(of: selectedId) { _, newValue in model.select(newValue) }
         .onReceive(sampleTimer) { _ in
+            // 选中的沙箱已经不在列表里（被移除）：回到未选择状态，而不是对着一个不存在的 id 轮询。
+            // 只在列表刷新成功时判断：daemon 一时不可达会让列表暂时为空，不应因此丢掉选择。
+            if !selectedId.isEmpty, viewModel.errorText == nil,
+               !viewModel.sandboxes.contains(where: { $0.sandboxId == selectedId }) {
+                selectedId = ""
+            }
             if !selectedId.isEmpty { sample() }
         }
     }
@@ -126,45 +142,5 @@ struct StatsPanel: View {
         return String(format: "%.1f MiB", mib)
     }
 
-    /// 单次采样：CPU% 用「两次采样差分 / 墙钟时间」。首采样只记录基线。
-    private func sample() {
-        let sandboxId = selectedId
-        let client = self.client
-        DispatchQueue.global().async {
-            var req = DaemonRequest(kind: "stats")
-            req.sandboxId = sandboxId
-            guard let resp = try? client.send(req, timeoutSec: 5), let stats = resp.stats else { return }
-            DispatchQueue.main.async {
-                if let err = stats.statsError { self.statsError = err } else { self.statsError = nil }
-                self.memCurrent = stats.memoryCurrentBytes
-                self.memMax = stats.memoryMaxBytes
-                self.pidsCurrent = stats.pidsCurrent
-                self.pidsMax = stats.pidsMax
-                self.activeGroups = stats.activeExecGroups
-
-                guard let cpuNow = stats.cpuUsageUsec else {
-                    self.cpuPercent = nil
-                    return
-                }
-                let now = DispatchTime.now().uptimeNanoseconds
-                defer {
-                    self.lastCPUMicros = cpuNow
-                    self.lastSampleNanos = now
-                }
-                guard let lastCPU = self.lastCPUMicros, let lastNanos = self.lastSampleNanos, now > lastNanos else {
-                    return
-                }
-                let deltaCPU = Double(cpuNow &- min(cpuNow, lastCPU))
-                let deltaWallMicros = Double(now - lastNanos) / 1000.0
-                guard deltaWallMicros > 0 else { return }
-                let percent = max(0, min(100.0 * deltaCPU / deltaWallMicros, 100.0 * Double(ProcessInfo.processInfo.activeProcessorCount)))
-                self.cpuPercent = percent
-                self.history.append(percent)
-                if self.history.count > 60 { self.history.removeFirst(self.history.count - 60) }
-            }
-        }
-    }
-
-    @State private var lastCPUMicros: UInt64? = nil
-    @State private var lastSampleNanos: UInt64? = nil
+    private func sample() { model.sample() }
 }

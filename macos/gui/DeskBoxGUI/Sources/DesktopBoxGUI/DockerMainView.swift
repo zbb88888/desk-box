@@ -350,16 +350,20 @@ struct ConsoleLogView: View {
             var req = DaemonRequest(kind: "consoleLog")
             req.sandboxId = self.sandboxId
             req.waitMillis = 16384
-            if let resp = try? client.send(req, timeoutSec: 5), let hex = resp.outputHex {
-                var bytes = Data()
-                var i = hex.startIndex
-                while i < hex.endIndex {
-                    bytes.append(UInt8(hex[i..<hex.index(i, offsetBy: 2)], radix: 16) ?? 0)
-                    i = hex.index(i, offsetBy: 2)
+            let shown: String
+            do {
+                let resp = try client.send(req, timeoutSec: 5)
+                // M33：统一的安全解码 + 净化（畸形 hex 不再崩溃；serial 里的转义序列不直接上屏）。
+                if let text = ConsoleLog.text(fromHex: resp.outputHex ?? "") {
+                    shown = text.isEmpty ? "<no console output>" : text
+                } else {
+                    shown = "<daemon 返回了无法解码的 console 数据>"
                 }
-                let t = String(data: bytes, encoding: .utf8) ?? "<binary \(bytes.count)B>"
-                DispatchQueue.main.async { self.text = t.isEmpty ? "<no console output>" : t }
+            } catch {
+                // 此前失败被静默忽略，面板永远停在「…」或上一次的内容。
+                shown = "<\(DaemonErrorPresenter.present(error).logLine)>"
             }
+            DispatchQueue.main.async { self.text = shown }
         }
     }
 }

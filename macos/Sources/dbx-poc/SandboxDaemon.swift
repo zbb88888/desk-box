@@ -290,6 +290,7 @@ final class SandboxDaemon: @unchecked Sendable {
             DaemonStateSnapshot(
                 sessionDomains: self.sessions.mapValues { $0.domainID.raw },
                 ptySandbox: self.ptySessions.mapValues { $0.sandboxId },
+                stalePtySessions: Set(self.ptySessions.filter { $0.value.isStale() }.keys),
                 draining: self.draining
             )
         }
@@ -357,12 +358,28 @@ final class SandboxDaemon: @unchecked Sendable {
         return DaemonResponse(ok: true, pid: ProcessInfo.processInfo.processIdentifier)
     }
 
-    private var ptySessions: [String: (session: VZRuntime.PtyStreamSession, sandboxId: String)] = [:]
+    /// M33：PTY 会话表项。`lastActivity` 用来识别「客户端已经不在了」的会话。
+    struct PtyEntry {
+        let session: VZRuntime.PtyStreamSession
+        let sandboxId: String
+        var lastActivity: Date
+
+        /// 客户端在这段时间内没有任何 poll / input：视为已被遗弃（GUI 崩溃、CLI 被杀）。
+        /// GUI 每 150ms poll 一次，所以这个阈值很宽松。
+        static let staleAfter: TimeInterval = 5
+
+        func isStale(now: Date = Date()) -> Bool { now.timeIntervalSince(lastActivity) > Self.staleAfter }
+    }
+
+    private var ptySessions: [String: PtyEntry] = [:]
 
     /// stateQueue 上原子取出 pty 会话及其所属沙箱。
     private func ptyEntry(_ sid: String) -> (session: VZRuntime.PtyStreamSession, sandboxId: String, sandbox: SandboxSession?)? {
         stateQueue.sync {
-            guard let entry = self.ptySessions[sid] else { return nil }
+            guard var entry = self.ptySessions[sid] else { return nil }
+            // 任何 poll / input 都算活动。
+            entry.lastActivity = Date()
+            self.ptySessions[sid] = entry
             return (entry.session, entry.sandboxId, self.sessions[entry.sandboxId])
         }
     }
@@ -631,14 +648,18 @@ final class SandboxDaemon: @unchecked Sendable {
     private func dispatchSuspend(_ request: DaemonRequest) throws -> DaemonResponse {
         let (session, sessionHandle) = try self.sessionFor(request, op: "suspend")
         let sandboxId = session.id
-        try session.opQueue.sync {
-            try runBlocking { try await session.runtime.suspend(session.handle) }
+        // M33：suspend 之前把该沙箱的 pty 在 **guest 里**关掉。此前只删宿主侧的表项，guest 里的 shell
+        // 被一起冻进快照，resume 之后它仍占着唯一的 pty 槽位，终端再也打不开。
+        let doomedPtys: [PtyEntry] = stateQueue.sync {
+            let hits = self.ptySessions.filter { $0.value.sandboxId == sandboxId }
+            for sid in hits.keys { self.ptySessions.removeValue(forKey: sid) }
+            return Array(hits.values)
         }
-        // 会话保留（resume 需要 runtime/handle）；active pty 一律关闭（恢复后不保证存活）。
-        stateQueue.sync {
-            for (sid, entry) in self.ptySessions where entry.sandboxId == sandboxId {
-                self.ptySessions.removeValue(forKey: sid)
+        try session.opQueue.sync {
+            for entry in doomedPtys {
+                _ = try? runBlocking { try await session.runtime.ptyCloseSession(session.handle, session: entry.session) }
             }
+            try runBlocking { try await session.runtime.suspend(session.handle) }
         }
         return DaemonResponse(ok: true, sandboxId: sandboxId, state: "suspended")
     }
@@ -723,11 +744,22 @@ final class SandboxDaemon: @unchecked Sendable {
         }
         // opQueue 内「查重 → 打开 → 登记」：同沙箱并发 ptyOpen 只会成功一个。
         let sid: String = try session.opQueue.sync {
-            let busy = stateQueue.sync { self.ptySessions.values.contains(where: { $0.sandboxId == sandboxId }) }
-            if busy { throw CLIError.usage("ptyOpen: sandbox already has an active pty session") }
+            // 已有会话：还活着（客户端在 poll）就拒绝；已被遗弃（客户端没关就消失了）就先在 guest 里
+            // 关掉它再开新的——否则一次 GUI 崩溃会让这个沙箱的终端永久打不开。
+            let existing: [(sid: String, entry: PtyEntry)] = stateQueue.sync {
+                self.ptySessions.filter { $0.value.sandboxId == sandboxId }.map { ($0.key, $0.value) }
+            }
+            if existing.contains(where: { !$0.entry.isStale() }) {
+                throw CLIError.usage("ptyOpen: sandbox already has an active pty session")
+            }
+            for stale in existing {
+                fputs("daemon: preempting abandoned pty session \(stale.sid) on sandbox \(sandboxId)\n", stderr)
+                _ = try? runBlocking { try await session.runtime.ptyCloseSession(session.handle, session: stale.entry.session) }
+                _ = stateQueue.sync { self.ptySessions.removeValue(forKey: stale.sid) }
+            }
             let opened = try runBlocking { try await session.runtime.ptyOpenSession(session.handle, argv: argv) }
             let sid = opened.requestID.uuidString
-            stateQueue.sync { self.ptySessions[sid] = (opened, sandboxId) }
+            stateQueue.sync { self.ptySessions[sid] = PtyEntry(session: opened, sandboxId: sandboxId, lastActivity: Date()) }
             return sid
         }
         return DaemonResponse(ok: true, ptySessionId: sid, running: true, sandboxId: sandboxId, state: "running")
@@ -775,13 +807,25 @@ final class SandboxDaemon: @unchecked Sendable {
     }
 
     private func dispatchPtyClose(_ request: DaemonRequest) throws -> DaemonResponse {
-        let removed: Bool = stateQueue.sync {
-            guard let sid = request.ptySessionId else { return false }
-            return self.ptySessions.removeValue(forKey: sid) != nil
+        let removed: PtyEntry? = stateQueue.sync {
+            guard let sid = request.ptySessionId else { return nil }
+            return self.ptySessions.removeValue(forKey: sid)
         }
-        guard removed else { throw CLIError.usage("ptyClose: pty session not found") }
-        // 客端进程不可控制关闭——发 exit 信号让其自然退出；后续无态扔清
-        return DaemonResponse(ok: true, running: false, sandboxId: request.sandboxId)
+        guard let entry = removed else { throw CLIError.usage("ptyClose: pty session not found") }
+        // M33：真正在 guest 里关闭（杀掉 shell、释放唯一的 pty 槽位）。此前这里只删表项，
+        // 注释写着「客端进程不可控制关闭」——其实协议和 guest 一直支持 ptyClose，只是宿主从不发送。
+        // 尽力而为：沙箱已停 / 已移除时关闭失败不算错（会话本来就没了）。
+        var exited = false
+        if let sandbox = stateQueue.sync(execute: { self.sessions[entry.sandboxId] }) {
+            // 必须与 ptyOpen 在同一个串行队列上：关闭过程会清掉 ptyId=0 的遗留事件，若与紧接着的
+            // ptyOpen 并发，就会把**新会话**的输出也吃掉（GUI 关掉终端立刻再开时实际发生过）。
+            exited = sandbox.opQueue.sync {
+                (try? runBlocking {
+                    try await sandbox.runtime.ptyCloseSession(sandbox.handle, session: entry.session)
+                }) ?? false
+            }
+        }
+        return DaemonResponse(ok: true, running: false, sandboxId: entry.sandboxId, state: exited ? "closed" : "detached")
     }
 
     private func dispatchWsSync(_ request: DaemonRequest) throws -> DaemonResponse {

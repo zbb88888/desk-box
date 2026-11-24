@@ -120,6 +120,35 @@ final class DaemonDecisionTests: XCTestCase {
         assertRejected(req("ptyOpen") { $0.sandboxId = self.sb }, state: free, contains: "ptyOpen: argv required")
     }
 
+    func testAbandonedPtySessionDoesNotBlockReopen() throws {
+        // M33：客户端没关就消失的会话（长时间无 poll）不再让终端永久打不开。
+        var abandoned = state
+        abandoned.stalePtySessions = ["pty-1"]
+        XCTAssertEqual(try DaemonDecision.validate(
+            req("ptyOpen") { $0.sandboxId = self.sb; $0.argv = ["/bin/sh"] }, state: abandoned), .ptyOpen)
+        // 同一沙箱上另有一个活着的会话：仍然拒绝。
+        abandoned.ptySandbox["pty-2"] = sb
+        assertRejected(req("ptyOpen") { $0.sandboxId = self.sb; $0.argv = ["/bin/sh"] }, state: abandoned,
+                       contains: "sandbox already has an active pty session")
+        // 别的沙箱上的遗弃标记不影响本沙箱的活会话。
+        var other = state
+        other.stalePtySessions = ["pty-zzz"]
+        assertRejected(req("ptyOpen") { $0.sandboxId = self.sb; $0.argv = ["/bin/sh"] }, state: other,
+                       contains: "sandbox already has an active pty session")
+        // 被遗弃的会话仍然可以被 close（回收）。
+        XCTAssertEqual(try DaemonDecision.validate(req("ptyClose") { $0.ptySessionId = "pty-1" }, state: abandoned), .ptyClose)
+    }
+
+    func testPtyEntryStaleness() {
+        let now = Date()
+        let entry = SandboxDaemon.PtyEntry(session: .init(requestID: UUID()), sandboxId: "sb", lastActivity: now)
+        XCTAssertFalse(entry.isStale(now: now))
+        XCTAssertFalse(entry.isStale(now: now.addingTimeInterval(SandboxDaemon.PtyEntry.staleAfter)))
+        XCTAssertTrue(entry.isStale(now: now.addingTimeInterval(SandboxDaemon.PtyEntry.staleAfter + 0.1)))
+        // GUI 每 150ms poll 一次：阈值必须远大于它，不能把正常会话误判为遗弃。
+        XCTAssertGreaterThan(SandboxDaemon.PtyEntry.staleAfter, 1.5)
+    }
+
     func testPtySessionLookup() throws {
         for kind in ["ptyInput", "ptyPoll", "ptyClose"] {
             assertRejected(req(kind), state: state, contains: "\(kind): pty session not found")

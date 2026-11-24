@@ -23,6 +23,8 @@ struct DaemonStateSnapshot: Sendable {
     var sessionDomains: [String: String] = [:]
     /// ptySessionId → sandboxId
     var ptySandbox: [String: String] = [:]
+    /// M33：已被客户端遗弃的 pty 会话（长时间没有 poll / input）。它们不阻止新的 ptyOpen。
+    var stalePtySessions: Set<String> = []
     /// shutdown 已开始：除 shutdown 外全部拒收
     var draining: Bool = false
 }
@@ -71,7 +73,9 @@ enum DaemonDecision {
         case .ptyOpen:
             try requireSession(request, op: "ptyOpen", state: state)
             guard let argv = request.argv, !argv.isEmpty else { throw CLIError.usage("ptyOpen: argv required") }
-            if let id = request.sandboxId, state.ptySandbox.values.contains(id) {
+            // 只有「还活着」的会话才阻止新的打开；被遗弃的会话会在 effect 层被抢占并关闭。
+            if let id = request.sandboxId,
+               state.ptySandbox.contains(where: { $0.value == id && !state.stalePtySessions.contains($0.key) }) {
                 throw CLIError.usage("ptyOpen: sandbox already has an active pty session")
             }
         case .ptyInput:

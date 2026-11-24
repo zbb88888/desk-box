@@ -41,10 +41,13 @@ C=$("$BIN" console --daemon-sock "$SOCK" "$ID" 2>/dev/null)
 
 # B5 Send/Ctrl+C simulates terminal (pty*)
 PY=$(ID2TEST="$ID" SOCK2USE="$SOCK" python3 "$(dirname "$0")/pty-btn-test.py" 2>/dev/null)
-case "$PY" in
-  PTYOK*) pass "Terminal Send/Ctrl+C pty 三阶";;
-  *) fail "pty=$PY";;
-esac
+case "$PY" in *PTYOK*) pass "Terminal Send/Ctrl+C pty 三阶";; *) fail "pty=$PY";; esac
+# M33：pty 生命周期（daemon 协议层）
+case "$PY" in *BUSYOK*) pass "已有活会话时第二个 ptyOpen 被拒";; *) fail "pty busy 规则：$PY";; esac
+case "$PY" in *CLOSED*) pass "ptyClose 在 guest 内真正关闭会话（daemon 看到 exit 事件）";; *) fail "pty close：$PY";; esac
+case "$PY" in *REOPENOK*) pass "关闭后再次打开终端可用（此前 guest 里的 shell 未被杀，再开必超时）";; *) fail "pty reopen：$PY";; esac
+case "$PY" in *RACEOK*) pass "关闭与重开并发时新终端的输出不丢";; *) fail "pty close/open 并发：$PY";; esac
+case "$PY" in *PREEMPTOK*) pass "被遗弃的会话（客户端未关闭就消失）不再阻止新终端";; *) fail "pty preempt：$PY";; esac
 
 # B6 wsSync ("Sync to /workspace" + drag&drop 同源)
 TMPDIR_WS="$E2E_WORK/ws"; mkdir -p "$TMPDIR_WS"

@@ -848,6 +848,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw SandboxFailure(.bootstrapProofMissing, "PTY requires a running authenticated session")
             }
             record.pendingPtyOpenID = requestID
+            // M33：丢弃上一会话遗留的事件（尤其是 close 产生的 exit）——否则新会话第一次 poll
+            // 就会读到旧的 exit，看起来像「刚打开就退出了」。
+            record.ptyEvents.removeAll { $0.ptyId == 0 }
             let payload = try JSONEncoder().encode(PtyOpenRequest(argv: argv))
             let frame = try ControlFrame(kind: .ptyOpen, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
             try self.sendFrameOnQueue(record, frame: frame)
@@ -866,6 +869,41 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             try await Task.sleep(for: .milliseconds(40))
         }
         return PtyStreamSession(requestID: requestID)
+    }
+
+    /// M33：关闭流式 PTY 会话——让 guest 杀掉 shell 并释放 pty。
+    ///
+    /// 协议里一直有 `ptyClose`（kind 12），guest 也实现了（SIGKILL + exit 事件），但宿主从不发送：
+    /// daemon 的 `ptyClose` 只是把会话从自己的表里删掉，guest 里的 shell 照常运行。
+    /// 而 guest 同一时刻只支持一个 pty（ptyId=0），于是「关掉终端再打开」永远失败（ptyOpen 超时）。
+    ///
+    /// - Returns: 是否在限时内看到了 guest 的 exit 事件。看不到也不抛错（尽力而为：沙箱可能
+    ///   已经停了），但会把遗留事件清掉。
+    @discardableResult
+    public func ptyCloseSession(_ handle: SandboxHandle, session: PtyStreamSession,
+                                timeoutMillis: Int = 2000) async throws -> Bool {
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state == .running, record.controlSocket != nil else {
+                throw SandboxFailure(.bootstrapProofMissing, "PTY close requires a running authenticated session")
+            }
+            let frame = try ControlFrame(kind: .ptyClose, sequence: record.nextRequestSequence(),
+                                         requestID: session.requestID, payload: Data("{}".utf8))
+            try self.sendFrameOnQueue(record, frame: frame)
+        }
+        let deadline = Date().addingTimeInterval(TimeInterval(timeoutMillis) / 1000.0)
+        while true {
+            let exited = try await onQueue { () -> Bool in
+                let record = try self.require(handle)
+                let sawExit = record.ptyEvents.contains { $0.ptyId == 0 && $0.type == .exit }
+                // 关闭之后这些输出没有人会读了。
+                record.ptyEvents.removeAll { $0.ptyId == 0 }
+                return sawExit
+            }
+            if exited { return true }
+            if Date() >= deadline { return false }
+            try await Task.sleep(for: .milliseconds(40))
+        }
     }
 
     public func ptyWriteSession(_ handle: SandboxHandle, session: PtyStreamSession, data: Data) async throws {
@@ -936,6 +974,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw SandboxFailure(.bootstrapProofMissing, "PTY requires a running authenticated session")
             }
             record.pendingPtyOpenID = requestID
+            // M33：丢弃上一会话遗留的事件（尤其是 close 产生的 exit）——否则新会话第一次 poll
+            // 就会读到旧的 exit，看起来像「刚打开就退出了」。
+            record.ptyEvents.removeAll { $0.ptyId == 0 }
             let payload = try JSONEncoder().encode(PtyOpenRequest(argv: argv))
             let frame = try ControlFrame(kind: .ptyOpen, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
             try self.sendFrameOnQueue(record, frame: frame)

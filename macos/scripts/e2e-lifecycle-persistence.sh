@@ -47,7 +47,11 @@ assert_usable_after_abort "落盘失败"
 rmdir "$SNAP"
 
 # 1) suspend（两次中止之后，正常 suspend 仍然可用）
-"$BIN" suspend --daemon-sock "$SOCK" "$ID" >/dev/null 2>&1 && pass "suspend 成功" || fail "suspend 失败"
+#    M33：suspend 时有一个**开着的终端**（不关闭）。此前 guest 里的 shell 会被一起冻进快照，
+#    resume 之后仍占着唯一的 pty 槽位，终端再也打不开。
+PTY_SID=$(python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" open "$ID" 2>&1)
+case "$PTY_SID" in FAIL*|"") fail "suspend 前打开终端失败：$PTY_SID";; *) pass "suspend 前打开了一个终端（保持打开）";; esac
+"$BIN" suspend --daemon-sock "$SOCK" "$ID" >/dev/null 2>&1 && pass "suspend 成功（有打开的终端）" || fail "suspend 失败"
 STATE=$("$BIN" ps --daemon-sock "$SOCK" | awk '{print $2}' | head -1)
 [ "$STATE" = "suspended" ] && pass "ps 显示 suspended" || fail "ps 状态=$STATE"
 
@@ -82,12 +86,16 @@ e2e_resume "$SOCK" "$ID"
 if [ "$RESUME_OUTCOME" = locked ]; then
   # 锁屏：VZ 拒绝 restore。能验证的是「失败得明确、不丢状态」（已由 e2e_resume 断言）。
   skip_locked "原始快照可恢复 / 恢复后状态 running"
+  skip_locked "恢复后可以打开新终端（suspend 前的终端没有占住 pty）"
   skip_locked "恢复后数据仍在、权限未复活"
   skip_locked "二次 suspend/resume"
 else
 [ "$RESUME_OUTCOME" = ok ] && pass "原始快照可恢复" || fail "原始快照恢复失败：$(head -c 300 "$E2E_WORK/resume.out")"
 STATE=$("$BIN" ps --daemon-sock "$SOCK" | awk '{print $2}' | head -1)
 [ "$STATE" = "running" ] && pass "恢复后状态 running" || fail "恢复后状态=$STATE"
+# M33：suspend 前开着的终端已在 guest 里被关闭，恢复后可以打开新的终端。
+PTY_AFTER=$(python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" roundtrip "$ID" "after-resume-pty" 2>&1)
+[ "$PTY_AFTER" = OK ] && pass "恢复后可以打开新终端（suspend 前的终端没有占住 pty）" || fail "恢复后终端不可用：$PTY_AFTER"
 
 # 5) 恢复后数据仍在、权限未复活
 POST=$("$BIN" exec --daemon-sock "$SOCK" "$ID" -- /bin/sh -c 'cat /workspace/m20.txt; id -u' 2>&1 | tr -d '\r')

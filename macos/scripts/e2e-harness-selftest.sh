@@ -11,6 +11,7 @@
 #   C7 E2E_KEEP=1                   → 目录保留（自测自己删）
 #   C8 DBX_SUPPORT_ROOT 生效         → daemon 的 socket/状态只出现在隔离目录
 #   C9 非法 DBX_SUPPORT_ROOT         → exit 2（fail-closed），不回落默认目录
+#   C10 e2e_resume 的结果分类         → ok / locked（并检查锁屏不变量）/ failed，用桩验证
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$ROOT/scripts/lib/e2e-common.sh"
@@ -105,6 +106,46 @@ case $rc in 12) fail "iso: CLI 默认 socket 没有跟随 DBX_SUPPORT_ROOT（连
 DBX_SUPPORT_ROOT="relative/path" "$BIN" ps >/dev/null 2>"$SCRATCH/bad.err"; rc=$?
 [ "$rc" = 2 ] && grep -q 'DBX_SUPPORT_ROOT' "$SCRATCH/bad.err" && pass "非法 DBX_SUPPORT_ROOT → exit 2" || fail "非法 DBX_SUPPORT_ROOT rc=$rc"
 DBX_SUPPORT_ROOT="/tmp/../etc" "$BIN" ps >/dev/null 2>&1; [ $? = 2 ] && pass "含 .. 的 DBX_SUPPORT_ROOT → exit 2" || fail ".. 未被拒绝"
+
+# C10：e2e_resume 按**结果**分类（用桩替身，不需要 VM，也不受宿主是否锁屏影响）。
+#   桩 dbx-poc：`resume` 的行为由 STUB_RESUME 决定；`ps` 输出由 STUB_STATE 决定。
+STUB="$SCRATCH/stub-dbx"
+cat > "$STUB" <<'STUBEOF'
+#!/bin/sh
+case "$1" in
+  resume)
+    case "$STUB_RESUME" in
+      ok)     echo "resume ok sandboxId=SB state=running"; exit 0 ;;
+      locked) echo "dbx-poc: request rejected (kind=resume): DBX-RESUME-HOST-LOCKED: Virtualization.framework 拒绝恢复 VM 状态" >&2; exit 2 ;;
+      *)      echo "dbx-poc: request rejected (kind=resume): 快照解密/完整性校验失败" >&2; exit 2 ;;
+    esac ;;
+  ps) printf 'SB\t%s\t2026-01-01T00:00:00Z\t/m.json\tdefault\n' "$STUB_STATE" ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+# classify <STUB_RESUME> <STUB_STATE> <有无快照 yes|no> → 输出 "RESUME_OUTCOME PASS FAIL"
+classify() {
+  STUB_RESUME="$1" STUB_STATE="$2" HAVE_SNAP="$3" LIB="$LIB" STUB="$STUB" W="$SCRATCH/resume-$1-$2-$3" /bin/sh -c '
+    . "$LIB" >/dev/null 2>&1
+    BIN="$STUB"; E2E_WORK="$W"; COW_ROOT="$W/cows"; mkdir -p "$COW_ROOT/snapshots"
+    [ "$HAVE_SNAP" = yes ] && : > "$COW_ROOT/snapshots/SB.snap"
+    export STUB_RESUME STUB_STATE
+    e2e_resume /nonexistent.sock SB >/dev/null 2>&1
+    printf "%s %s %s\n" "$RESUME_OUTCOME" "$PASS" "$FAIL"
+  ' "$ROOT/scripts/selftest-resume"
+}
+expect_classify() { # <描述> <期望输出> <参数...>
+  local what="$1" want="$2"; shift 2
+  local got; got=$(classify "$@")
+  [ "$got" = "$want" ] && pass "e2e_resume：$what → $got" || fail "e2e_resume：$what → 「$got」（期望「$want」）"
+}
+expect_classify "resume 成功"                                  "ok 0 0"      ok     running   no
+expect_classify "锁屏且状态/快照都在（3 条锁屏不变量成立）"      "locked 3 0"  locked suspended yes
+expect_classify "锁屏但沙箱不是 suspended（不变量被破坏）"       "locked 2 1"  locked running   yes
+expect_classify "锁屏但快照丢失（不变量被破坏）"                "locked 2 1"  locked suspended no
+expect_classify "其它失败（不得被当成锁屏）"                    "failed 0 0"  broken suspended yes
+# 即便宿主此刻锁屏，resume 成功也必须归为 ok（上一版按锁屏标志预测，会在边界上误报）。
+expect_classify "resume 成功（与宿主锁屏状态无关）"              "ok 0 0"      ok     suspended yes
 
 LEFT=$(ls -d /tmp/dbx-st-* 2>/dev/null | tr '\n' ' ')
 [ -z "$LEFT" ] && pass "无 /tmp/dbx-st-* 残留" || { fail "残留：$LEFT"; rm -rf /tmp/dbx-st-*; }

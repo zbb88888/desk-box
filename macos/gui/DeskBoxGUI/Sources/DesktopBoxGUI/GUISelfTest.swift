@@ -197,6 +197,27 @@ final class GUISelfTest: @unchecked Sendable {
     }
 
     @MainActor
+    private func fetchConsole(_ sandboxId: String) async -> String? {
+        guard let client = viewModel?.client else { return nil }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                var request = DaemonRequest(kind: "consoleLog")
+                request.sandboxId = sandboxId
+                request.waitMillis = 16384
+                let text = (try? client.send(request, timeoutSec: 5)).flatMap { ConsoleLog.text(fromHex: $0.outputHex ?? "") }
+                continuation.resume(returning: text)
+            }
+        }
+    }
+
+    @MainActor
+    private func sample(_ model: StatsModel) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            model.sample { continuation.resume() }
+        }
+    }
+
+    @MainActor
     private func state(of id: String) -> String {
         viewModel?.sandboxes.first { $0.sandboxId == id }?.state ?? "(absent)"
     }
@@ -248,6 +269,69 @@ final class GUISelfTest: @unchecked Sendable {
                         "status=\(daemonManager.status.rawValue) out=\(viewModel.execOutput)")
         }
         step("rejection-keeps-daemon-connected", true, viewModel.execOutput)
+
+        // 3d) Terminal（PTY）：打开 → 输入 → 看到输出 → 关闭 → **再次打开**（关掉终端再开是最基本的用法）
+        for (round, expression, expected) in [(1, "pty-$((6*7))", "pty-42"), (2, "again-$((20+3))", "again-23")] {
+            let pty = PtySessionModel(sandboxId: id, client: viewModel.client)
+            pty.open()
+            guard await waitUntil(10, { pty.running }) else {
+                return step("pty-open-\(round)", false, pty.error ?? "not running")
+            }
+            pty.sendInput("echo \(expression)")
+            guard await waitUntil(10, { pty.output.contains(expected) }) else {
+                return step("pty-roundtrip-\(round)", false, "error=\(pty.error ?? "nil") output=\(pty.output.suffix(200))")
+            }
+            let clean = !pty.output.unicodeScalars.contains { $0.value == 0x1B || ($0.value < 0x20 && $0 != "\n" && $0 != "\t") }
+            pty.close()
+            guard clean else { return step("pty-output-sanitized-\(round)", false, String(pty.output.suffix(200))) }
+            step("pty-roundtrip-\(round)", true, expected)
+        }
+
+        // 3e) Console：guest serial 的内容可读（引导横幅在里面）
+        let console = await fetchConsole(id)
+        guard let consoleText = console, consoleText.contains("Desk Box") else {
+            return step("console", false, String((console ?? "<nil>").suffix(200)))
+        }
+        step("console", true, "\(consoleText.count) chars")
+
+        // 3f) Stats：两次采样后有内存与 CPU%；选中不存在的沙箱时错误可见、旧数字被清掉
+        let stats = StatsModel(client: viewModel.client)
+        stats.select(id)
+        await sample(stats)
+        try? await Task.sleep(for: .milliseconds(1100))
+        await sample(stats)
+        guard stats.statsError == nil, let mem = stats.memCurrent, mem > 0, let cpu = stats.cpuPercent else {
+            return step("stats", false, "err=\(stats.statsError ?? "nil") mem=\(String(describing: stats.memCurrent)) cpu=\(String(describing: stats.cpuPercent))")
+        }
+        step("stats", true, "mem=\(mem) cpu=\(String(format: "%.1f", cpu))%")
+        stats.select("00000000-0000-0000-0000-000000000000")
+        await sample(stats)
+        guard stats.statsError != nil, stats.memCurrent == nil, stats.cpuPercent == nil, stats.history.isEmpty else {
+            return step("stats-error-visible", false, "err=\(stats.statsError ?? "nil") mem=\(String(describing: stats.memCurrent))")
+        }
+        step("stats-error-visible", true, stats.statsError ?? "")
+
+        // 3g) Workspace 同步：宿主目录里的文件出现在 guest 的 /workspace
+        if let workspace = ProcessInfo.processInfo.environment["DBX_GUI_SELFTEST_WORKSPACE"], !workspace.isEmpty {
+            let synced: (String, Bool) = await withCheckedContinuation { continuation in
+                WorkspaceSync.sync(client: viewModel.client, sandboxId: id, path: workspace) { text, ok in
+                    continuation.resume(returning: (text, ok))
+                }
+            }
+            guard synced.1 else { return step("workspace-sync", false, synced.0) }
+            _ = await exec(id, "/bin/sh -c 'cat /workspace/marker.txt'")
+            guard viewModel.execOutput.contains("gui-flow-marker") else {
+                return step("workspace-sync", false, "sync=\(synced.0) cat=\(viewModel.execOutput)")
+            }
+            step("workspace-sync", true, synced.0)
+            let bad: (String, Bool) = await withCheckedContinuation { continuation in
+                WorkspaceSync.sync(client: viewModel.client, sandboxId: id, path: workspace + "/marker.txt") { text, ok in
+                    continuation.resume(returning: (text, ok))
+                }
+            }
+            guard !bad.1, bad.0.contains("不是目录") else { return step("workspace-sync-precheck", false, bad.0) }
+            step("workspace-sync-precheck", true)
+        }
 
         // 4) Suspend（行内按钮对应的请求）
         guard SandboxRowActions.available(forState: state(of: id)).contains(.suspend),

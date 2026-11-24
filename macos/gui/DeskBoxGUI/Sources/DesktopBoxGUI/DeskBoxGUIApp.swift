@@ -156,9 +156,10 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
             MainActor.assumeIsolated { completion?(.failure(DaemonClientError.weird("argv empty"))) }
             return
         }
-        var request = DaemonRequest(kind: "exec")
-        request.sandboxId = sandboxId
-        request.argv = argv
+        var building = DaemonRequest(kind: "exec")
+        building.sandboxId = sandboxId
+        building.argv = argv
+        let request = building
         let client = self.client
         let timeout = Self.timeoutSeconds(forKind: "exec")
         execOutput = "running…"

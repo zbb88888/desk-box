@@ -71,20 +71,11 @@ struct WorkspaceDropView: View {
     }
 
     private func syncFolder(_ path: String) {
-        var req = DaemonRequest(kind: "wsSync")
-        req.sandboxId = sandboxId
-        req.workspaceDir = path
-        DispatchQueue.global().async {
-            do {
-                let response = try self.client.send(req)
-                DispatchQueue.main.async {
-                    self.status = response.stdout ?? "ws-sync ok"
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.status = "sync failed: \(error.localizedDescription)"
-                }
-            }
+        // M33：与 Settings 的「Sync to /workspace」共用 WorkspaceSync（前置检查 + 可读错误）。
+        status = "syncing…"
+        let statusBinding = $status
+        WorkspaceSync.sync(client: client, sandboxId: sandboxId, path: path) { text, _ in
+            statusBinding.wrappedValue = text
         }
     }
 }

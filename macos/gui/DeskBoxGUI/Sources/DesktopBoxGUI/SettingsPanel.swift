@@ -92,20 +92,11 @@ struct SettingsWorkspaceTab: View {
             HStack {
                 Spacer()
                 Button("Sync to /workspace") {
-                    var req = DaemonRequest(kind: "wsSync")
-                    req.sandboxId = sandboxId
-                    req.workspaceDir = path
-                    // Cmd+Q bug fix：wsSync 可能耗时很长，离主线程 send。
+                    // M33：WorkspaceSync（前置检查 + 后台 I/O + 可读错误）。
                     status = "syncing…"
-                    let client = self.client
                     let statusBinding = self.$status
-                    DispatchQueue.global().async {
-                        let text: String
-                        do {
-                            let resp = try client.send(req, timeoutSec: 120)
-                            text = resp.stdout ?? "ok"
-                        } catch { text = "sync fail: \(error.localizedDescription)" }
-                        Task { @MainActor in statusBinding.wrappedValue = text }
+                    WorkspaceSync.sync(client: client, sandboxId: sandboxId, path: path) { text, _ in
+                        statusBinding.wrappedValue = text
                     }
                 }
             }

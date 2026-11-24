@@ -12,8 +12,9 @@
 #       退出后会话私盘（rootfs 临时副本）被清除
 #   G8  任意 sheet 打开时（Settings，不依赖 VM）⌘Q 仍能退出 —— AppKit 在有 sheet 时会让 terminate 变成空操作
 #   G9  sheet 打开时收到 quit AppleEvent（Dock 的 Quit / 注销走的路）同样能退出
-#   G10 操作全链路（M32）：GUI 拉起 daemon → Run → Exec（带引号）→ Suspend → Resume → Rm，
-#       全部经由视图模型里按钮所用的同一入口，对着真实 daemon 与真实 VM
+#   G10 操作全链路（M32/M33）：GUI 拉起 daemon → Run → Exec（带引号）→ Terminal(PTY，含关掉再开) →
+#       Console → Stats → Workspace 同步 → Suspend → Resume → Rm，
+#       全部经由视图模型 / 面板模型里界面所用的同一入口，对着真实 daemon 与真实 VM
 #   G11 应用级模态面板（文件选择）打开时收到 quit AppleEvent 仍能退出
 #
 # 做法：把 GUI 二进制装进临时目录里的一个 .app（独立 bundle id、LSUIElement=后台代理：
@@ -249,6 +250,9 @@ assert_quit "G9 sheet 打开时的 quit AppleEvent（Dock Quit / 注销）" "$R6
 
 # ================= G10：操作全链路（真实 daemon + 真实 VM） =================
 R7="$E2E_WORK/report-7.json"
+# Workspace 同步用的宿主目录（带一个标记文件）。
+mkdir -p "$E2E_WORK/ws" && echo "gui-flow-marker" > "$E2E_WORK/ws/marker.txt"
+export DBX_GUI_SELFTEST_WORKSPACE="$E2E_WORK/ws"
 launch_gui "$R7" 150 YES flow        # 150s 只是保险丝；flow 走完会自己发 ⌘Q
 GUI7=$GUI_PID
 for _ in $(seq 1 80); do "$BIN" ps >/dev/null 2>&1 && break; sleep 0.1; done
@@ -271,6 +275,13 @@ step_ok run && step_ok listed-running && pass "G10 Run New Sandbox：真实 VM �
 step_ok exec-quoted && pass "G10 Exec：带引号的命令行在 guest 内正确执行（/bin/sh -c 'echo flow-ok; id -u' → uid 65534）" || fail "G10 exec 失败：$(step_detail exec-quoted)"
 step_ok exec-bad-quoting-rejected && pass "G10 Exec：引号未闭合的命令行在本地被拒" || fail "G10 非法命令行未被拒"
 step_ok rejection-keeps-daemon-connected && pass "G10 被 daemon 拒绝的请求显示可读原因，daemon 状态保持 connected" || fail "G10 拒绝处理异常：$(step_detail rejection-keeps-daemon-connected)"
+step_ok pty-roundtrip-1 && pass "G10 Terminal：PTY 打开 → 输入 → 看到输出（$(step_detail pty-roundtrip-1)），输出里没有转义/控制字符" || fail "G10 PTY 失败：$(grep 'pty-' "$E2E_WORK/flow.out" | tail -1)"
+step_ok pty-roundtrip-2 && pass "G10 Terminal：关闭后再次打开仍可用（$(step_detail pty-roundtrip-2)）" || fail "G10 PTY 关闭后无法再次打开：$(grep 'pty-' "$E2E_WORK/flow.out" | tail -1)"
+step_ok console && pass "G10 Console：guest serial 内容可读（$(step_detail console)）" || fail "G10 console：$(step_detail console)"
+step_ok stats && pass "G10 Stats：两次采样后有内存与 CPU%（$(step_detail stats)）" || fail "G10 stats：$(step_detail stats)"
+step_ok stats-error-visible && pass "G10 Stats：沙箱不存在时错误可见、旧数字被清掉（$(step_detail stats-error-visible)）" || fail "G10 stats 错误不可见：$(step_detail stats-error-visible)"
+step_ok workspace-sync && pass "G10 Workspace 同步：宿主文件出现在 guest 的 /workspace（$(step_detail workspace-sync)）" || fail "G10 workspace 同步：$(step_detail workspace-sync)"
+step_ok workspace-sync-precheck && pass "G10 Workspace 同步：把文件当目录会在本地被拒" || fail "G10 workspace 前置检查：$(step_detail workspace-sync-precheck)"
 step_ok suspend && [ "$(step_detail suspend)" = "console,resume,rm" ] \
   && pass "G10 Suspend：状态变为 suspended，行内操作变为 console,resume,rm" || fail "G10 suspend：$(step_detail suspend)"
 if step_ok resume && step_ok exec-after-resume; then
