@@ -18,6 +18,8 @@ struct CLISpec {
     let command: String
     let usage: String
     var positionals: [String] = []
+    /// 可省略的位置参数（排在必填的之后）。
+    var optionalPositionals: [String] = []
     var valueOptions: Set<String> = []
     var repeatableOptions: Set<String> = []
     var flags: Set<String> = []
@@ -35,6 +37,8 @@ struct CLIParsed {
     fileprivate(set) var passthrough: [String]? = nil
 
     func positional(_ index: Int) -> String { positionals[index] }
+    /// 可省略的位置参数；没给返回 nil。
+    func optionalPositional(_ index: Int) -> String? { index < positionals.count ? positionals[index] : nil }
     func flag(_ name: String) -> Bool { flags.contains(name) }
     func string(_ name: String) -> String? { values[name]?.last }
     func strings(_ name: String) -> [String] { values[name] ?? [] }
@@ -110,17 +114,18 @@ enum CLIArgs {
             parsed.positionals.append(token)
             i += 1
         }
-        guard parsed.positionals.count == spec.positionals.count else {
-            if parsed.positionals.count < spec.positionals.count {
-                let missing = spec.positionals[parsed.positionals.count]
-                throw CLIError.usage("\(spec.command): \(missing) required | usage: \(spec.usage)")
-            }
-            let extra = parsed.positionals[spec.positionals.count]
+        let allPositionals = spec.positionals + spec.optionalPositionals
+        if parsed.positionals.count < spec.positionals.count {
+            let missing = spec.positionals[parsed.positionals.count]
+            throw CLIError.usage("\(spec.command): \(missing) required | usage: \(spec.usage)")
+        }
+        if parsed.positionals.count > allPositionals.count {
+            let extra = parsed.positionals[allPositionals.count]
             throw CLIError.usage("\(spec.command): unexpected argument '\(extra)' | usage: \(spec.usage)")
         }
         // 位置参数为空串同样是未设置变量的征兆。
         for (index, value) in parsed.positionals.enumerated() where value.isEmpty {
-            throw CLIError.usage("\(spec.command): empty \(spec.positionals[index])")
+            throw CLIError.usage("\(spec.command): empty \(allPositionals[index])")
         }
         return parsed
     }

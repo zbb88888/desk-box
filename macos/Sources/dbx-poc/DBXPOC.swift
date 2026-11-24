@@ -9,30 +9,32 @@ struct DBXPOC {
         do {
             switch args.first {
             case "capcheck", nil:
+                _ = try CLIArgs.parse(Array(args.dropFirst()), spec: ReleaseCLISpecs.capcheck)
                 let report = VZCapabilityProbe.probe()
                 print(String(decoding: try JSONEncoder.pretty.encode(report), as: UTF8.self))
             case "verify-sbom":
-                guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc verify-sbom <sbom.json>") }
+                let first = try CLIArgs.parse(Array(args.dropFirst()), spec: ReleaseCLISpecs.verifySbom).positional(0)
                 let sbom = try GuestSbomVerifier.verify(sbomURL: URL(fileURLWithPath: first))
                 print("sbom verified assetVersion=\(sbom.assetVersion) inputs=\(sbom.inputs.count) outputs=\(sbom.outputs.count)")
             case "validate-assets":
-                guard let first = args.dropFirst().first else { throw CLIError.usage("dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest] [--release-keys <json>]") }
+                let p = try CLIArgs.parse(Array(args.dropFirst()), spec: ReleaseCLISpecs.validateAssets)
+                let first = p.positional(0)
                 let manifest = try loadManifest(at: URL(fileURLWithPath: first))
-                if let chainPath = try optionString("--release-keys", in: args) {
+                if let chainPath = p.string("--release-keys") {
                     let chainData = try Data(contentsOf: URL(fileURLWithPath: chainPath))
                     let raw = try JSONDecoder().decode(ReleaseKeyFile.self, from: chainData)
                     let chain = ReleaseKeysManifest(schema: raw.schema, generatedAtUtc: raw.generatedAtUtc, keys: raw.keys)
                     do {
                         try ManifestSigner.verify(manifest: manifest.asManifest,
                                                  chain: chain,
-                                                 allowUnsignedManifest: args.contains("--allow-unsigned-manifest"))
+                                                 allowUnsignedManifest: p.flag("--allow-unsigned-manifest"))
                     } catch let error as ManifestSignerError {
                         throw SandboxFailure(.platformAssetDigestMismatch, error.description)
                     }
                     print("validated manifest \(manifest.manifestDigest) against release-keys （\(chain.keys.count) keys）")
                 } else {
                     let result = try GuestAssetValidator.validate(manifest.asManifest,
-                                                                  allowUnsignedManifest: args.contains("--allow-unsigned-manifest"))
+                                                                  allowUnsignedManifest: p.flag("--allow-unsigned-manifest"))
                     print("validated manifest \(result.manifestDigest)")
                 }
             case "make-manifest":
@@ -52,6 +54,7 @@ struct DBXPOC {
             case "verify-channel":
                 try verifyReleaseChannel(args: Array(args.dropFirst()))
             case "version":
+                _ = try CLIArgs.parse(Array(args.dropFirst()), spec: ReleaseCLISpecs.version)
                 try printVersion()
             case "domains":
                 try listDomains(args: Array(args.dropFirst()))
@@ -88,26 +91,28 @@ struct DBXPOC {
     }
 
     private static func genGuestSignKey(args: [String]) throws {
-        guard let outputPath = try optionString("--output-key", in: args) else {
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.genGuestSignKey)
+        guard let outputPath = p.string("--output-key") else {
             throw CLIError.usage("dbx-poc gen-guest-sign-key --output-key <path>")
         }
         let pair = ManifestSigner.generateKeypairHex()
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
-        try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try ("private:\(pair.privateHex)\n").write(to: output, atomically: true, encoding: .utf8)
+        // M34：私钥 0600 原子写入（此前是默认权限，umask 022 下同机任何用户可读）。
+        try PrivateKeyFile.write("private:\(pair.privateHex)\n", to: output)
         print("public:\(pair.publicHex)")
         print("wrote key material \(output.path)")
     }
 
     private static func signManifest(args: [String]) throws {
-        guard let inputPath = try optionString("--manifest", in: args),
-              let keyPath = try optionString("--key", in: args),
-              let outputPath = try optionString("--output", in: args)
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.signManifest)
+        guard let inputPath = p.string("--manifest"),
+              let keyPath = p.string("--key"),
+              let outputPath = p.string("--output")
         else {
             throw CLIError.usage("dbx-poc sign-manifest --manifest <in> --key <path> --output <out> [--asset-version N]")
         }
         var manifest = try loadSignedManifestPreservingURLs(at: URL(fileURLWithPath: inputPath))
-        if let version = try optionInt("--asset-version", in: args) {
+        if let version = try p.int("--asset-version", in: ReleaseCLISpecs.versionRange) {
             manifest = ManifestFile(
                 kernelURL: manifest.kernelURL, initrdURL: manifest.initrdURL, rootDiskURL: manifest.rootDiskURL,
                 kernelCommandLine: manifest.kernelCommandLine,
@@ -158,7 +163,8 @@ struct DBXPOC {
     }
 
     private static func genReleaseKey(args: [String]) throws {
-        guard let outputPath = try optionString("--output-key", in: args) else {
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.genReleaseKey)
+        guard let outputPath = p.string("--output-key") else {
             throw CLIError.usage("dbx-poc gen-release-key --output-key <path>")
         }
         let pair = ManifestSigner.generateKeypairHex()
@@ -175,7 +181,7 @@ struct DBXPOC {
                 note: "generated locally (dev chain)"
             )]
         )
-        try ("private:\(pair.privateHex)\n").write(to: URL(fileURLWithPath: outputPath), atomically: true, encoding: .utf8)
+        try PrivateKeyFile.write("private:\(pair.privateHex)\n", to: URL(fileURLWithPath: outputPath).standardizedFileURL)
         let starterURL = URL(fileURLWithPath: outputPath).deletingLastPathComponent()
             .appendingPathComponent("release-keys.json")
         if !FileManager.default.fileExists(atPath: starterURL.path) {
@@ -189,10 +195,11 @@ struct DBXPOC {
     }
 
     private static func rotateReleaseKey(args: [String]) throws {
-        guard let base = try optionString("--base", in: args),
-              let newKeyPath = try optionString("--new-key", in: args)
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.rotateReleaseKey)
+        guard let base = p.string("--base"),
+              let newKeyPath = p.string("--new-key")
         else { throw CLIError.usage("dbx-poc rotate-release-key --base <release-keys.json> --new-key <path> [--output <out>]") }
-        let outPath = try optionString("--output", in: args) ?? base
+        let outPath = p.string("--output") ?? base
         var manifest = try loadReleaseKeys(at: base)
         let raw = try String(contentsOf: URL(fileURLWithPath: newKeyPath), encoding: .utf8)
         guard let privateHex = raw.components(separatedBy: "private:").last?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -224,10 +231,11 @@ struct DBXPOC {
     }
 
     private static func revokeReleaseKey(args: [String]) throws {
-        guard let base = try optionString("--base", in: args),
-              let keyID = try optionString("--key-id", in: args)
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.revokeReleaseKey)
+        guard let base = p.string("--base"),
+              let keyID = p.string("--key-id")
         else { throw CLIError.usage("dbx-poc revoke-release-key --base <release-keys.json> --key-id <id> [--output <out>]") }
-        let outPath = try optionString("--output", in: args) ?? base
+        let outPath = p.string("--output") ?? base
         var manifest = try loadReleaseKeys(at: base)
         guard let idx = manifest.keys.firstIndex(where: { $0.keyID == keyID }) else {
             throw CLIError.usage("keyID not in manifest: \(keyID)")
@@ -245,12 +253,13 @@ struct DBXPOC {
     }
 
     private static func publishReleaseChannel(args: [String]) throws {
-        guard let channelDirPath = try optionString("--channel", in: args) else {
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.publish)
+        guard let channelDirPath = p.string("--channel") else {
             throw CLIError.usage("dbx-poc publish --channel <dir> --manifest <path> --sbom <path> --release-keys <path> [--release-tag <tag>] [--min-version-floor N]")
         }
-        guard let manifestPath = try optionString("--manifest", in: args),
-              let sbomPath = try optionString("--sbom", in: args),
-              let releaseKeysPath = try optionString("--release-keys", in: args)
+        guard let manifestPath = p.string("--manifest"),
+              let sbomPath = p.string("--sbom"),
+              let releaseKeysPath = p.string("--release-keys")
         else { throw CLIError.usage("dbx-poc publish 需 manifest/sbom/release-keys") }
         /// M11：`SOURCE_DATE_EPOCH` 如来，generatedAtUtc 顺从于它（幂等发布）。
         let releaseNow: Date = {
@@ -260,9 +269,9 @@ struct DBXPOC {
             }
             return Date()
         }()
-        let releaseTag = try optionString("--release-tag", in: args)
+        let releaseTag = p.string("--release-tag")
             ?? ISO8601DateFormatter().string(from: releaseNow)
-        let floor = try optionInt("--min-version-floor", in: args) ?? 1
+        let floor = try p.int("--min-version-floor", in: ReleaseCLISpecs.versionRange) ?? 1
         let manifestRaw = try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: URL(fileURLWithPath: manifestPath)))
         guard let sig = manifestRaw.signature else { throw CLIError.usage("publish 要求已签名 manifest") }
         let releaseKeysRaw = try Data(contentsOf: URL(fileURLWithPath: releaseKeysPath))
@@ -307,24 +316,23 @@ struct DBXPOC {
     }
 
     private static func verifyReleaseChannel(args: [String]) throws {
-        guard let channelPath = args.first else {
-            throw CLIError.usage("dbx-poc verify-channel <channel.json>")
-        }
+        let channelPath = try CLIArgs.parse(args, spec: ReleaseCLISpecs.verifyChannel).positional(0)
         let result = try ReleaseChannelVerifier.verify(channelURL: URL(fileURLWithPath: channelPath))
         print("verified channel tag=\(result.channel.releaseTag) assetVersion=\(result.channel.manifest.assetVersion) keys=\(result.channel.keys.count)")
     }
 
     private static func makeManifest(args: [String]) throws {
-        guard let kernelPath = try optionString("--kernel", in: args),
-              let rootDiskPath = try optionString("--root-disk", in: args),
-              let outputPath = try optionString("--output", in: args)
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.makeManifest)
+        guard let kernelPath = p.string("--kernel"),
+              let rootDiskPath = p.string("--root-disk"),
+              let outputPath = p.string("--output")
         else {
             throw CLIError.usage("dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] --output <manifest.json>")
         }
         let kernel = URL(fileURLWithPath: kernelPath).standardizedFileURL
         let rootDisk = URL(fileURLWithPath: rootDiskPath).standardizedFileURL
-        let initrd = try optionString("--initrd", in: args).map { URL(fileURLWithPath: $0).standardizedFileURL }
-        let assetVersion = try optionInt("--asset-version", in: args) ?? 1
+        let initrd = p.string("--initrd").map { URL(fileURLWithPath: $0).standardizedFileURL }
+        let assetVersion = try p.int("--asset-version", in: ReleaseCLISpecs.versionRange) ?? 1
         let files = [kernel] + (initrd.map { [$0] } ?? []) + [rootDisk]
         for file in files where !FileManager.default.isReadableFile(atPath: file.path) {
             throw CLIError.usage("asset is not readable: \(file.path)")
@@ -343,7 +351,7 @@ struct DBXPOC {
             manifestDigest: "unsigned-local-manifest",
             fileDigests: digests,
             signature: nil,
-            sbomDigest: try optionString("--sbom-digest", in: args)
+            sbomDigest: p.string("--sbom-digest")
         )
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -352,26 +360,26 @@ struct DBXPOC {
     }
 
     private static func launch(args: [String]) async throws {
-        guard let manifestPath = args.first else {
-            throw CLIError.usage("dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz]")
-        }
+        // M34：声明式解析（未知选项 / 缺值 / 非法整数一律报错；manifest 不必是第一个参数）。
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.launch)
+        let manifestPath = p.positional(0)
         let manifestURL = URL(fileURLWithPath: manifestPath).standardizedFileURL
         let manifest = try loadManifest(at: manifestURL)
-        let cowRoot = try optionURL("--cow-root", in: args)
+        let cowRoot = p.string("--cow-root").map { URL(fileURLWithPath: $0).standardizedFileURL }
             ?? DeskBoxPaths.cowRoot
-        let memoryMiB = try optionInt("--memory-mib", in: args) ?? 2048
-        let cpus = try optionInt("--cpus", in: args) ?? 2
+        let memoryMiB = try p.int("--memory-mib", in: 1...1_048_576) ?? 2048
+        let cpus = try p.int("--cpus", in: 1...256) ?? 2
         guard memoryMiB > 0, cpus > 0 else {
             throw CLIError.usage("--memory-mib and --cpus must be positive")
         }
 
         let audit = InMemoryAuditSink()
-        let diagnosticOnly = args.contains("--minimal-vz")
+        let diagnosticOnly = p.flag("--minimal-vz")
         // M1-2: the encrypted record channel is on by default. `--allow-plaintext`
         // is an explicit downgrade switch kept for guest-side debugging only.
         // M1-5: `--allow-unsigned-manifest` is the manifest-side twin of that flag.
-        let plaintextAllowed = args.contains("--allow-plaintext")
-        let unsignedAllowed = args.contains("--allow-unsigned-manifest")
+        let plaintextAllowed = p.flag("--allow-plaintext")
+        let unsignedAllowed = p.flag("--allow-unsigned-manifest")
         if unsignedAllowed {
             fputs("dbx-poc: warning: unsigned manifest allowed (development only)\n", stderr)
         }
@@ -384,7 +392,7 @@ struct DBXPOC {
             allowUnsignedManifest: unsignedAllowed
         )
         runtime.brokerConfigDir = URL(fileURLWithPath: "./guest")
-        if args.contains("--graphics") { runtime.enableGraphics = true }
+        if p.flag("--graphics") { runtime.enableGraphics = true }
         do {
             let sweep = try runtime.sweepOrphans()
             if !sweep.isEmpty {
@@ -450,7 +458,7 @@ struct DBXPOC {
                         ["/bin/echo", "deskbox-mvp-second"]
                     ]
                     // M2-3a: 凭据/网络 Broker —— 宿主拉取 allowlisted URL 并同步进 guest。
-                    if let brokerURLString = try optionString("--broker-preload", in: args),
+                    if let brokerURLString = p.string("--broker-preload"),
                        let brokerURL = URL(string: brokerURLString) {
                         do {
                             let policyPath = URL(fileURLWithPath: "./guest/broker-policy.json").standardizedFileURL
@@ -479,7 +487,7 @@ struct DBXPOC {
                         }
                     }
                     // M2-3b: guest 侧请求 broker（经由 AF_UNIX + vsock + 加密 record channel）。
-                    if let guestBrokerURL = try optionString("--broker-guest-url", in: args) {
+                    if let guestBrokerURL = p.string("--broker-guest-url") {
                         do {
                             // guest savePath 语义：basename(url)，空路径段取 host，保 guest 端一致。
                             let parsed = URL(string: guestBrokerURL)
@@ -501,7 +509,7 @@ struct DBXPOC {
                         }
                     }
                     // M2-2: OCI bundle 入口：policy 审核 → 同步 rootfs → OCI 语义执行。
-                    if let bundlePath = try optionString("--oci-bundle", in: args) {
+                    if let bundlePath = p.string("--oci-bundle") {
                         do {
                             let bundleDir = URL(fileURLWithPath: bundlePath).standardizedFileURL
                             let configURL = bundleDir.appendingPathComponent("config.json")
@@ -528,7 +536,7 @@ struct DBXPOC {
                         }
                     }
                     // M2-1: workspace 快照推送（可选）；失败 fail-closed 进入 destroy。
-                    if let workspacePath = try optionString("--workspace", in: args) {
+                    if let workspacePath = p.string("--workspace") {
                         do {
                             let snapshot = try WorkspaceSyncService.buildSnapshot(root: URL(fileURLWithPath: workspacePath))
                             let ack = try await runtime.pushWorkspace(handle, snapshot: snapshot)
@@ -629,22 +637,6 @@ struct DBXPOC {
         try JSONDecoder().decode(ManifestFile.self, from: Data(contentsOf: url))
     }
 
-    private static func optionString(_ name: String, in args: [String]) throws -> String? {
-        guard let index = args.firstIndex(of: name) else { return nil }
-        guard index + 1 < args.count else { throw CLIError.usage("missing value for \(name)") }
-        return args[index + 1]
-    }
-
-    private static func optionURL(_ name: String, in args: [String]) throws -> URL? {
-        try optionString(name, in: args).map { URL(fileURLWithPath: $0).standardizedFileURL }
-    }
-
-    private static func optionInt(_ name: String, in args: [String]) throws -> Int? {
-        guard let value = try optionString(name, in: args) else { return nil }
-        guard let int = Int(value) else { throw CLIError.usage("invalid value for \(name)") }
-        return int
-    }
-
     // MARK: - M22 分发
 
     /// 当前构建的版本信息（编译期注入，缺省 `0.0.0-dev`）。
@@ -669,8 +661,9 @@ struct DBXPOC {
 
     /// M23：列出已配置凭据域（fail-closed 解析；非法即报错）。
     private static func listDomains(args: [String]) throws {
-        let asJSON = args.contains("--json")
-        let root = try optionURL("--root", in: args)
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.domains)
+        let asJSON = p.flag("--json")
+        let root = p.string("--root").map { URL(fileURLWithPath: $0).standardizedFileURL }
             ?? DeskBoxPaths.supportRoot
         let manifestURL = root.appendingPathComponent("domains.json")
         let registry: DomainRegistry
@@ -715,12 +708,12 @@ struct DBXPOC {
 
     /// M22：更新检查。只读 channel 公开内容，回滚/未签名/撤销 key 一律拒绝。
     private static func checkUpdate(args: [String]) throws {
-        guard let channelPath = try optionString("--channel", in: args)
-                ?? args.first(where: { !$0.hasPrefix("--") }) else {
-            throw CLIError.usage("dbx-poc check-update --channel <channel.json> [--current-version <semver>] [--json]")
-        }
-        let current = try optionString("--current-version", in: args) ?? DeskBoxVersion.semver
-        let asJSON = args.contains("--json")
+        // M34：此前在没有 --channel 时取「第一个不以 -- 开头的参数」——那可能是别的选项的值
+        //（`check-update --current-version 1.0` 会把 "1.0" 当成 channel 路径）。
+        let p = try CLIArgs.parse(args, spec: ReleaseCLISpecs.checkUpdate)
+        let channelPath = try ReleaseCLISpecs.channelPath(p)
+        let current = p.string("--current-version") ?? DeskBoxVersion.semver
+        let asJSON = p.flag("--json")
         let url = URL(fileURLWithPath: channelPath)
         do {
             let result = try UpdateChecker.check(channelURL: url, currentVersion: current)

@@ -34,7 +34,8 @@
 | M31 ✅ | sheet 打开时无法退出 + Open Display 崩溃 | —（产品面） | M | 已完成：定位并修复 ⌘Q 的主因（AppKit 在有 sheet 时静默拒绝终止；所有退出请求改走 `AppQuit`）与「Open Display 必崩」（VM 在错误队列上启动）；e2e-gui-app 32/32，见 `m31-display-cmdq.md` |
 | M32 ✅ | GUI 操作全链路 | —（产品面） | M | 已完成：操作逻辑移入视图模型；自检 flow 驱动真实 daemon + VM（Run→Exec→Suspend→Resume→Rm）；Exec 支持引号；引导类请求客户端超时 150s。e2e-gui-app 46 通过，见 `m32-gui-operation-flow.md` |
 | M33 ✅ | 其余面板纳入验证 + 终端生命周期 | —（产品面 + PTY） | M | 已完成：修复「终端只能打开一次」（宿主从不发送 ptyClose）、suspend 前关闭 guest pty、遗弃会话抢占、hex 解码崩溃、终端输出净化、Stats 切换/失败处理；Terminal/Console/Stats/Workspace 纳入 GUI flow，见 `m33-panels-and-pty-lifecycle.md` |
-| M34 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
+| M34 ✅ | 签名 / 发布 / 校验类子命令 fail-closed | 供应链（M5/M7） | S | 已完成：15 个子命令迁到声明式解析（拼错的选项不再被静默忽略）、私钥文件 0600；no-VM e2e 53/53 并接入 CI；用旧二进制对照 31 项失败，见 `m34-release-cli-fail-closed.md` |
+| M35 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 
 ---

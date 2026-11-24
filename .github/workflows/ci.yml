@@ -24,6 +24,12 @@ jobs:
         run: |
           cd macos
           swift test 2>&1 | tee test.log
+      # M34：签名 / 发布 / 校验类子命令的端到端测试。不需要 VM、不需要 guest 资产，
+      # 是真机 e2e 套件里唯一能在 CI runner 上跑的一个。
+      - name: Release CLI e2e (no VM)
+        run: |
+          cd macos
+          ./scripts/e2e-release-cli.sh
       - name: Download guest assets from guest-build job
         uses: actions/download-artifact@v4
         with:

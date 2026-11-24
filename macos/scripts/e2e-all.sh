@@ -23,6 +23,7 @@ cd "$ROOT"
 
 SUITES=(
   "selftest:e2e-harness-selftest.sh"
+  "m34-release-cli:e2e-release-cli.sh"
   "m12-lifecycle:e2e-sandbox-lifecycle.sh"
   "m24-concurrency:e2e-daemon-concurrency.sh"
   "m26-boot-cancel:e2e-boot-and-cancel.sh"

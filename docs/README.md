@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M34 签名/发布类子命令 fail-closed](design/m34-release-cli-fail-closed.md)：拼错的选项不再被静默忽略（曾导致防回滚下限被悄悄放宽、密钥文件被原地覆盖）；私钥文件 0600；no-VM e2e 接入 CI。
 - [M33 其余面板与终端生命周期](design/m33-panels-and-pty-lifecycle.md)：终端只能打开一次的根因与修复、终端输出净化、Stats/Console/Workspace 模型化并纳入 GUI flow。
 - [M32 GUI 操作全链路](design/m32-gui-operation-flow.md)：按钮逻辑移入视图模型并由自检驱动真实 daemon + VM；Exec 命令行支持引号；引导类请求的客户端超时。
 - [M31 sheet 打开时无法退出 / Open Display 崩溃](design/m31-display-cmdq.md)：⌘Q 的主因（AppKit 在有 sheet 时静默拒绝终止）与修复；⌘Q 各条根因的最终状态表。

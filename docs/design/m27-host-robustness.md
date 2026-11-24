@@ -25,7 +25,7 @@
 
 改为声明式规格（`DaemonCLISpecs`，13 个子命令）+ 纯函数解析：带值选项必须有非空值且值不能是另一个已知选项；`--opt=value` 等价；非 repeatable 选项重复报错；未知选项报错；位置无关；`--` 之后一个字节都不解析；整数严格校验范围。「命令行 → `DaemonRequest`」是纯函数，可直接单测。
 
-未覆盖：`launch` / `verify-*` / `publish` / `check-update` / `domains` 等非 daemon 子命令仍用旧的 `optionString`（其中多数是 `try` 而非 `try?`）。
+~~未覆盖：`launch` / `verify-*` / `publish` / `check-update` / `domains` 等非 daemon 子命令~~：M34 已全部迁移。
 
 ### 顺带：`rm` 比对声明的域
 

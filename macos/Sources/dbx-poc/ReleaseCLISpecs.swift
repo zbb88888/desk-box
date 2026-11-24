@@ -1,0 +1,123 @@
+import Foundation
+
+/// M34：签名 / 发布 / 校验 / 直启类子命令的参数规格。
+///
+/// M27 只把 daemon 生命周期子命令迁到了声明式解析；这些命令仍在用手写的 `optionString`：
+/// 缺值会报错，但**未知选项被静默忽略**，值可以是另一个选项，整数不校验范围。
+/// 对供应链相关的命令，静默忽略一个拼错的选项会直接放宽安全门槛：
+/// - `publish --min-version-flor 5` → 防回滚下限悄悄变回默认的 1；
+/// - `sign-manifest --asset-versoin 7` → 用旧版本号签名；
+/// - `rotate-release-key --ouput new.json` → 原地覆盖 `--base`；
+/// - `check-update --current-versoin 0.1.0` → 用内置版本比较。
+enum ReleaseCLISpecs {
+    static let capcheck = CLISpec(command: "capcheck", usage: "dbx-poc capcheck")
+    static let version = CLISpec(command: "version", usage: "dbx-poc version")
+
+    static let verifySbom = CLISpec(command: "verify-sbom", usage: "dbx-poc verify-sbom <sbom.json>",
+                                    positionals: ["sbom path"])
+
+    static let validateAssets = CLISpec(
+        command: "validate-assets",
+        usage: "dbx-poc validate-assets <manifest.json> [--allow-unsigned-manifest] [--release-keys <json>]",
+        positionals: ["manifest path"], valueOptions: ["--release-keys"], flags: ["--allow-unsigned-manifest"])
+
+    static let makeManifest = CLISpec(
+        command: "make-manifest",
+        usage: "dbx-poc make-manifest --kernel <vmlinuz> --root-disk <disk> [--initrd <initrd>] [--asset-version N] [--sbom-digest <sha256>] --output <manifest.json>",
+        valueOptions: ["--kernel", "--root-disk", "--initrd", "--asset-version", "--sbom-digest", "--output"])
+
+    static let genGuestSignKey = CLISpec(command: "gen-guest-sign-key",
+                                         usage: "dbx-poc gen-guest-sign-key --output-key <path>",
+                                         valueOptions: ["--output-key"])
+
+    static let signManifest = CLISpec(
+        command: "sign-manifest",
+        usage: "dbx-poc sign-manifest --manifest <in> --key <path> --output <out> [--asset-version N]",
+        valueOptions: ["--manifest", "--key", "--output", "--asset-version"])
+
+    static let genReleaseKey = CLISpec(command: "gen-release-key",
+                                       usage: "dbx-poc gen-release-key --output-key <path>",
+                                       valueOptions: ["--output-key"])
+
+    static let rotateReleaseKey = CLISpec(
+        command: "rotate-release-key",
+        usage: "dbx-poc rotate-release-key --base <release-keys.json> --new-key <path> [--output <out>]",
+        valueOptions: ["--base", "--new-key", "--output"])
+
+    static let revokeReleaseKey = CLISpec(
+        command: "revoke-release-key",
+        usage: "dbx-poc revoke-release-key --base <release-keys.json> --key-id <id> [--output <out>]",
+        valueOptions: ["--base", "--key-id", "--output"])
+
+    static let publish = CLISpec(
+        command: "publish",
+        usage: "dbx-poc publish --channel <dir> --manifest <path> --sbom <path> --release-keys <path> [--release-tag <tag>] [--min-version-floor N]",
+        valueOptions: ["--channel", "--manifest", "--sbom", "--release-keys", "--release-tag", "--min-version-floor"])
+
+    static let verifyChannel = CLISpec(command: "verify-channel", usage: "dbx-poc verify-channel <channel.json>",
+                                       positionals: ["channel path"])
+
+    static let domains = CLISpec(command: "domains", usage: "dbx-poc domains [--root <dir>] [--json]",
+                                 valueOptions: ["--root"], flags: ["--json"])
+
+    /// channel 既可以用 `--channel` 给，也可以作为唯一的位置参数给（二者只能取其一）。
+    static let checkUpdate = CLISpec(
+        command: "check-update",
+        usage: "dbx-poc check-update --channel <channel.json> [--current-version <semver>] [--json]",
+        optionalPositionals: ["channel path"],
+        valueOptions: ["--channel", "--current-version"], flags: ["--json"])
+
+    static let launch = CLISpec(
+        command: "launch",
+        usage: "dbx-poc launch <manifest.json> [--cow-root <directory>] [--memory-mib N] [--cpus N] [--minimal-vz] [--graphics] [--allow-plaintext] [--allow-unsigned-manifest] [--workspace dir] [--oci-bundle b] [--broker-preload url] [--broker-guest-url url]",
+        positionals: ["manifest path"],
+        valueOptions: ["--cow-root", "--memory-mib", "--cpus", "--workspace", "--oci-bundle", "--broker-preload", "--broker-guest-url"],
+        flags: ["--minimal-vz", "--graphics", "--allow-plaintext", "--allow-unsigned-manifest"])
+
+    static let all: [CLISpec] = [capcheck, version, verifySbom, validateAssets, makeManifest, genGuestSignKey,
+                                 signManifest, genReleaseKey, rotateReleaseKey, revokeReleaseKey, publish,
+                                 verifyChannel, domains, checkUpdate, launch]
+
+    /// 版本号类整数的允许范围（拒绝负数与非数字；0 保留给「未设置」语义的旧数据）。
+    static let versionRange = 0...Int(Int32.max)
+
+    /// `check-update` 的 channel 路径：`--channel` 与位置参数二选一。
+    static func channelPath(_ parsed: CLIParsed) throws -> String {
+        switch (parsed.string("--channel"), parsed.optionalPositional(0)) {
+        case (let option?, nil): return option
+        case (nil, let positional?): return positional
+        case (nil, nil):
+            throw CLIError.usage("check-update: channel path required | usage: \(checkUpdate.usage)")
+        case (.some, .some(let extra)):
+            throw CLIError.usage("check-update: unexpected argument '\(extra)' (channel already given via --channel)")
+        }
+    }
+}
+
+/// M34：私钥文件以 0600 原子写入。
+///
+/// 此前 `gen-guest-sign-key` / `gen-release-key` 用默认权限写私钥（umask 022 下是 0644，
+/// 同机任何用户可读）。这里先在同目录建一个 0600 的临时文件，写完再 rename 覆盖目标——
+/// 目标路径上任何时刻都不会出现「内容已是私钥、权限还没收紧」的窗口。
+enum PrivateKeyFile {
+    static func write(_ content: String, to url: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temp = url.deletingLastPathComponent()
+            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
+        guard fm.createFile(atPath: temp.path, contents: Data(content.utf8),
+                            attributes: [.posixPermissions: 0o600]) else {
+            throw CLIError.usage("cannot write key material to \(url.path)")
+        }
+        do {
+            // createFile 的权限受 umask 影响只会更严，不会更松；仍显式设置一次。
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temp.path)
+            if rename(temp.path, url.path) != 0 {
+                throw CLIError.usage("cannot move key material into place at \(url.path): errno=\(errno)")
+            }
+        } catch {
+            try? fm.removeItem(at: temp)
+            throw error
+        }
+    }
+}
