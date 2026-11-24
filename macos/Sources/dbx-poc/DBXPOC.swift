@@ -88,6 +88,10 @@ struct DBXPOC {
             default:
                 throw CLIError.usage("unknown command")
             }
+        } catch CLIError.exit(let code) {
+            // M39：`exec` 把 guest 命令的退出码原样传给调用方（此前一律 exit 2 并打印「exit code N」，
+            // 与 CLI 自身的用法错误无法区分，脚本也拿不到真实的退出码）。
+            Foundation.exit(ExecExitStatus.processStatus(forGuestExitCode: code))
         } catch {
             fputs("dbx-poc: \(error)\n", stderr)
             Foundation.exit(2)
@@ -847,7 +851,9 @@ private extension DBXPOC {
         let inv = try DaemonCLI.exec(args)
         let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         if let out = response.stdout { print(out, terminator: "") }
-        if let err = response.stderr, !err.isEmpty { fputs(err + "\n", stderr) }
+        if let err = response.stderr, !err.isEmpty { fputs(err + (err.hasSuffix("\n") ? "" : "\n"), stderr) }
+        // M39：截断 / 不完整必须让调用方知道（此前 stdout 被静默截到 1023 字节，退出码照样是 0）。
+        for notice in response.notices ?? [] { fputs("dbx-poc: 注意：\(notice)\n", stderr) }
         if response.exitCode ?? 1 != 0 {
             throw CLIError.exit(Int(response.exitCode ?? 1))
         }

@@ -171,7 +171,8 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
                 MainActor.assumeIsolated {
                     switch result {
                     case .success(let resp):
-                        self.execOutput = "exit=\(resp.exitCode ?? 0)\n---stdout---\n\(resp.stdout ?? "")\n---stderr---\n\(resp.stderr ?? "")"
+                        self.execOutput = ExecOutputText.render(exitCode: resp.exitCode, stdout: resp.stdout,
+                                                                stderr: resp.stderr, notices: resp.notices)
                     case .failure(let error):
                         let shown = DaemonErrorPresenter.present(error)
                         self.execOutput = "\(shown.logLine)\n\(shown.detail)"

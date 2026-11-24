@@ -36,6 +36,7 @@ struct DaemonResponse: Codable, Sendable {
     var exitCode: Int32? = nil
     var stdout: String? = nil
     var stderr: String? = nil
+    var notices: [String]? = nil
     var sandboxes: [SandboxInfo]? = nil
     var pid: Int32? = nil
 }

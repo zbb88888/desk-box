@@ -43,6 +43,11 @@ struct DaemonResponse: Codable {
     var exitCode: Int32? = nil
     var stdout: String? = nil
     var stderr: String? = nil
+    /// M39：exec 输出的截断 / 完整性说明（没有需要说明的事情时不出现）。
+    var stdoutTruncated: Bool? = nil
+    var stderrTruncated: Bool? = nil
+    var timedOut: Bool? = nil
+    var notices: [String]? = nil
     var sandboxes: [SandboxInfo]? = nil
     var pid: Int32? = nil
     /// M21：资源采样（诊断）。
@@ -609,11 +614,18 @@ final class SandboxDaemon: @unchecked Sendable {
             timeoutSeconds: request.timeoutSeconds ?? 30
         )
         session.markWorkloadStarted()
-        let response = try self.guestOp(session, op: "exec") {
-            try await session.runtime.execute(session.handle, request: controlRequest)
+        let result = try self.guestOp(session, op: "exec") {
+            try await session.runtime.executeCollectingOutput(session.handle, request: controlRequest)
         }
-        return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running",
-                              exitCode: response.exitCode, stdout: response.stdout, stderr: response.stderr)
+        var response = DaemonResponse(ok: true, sandboxId: sandboxId, state: "running",
+                                      exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
+        // 只在为真时出现在线上 JSON 里。
+        if result.stdoutTruncated || result.possiblyTruncated { response.stdoutTruncated = true }
+        if result.stderrTruncated { response.stderrTruncated = true }
+        if result.timedOut { response.timedOut = true }
+        let notices = result.notices
+        if !notices.isEmpty { response.notices = notices }
+        return response
     }
 
 

@@ -39,7 +39,9 @@
 | M36 ✅ | E2E 证据化 + 安全验证矩阵同步 | 全部（证据面） | S | 已完成：`e2e-all.sh` 产出机器可读证据（含未验证的断言），按不变量汇总；矩阵新增 §2.1。当前证据：INV-01/04/06/09 通过，INV-02/03/08/10 不完整（锁屏），见 `m36-e2e-evidence.md` |
 | M37 ✅ | workspace 同步的边界（INV-05） | INV-05 / INV-06 / INV-08 | L | 已完成：宿主 TOCTOU 修复；发现并修复 guest 接收端跟随 workload 预置符号链接（guest 内提权到 root）；宿主闸门在 guest 更新前生效；真机 e2e 旧 guest 45 / 补丁版 guest 54。**本机 guest 资产待重建**，见 `m37-workspace-sync-boundary.md` |
 | M38 ✅ | 正式构建的 guest 候选：验证、安装与回滚 | INV-06 / INV-08 / INV-09 | M | 已完成：候选用正式脚本构建，全量 E2E 在候选上 0 失败；`install-guest-candidate.sh`（备份 / 自动回滚 / 重签 GPU manifest）；workload 与同步并发的真机用例。**安装到 `macos/guest` 留给用户**，见 `m38-guest-candidate.md` |
-| M38b | 安装候选 + guest 侧 exec kill | INV-08 | M | 需用户确认：执行 `install-guest-candidate.sh ./guest-candidate`；原 M29 的 exec kill 协议 |
+| M39 ✅ | exec 的输出：不卡住、不静默截断、退出码原样传递 | INV-08 | M | 已完成：guest 边等边读 + 流式回传（`execOutput` 帧）；宿主汇总并再次执行上限；旧 guest 给出提示；CLI 传递退出码。候选已按本轮源码重建。见 `m39-exec-output.md` |
+| M39b | 安装候选（`macos/guest` 与 App bundle 里的那份） | INV-06 / INV-08 | S | 需用户确认：`install-guest-candidate.sh ./guest-candidate`；bundle 需停 daemon 后重新打包 |
+| M41 | guest 侧 exec kill（原 M29） | INV-08 | M | 在 M39 的 poll 循环里加入控制通道；需要处理 exec 期间到达的其它帧 |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 

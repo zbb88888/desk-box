@@ -34,6 +34,8 @@ SUITES=(
   "m35-permissions:e2e-state-permissions.sh:INV-03,INV-10"
   "m37-workspace:e2e-workspace-sync.sh:INV-05,INV-08"
   "m37-workspace-patched:e2e-workspace-sync-patched.sh:INV-05,INV-08"
+  "m39-exec-output:e2e-exec-output.sh:INV-08"
+  "m39-exec-output-patched:e2e-exec-output-patched.sh:INV-08"
   "m20-persistence:e2e-lifecycle-persistence.sh:INV-10"
   "m20b-fault-injection:e2e-fault-injection.sh:INV-08,INV-10"
   "m21-stats:e2e-resource-stats.sh:INV-08"
@@ -48,6 +50,8 @@ if [ "${E2E_ALL_LIST:-0}" = 1 ]; then printf '%s\n' "${SUITES[@]}"; exit 0; fi
 
 AUDIT="$(mktemp -d /tmp/dbx-all.XXXXXX)"
 trap 'rm -rf "$AUDIT"' EXIT
+# 补丁版 guest（当前源码的 bootstrap）在一次运行里只构建一次，*-patched 套件共用。
+export E2E_PATCHED_GUEST_DIR="$AUDIT/patched-guest"
 USER_SUPPORT="$HOME/Library/Application Support/DeskBox"
 TMP_PATTERN='dbx|deskbox|inject-|m2[0-9]-|stats-daemon|kern-|btn-|canary|corpus'
 

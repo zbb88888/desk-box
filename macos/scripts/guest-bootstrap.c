@@ -30,12 +30,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* M37：workspace 接收端版本，经 stats 应答上报给宿主（旧 guest 没有这个字段）。
  *   1 = 历史行为：按路径 open，跟随符号链接，不截断；
  *   2 = 逐级 O_NOFOLLOW、仅普通单链接文件、首块截断（ws_open_beneath）。 */
 #define DBX_WS_RECEIVER_VERSION 2
+/* M39：exec 输出的处理方式。1 = 历史行为（子进程退出后才读管道；输出超过管道容量会卡到超时；
+ * stdout 静默截到 1023 字节）；2 = 边等边读、截断有标记、可按块流式回传（请求带 "streamOutput":true 时）。 */
+#define DBX_EXEC_OUTPUT_VERSION 2
 
 static uint16_t be16(uint16_t x) { return (uint16_t)((x >> 8) | (x << 8)); }
 static uint32_t be32(uint32_t x) { return __builtin_bswap32(x); }
@@ -557,8 +561,8 @@ static int collect_stats_json(char *out, size_t cap) {
     unsigned long long pids_total = cg_read_u64("/sys/fs/cgroup/pids.current", NULL, &pids_found);
 
     if (!cpu_found && !mem_found && !pids_found) {
-        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d}",
-                         DBX_WS_RECEIVER_VERSION);
+        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d}",
+                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION);
         return n > 0 ? n : -1;
     }
 
@@ -618,9 +622,9 @@ static int collect_stats_json(char *out, size_t cap) {
     int n = snprintf(out, cap,
                      "{\"cpuUsageUsec\":%s,\"memoryCurrentBytes\":%s,"
                      "\"memoryMaxBytes\":%s,\"pidsCurrent\":%s,\"pidsMax\":%s,"
-                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d}",
+                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d}",
                      cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups,
-                     DBX_WS_RECEIVER_VERSION);
+                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION);
     return n > 0 ? n : -1;
 #else
     (void)out; (void)cap;
@@ -663,8 +667,70 @@ static int exec_child_main(void *argp) {
     _exit(127);
 }
 
+/* M39：exec 输出流式回传所需的通道上下文（由主循环提供）。 */
+struct exec_stream {
+    int fd;
+    int encrypted;
+    uint64_t *sequence;
+    const uint8_t *request_id;
+};
+static int send_any_frame(int fd, int encrypted, uint16_t kind, uint64_t seq,
+                          const uint8_t *request_id, const void *payload, size_t len);
+static size_t bin_to_hex(const uint8_t *data, size_t len, char *out, size_t cap);
+enum { EXEC_CHUNK_BYTES = 512, EXEC_STREAM_DEFAULT_MAX = 1024 * 1024, EXEC_STREAM_HARD_MAX = 4 * 1024 * 1024 };
+
+/* 解析一个非负整数字段；缺失 / 非法时返回 fallback。 */
+static long exec_parse_long(const char *json, const char *key, long fallback) {
+    const char *k = strstr(json, key);
+    if (!k) return fallback;
+    const char *p = strchr(k, ':');
+    if (!p) return fallback;
+    p++;
+    while (*p == ' ') p++;
+    if (*p < '0' || *p > '9') return fallback;
+    long value = 0;
+    while (*p >= '0' && *p <= '9' && value < (1L << 40)) { value = value * 10 + (*p - '0'); p++; }
+    return value;
+}
+
+/* 一路输出（stdout 或 stderr）的累计状态。 */
+struct exec_sink {
+    int stream_id;          /* 1 = stdout, 2 = stderr */
+    size_t total;           /* 已保留 / 已发送的字节数 */
+    size_t limit;           /* 上限；超过的部分读掉并丢弃（不能不读：否则子进程会卡在 write 上） */
+    int truncated;
+    int send_failed;
+    char *buf;              /* 非流式：保留在这里（容量 limit + 1） */
+};
+
+static void exec_sink_consume(struct exec_sink *sink, const struct exec_stream *st, int streaming,
+                              const uint8_t *data, size_t len) {
+    size_t room = sink->limit > sink->total ? sink->limit - sink->total : 0;
+    size_t keep = len < room ? len : room;
+    if (keep < len) sink->truncated = 1;
+    if (keep == 0) return;
+    if (!streaming) {
+        memcpy(sink->buf + sink->total, data, keep);
+        sink->total += keep;
+        return;
+    }
+    if (sink->send_failed) return;
+    char hex[EXEC_CHUNK_BYTES * 2 + 4];
+    char json[EXEC_CHUNK_BYTES * 2 + 64];
+    size_t hexlen = bin_to_hex(data, keep, hex, sizeof(hex));
+    hex[hexlen] = 0;
+    int n = snprintf(json, sizeof(json), "{\"s\":%d,\"dataHex\":\"%s\"}", sink->stream_id, hex);
+    if (n <= 0 || (size_t)n >= sizeof(json)
+        || send_any_frame(st->fd, st->encrypted, 26, (*st->sequence)++, st->request_id, json, (size_t)n) != 0) {
+        sink->send_failed = 1;
+        return;
+    }
+    sink->total += keep;
+}
+
 /** Run argv via clone/exec with pipes; fill an exitCode/stdout/stderr JSON. */
-static int run_exec_request(const char *request_json, char *response, size_t response_cap) {
+static int run_exec_request(const char *request_json, char *response, size_t response_cap,
+                            const struct exec_stream *st) {
     enum { MAX_ARGV = 32 };
     char storage[1024];
     char *argv[MAX_ARGV];
@@ -766,36 +832,84 @@ static int run_exec_request(const char *request_json, char *response, size_t res
 
     char out_buf[EXEC_MAX_OUTPUT] = {0};
     char err_buf[EXEC_MAX_OUTPUT] = {0};
-    size_t out_len = 0;
 
-    // Bounded wait: check child completion once per 100ms; after the deadline
-    // kill the entire process group and reap deterministically.
+    /* M39：边等边读。此前是「等子进程退出 → 再读管道」：输出超过管道容量（64KB）时子进程卡在 write 上，
+     * 一直等到超时被杀，宿主看到的是一个与输出毫无关系的超时错误。 */
+    int streaming = (st != NULL && strstr(request_json, "\"streamOutput\":true") != NULL);
+    long requested_max = exec_parse_long(request_json, "\"maxOutputBytes\"", EXEC_STREAM_DEFAULT_MAX);
+    if (requested_max < 1) requested_max = 1;
+    if (requested_max > EXEC_STREAM_HARD_MAX) requested_max = EXEC_STREAM_HARD_MAX;
+    struct exec_sink sinks[2] = {
+        { .stream_id = 1, .limit = streaming ? (size_t)requested_max : sizeof(out_buf) - 1, .buf = out_buf },
+        { .stream_id = 2, .limit = streaming ? (size_t)requested_max : sizeof(err_buf) - 1, .buf = err_buf },
+    };
+    int fds[2] = { out_pipe[0], err_pipe[0] };
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(fds[i], F_GETFL, 0);
+        if (fl >= 0) (void)fcntl(fds[i], F_SETFL, fl | O_NONBLOCK);
+    }
+    struct timespec started;
+    clock_gettime(CLOCK_MONOTONIC, &started);
+
     int status = 0;
-    int timed_out = 1;
-    pid_t reaped = 0;
-    for (int i = 0; i < timeout_seconds * 10; i++) {
-        reaped = waitpid(pid, &status, WNOHANG);
-        if (reaped == pid) { timed_out = 0; break; }
-        usleep(100000);
-    }
-    if (timed_out) {
-        kill(-pid, SIGKILL);
-        (void)waitpid(pid, &status, 0);
-    }
-    cgroup_cleanup();
-
+    int timed_out = 0;
+    int child_done = 0;
+    int idle_rounds_after_exit = 0;
     for (;;) {
-        ssize_t n = read(out_pipe[0], out_buf + out_len, sizeof(out_buf) - out_len - 1);
-        if (n <= 0) break;
-        out_len += (size_t)n;
-        if (out_len >= sizeof(out_buf) - 1) break;
+        if (!child_done) {
+            pid_t reaped = waitpid(pid, &status, WNOHANG);
+            if (reaped == pid) {
+                child_done = 1;
+            } else {
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                if (now.tv_sec - started.tv_sec >= timeout_seconds) {
+                    timed_out = 1;
+                    kill(-pid, SIGKILL);
+                    kill(pid, SIGKILL);
+                    (void)waitpid(pid, &status, 0);
+                    child_done = 1;
+                }
+            }
+        }
+        struct pollfd pfd[2];
+        int map[2];
+        int n = 0;
+        for (int i = 0; i < 2; i++) {
+            if (fds[i] < 0) continue;
+            pfd[n].fd = fds[i]; pfd[n].events = POLLIN; pfd[n].revents = 0; map[n] = i; n++;
+        }
+        if (n == 0) {
+            if (child_done) break;
+            usleep(50000);      /* 两路都已 EOF，但子进程还在跑：等它退出或超时 */
+            continue;
+        }
+        int ready = poll(pfd, (nfds_t)n, 100);
+        int got_any = 0;
+        if (ready > 0) {
+            for (int k = 0; k < n; k++) {
+                if (!(pfd[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+                uint8_t chunk[EXEC_CHUNK_BYTES];
+                ssize_t r = read(pfd[k].fd, chunk, sizeof(chunk));
+                if (r > 0) {
+                    got_any = 1;
+                    exec_sink_consume(&sinks[map[k]], st, streaming, chunk, (size_t)r);
+                } else if (r == 0 || (errno != EAGAIN && errno != EINTR)) {
+                    close(fds[map[k]]);
+                    fds[map[k]] = -1;
+                }
+            }
+        }
+        /* 子进程（它是自己 PID 命名空间里的 init）退出后，内核会杀掉该命名空间里的其余进程，管道随之
+         * EOF。保险起见：退出之后连续 5 轮（约 0.5s）没有新数据就不再等。 */
+        if (child_done && !got_any && ++idle_rounds_after_exit >= 5) break;
+        if (got_any) idle_rounds_after_exit = 0;
     }
+    for (int i = 0; i < 2; i++) if (fds[i] >= 0) close(fds[i]);
+    cgroup_cleanup();
+    size_t out_len = streaming ? 0 : sinks[0].total;
     out_buf[out_len] = 0;
-    char discard[256];
-    while (read(out_pipe[0], discard, sizeof(discard)) > 0) {}
-    ssize_t n = read(err_pipe[0], err_buf, sizeof(err_buf) - 1);
-    if (n > 0) err_buf[n] = 0;
-    close(out_pipe[0]); close(err_pipe[0]);
+    err_buf[streaming ? 0 : sinks[1].total] = 0;
 
     int exit_code = 0;
     if (timed_out) exit_code = -2;
@@ -808,14 +922,24 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     json_escape(out_buf, out_len, esc_out, sizeof(esc_out));
     size_t err_len = err_buf[0] ? strlen(err_buf) : 0;
     json_escape(err_buf, err_len, esc_err, sizeof(esc_err));
+    /* 附加字段：旧宿主的解码器会忽略不认识的键。 */
+    char extra[224];
+    snprintf(extra, sizeof(extra),
+        ",\"outputVersion\":%d,\"chunked\":%s,\"stdoutBytes\":%lu,\"stderrBytes\":%lu,"
+        "\"stdoutTruncated\":%s,\"stderrTruncated\":%s,\"timedOut\":%s,\"streamError\":%s",
+        DBX_EXEC_OUTPUT_VERSION, streaming ? "true" : "false",
+        (unsigned long)sinks[0].total, (unsigned long)sinks[1].total,
+        sinks[0].truncated ? "true" : "false", sinks[1].truncated ? "true" : "false",
+        timed_out ? "true" : "false",
+        (sinks[0].send_failed || sinks[1].send_failed) ? "true" : "false");
     if (timed_out) {
         return snprintf(response, response_cap,
-            "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"exec timed out; process group killed\"}",
-            exit_code, esc_out);
+            "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"exec timed out; process group killed\"%s}",
+            exit_code, esc_out, extra);
     }
     return snprintf(response, response_cap,
-        "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"%s\"}",
-        exit_code, esc_out, esc_err);
+        "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"%s\"%s}",
+        exit_code, esc_out, esc_err, extra);
 }
 
 static int send_frame_ex(int fd, uint16_t kind, uint64_t sequence,
@@ -1509,8 +1633,16 @@ reconnect:
 
             if (kind == 4) {
                 char rjson[4096];
-                int rlen = run_exec_request((const char *)(incoming + 36), rjson, sizeof(rjson));
+                struct exec_stream stream = { .fd = fd, .encrypted = record_mode,
+                                              .sequence = &response_sequence, .request_id = request_id };
+                int rlen = run_exec_request((const char *)(incoming + 36), rjson, sizeof(rjson), &stream);
                 if (rlen <= 0) continue;
+                /* snprintf 返回的是「本应写入的长度」：转义后的输出放不进一帧时，不能把越界的长度交给发送
+                 * （此前会发送失败且不应答，宿主只能等到超时）。 */
+                if ((size_t)rlen >= sizeof(rjson)) {
+                    rlen = snprintf(rjson, sizeof(rjson),
+                        "{\"exitCode\":-1,\"stdout\":\"\",\"stderr\":\"exec response too large for one frame\"}");
+                }
                 (void)send_any_frame(fd, record_mode, 5, response_sequence++, request_id, rjson, (size_t)rlen);
             } else if (kind == 9) {
                 char argv_storage[1024];

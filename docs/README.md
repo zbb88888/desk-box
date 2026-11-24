@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M39 exec 的输出](design/m39-exec-output.md)：管道死锁、1023 字节静默截断、退出码被改写——修复与对旧 guest 的提示。
 - [M38 guest 候选](design/m38-guest-candidate.md)：正式构建的 guest 候选在全量 E2E 上的验证；带备份 / 回滚的安装脚本。
 - [M37 workspace 同步的边界](design/m37-workspace-sync-boundary.md)：INV-05 的真机证据；宿主 TOCTOU、guest 接收端跟随符号链接（guest 内提权）及其修复与宿主闸门。
 - [M36 E2E 证据化](design/m36-e2e-evidence.md)：`e2e-all.sh` 产出机器可读证据并按安全不变量汇总；安全验证矩阵 §2.1 由证据文件生成。

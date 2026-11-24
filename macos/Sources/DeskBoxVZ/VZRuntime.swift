@@ -26,6 +26,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var lastExecResponse: ControlFrame?
         var lastDecodedExecResponse: ControlResponse?
         var pendingExecRequestID: UUID?
+        /// M39：当前 exec 的输出块汇总（只接受 requestID 与 pendingExecRequestID 相同的块）。
+        var execAssembler: ExecOutputAssembler?
         var lastStatsFrame: ControlFrame?
         var lastDecodedStats: SandboxStats?
         var pendingStatsRequestID: UUID?
@@ -719,6 +721,22 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func execute(_ handle: SandboxHandle, request: ControlRequest) async throws -> ControlResponse {
+        try await runExec(handle, request: request).response
+    }
+
+    /// M39：执行并取回完整输出。请求 guest 流式回传（新 guest：每路最多 `maxOutputBytes`，超出有标记；
+    /// 旧 guest：忽略该请求，按老办法单帧应答，结果里会带「可能被截断」的提示）。
+    public func executeCollectingOutput(_ handle: SandboxHandle, request: ControlRequest,
+                                        maxOutputBytes: Int = ExecOutputPolicy.defaultMaxBytes) async throws -> ExecResult {
+        var streaming = request
+        streaming.streamOutput = true
+        streaming.maxOutputBytes = maxOutputBytes
+        let (response, assembler) = try await runExec(handle, request: streaming)
+        return assembler.finish(response)
+    }
+
+    private func runExec(_ handle: SandboxHandle, request: ControlRequest) async throws
+        -> (response: ControlResponse, assembler: ExecOutputAssembler) {
         // M2-2: 允许 echo/sh 诊断与 /workspace 下经策略同步的可执行面。
         guard let first = request.argv.first else {
             throw SandboxFailure(.bootstrapProofMissing, "exec argv 不可为空")
@@ -750,6 +768,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             let requestID = UUID()
             let frame = try ControlFrame(kind: .request, sequence: record.nextRequestSequence(), requestID: requestID, payload: payload)
             record.pendingExecRequestID = requestID
+            record.execAssembler = ExecOutputAssembler(maxBytes: request.maxOutputBytes ?? ExecOutputPolicy.defaultMaxBytes)
             // Drop the previous response so a new request can never read stale output.
             record.lastDecodedExecResponse = nil
             record.lastExecResponse = nil
@@ -762,18 +781,24 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 throw error
             }
         }
-        let deadline = Date().addingTimeInterval(TimeInterval(request.timeoutSeconds ?? 10))
+        // M39：超时由 guest 执行（杀进程组并应答 exit -2）。宿主多等一会儿，让 guest 的结论先到；
+        // 此前两边同时到点，用户看到的是含糊的「exec response timeout」而不是「命令超时」。
+        let timeout = request.timeoutSeconds ?? 10
+        let deadline = Date().addingTimeInterval(TimeInterval(timeout + ExecOutputPolicy.responseGraceSeconds))
         while true {
-            let response = try await onQueue { () -> (payload: ControlResponse, requestID: UUID)? in
+            let response = try await onQueue { () -> (ControlResponse, ExecOutputAssembler)? in
                 let record = try self.require(handle)
                 guard let decoded = record.lastDecodedExecResponse,
                       let responseFrame = record.lastExecResponse,
                       responseFrame.requestID == record.pendingExecRequestID else { return nil }
-                return (decoded, responseFrame.requestID)
+                let assembler = record.execAssembler ?? ExecOutputAssembler()
+                record.execAssembler = nil
+                return (decoded, assembler)
             }
-            if let response { return response.payload }
+            if let response { return response }
             if Date() >= deadline {
-                throw SandboxFailure(.bootstrapProofMismatch, "exec response timeout")
+                throw SandboxFailure(.bootstrapProofMismatch,
+                                     "exec response timeout（guest 在命令超时 \(timeout)s 之后的 \(ExecOutputPolicy.responseGraceSeconds)s 内仍未应答）")
             }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -1418,6 +1443,14 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 record.lastDecodedExecResponse = response
             }
             self.recordAudit(record, action: .channelEvent, decision: .allow())
+            return
+        }
+        if frame.kind == .execOutput {
+            // 只接受当前在途 exec 的块；其它的（迟到的、伪造 requestID 的）丢弃。
+            if frame.requestID == record.pendingExecRequestID,
+               let chunk = try? JSONDecoder().decode(ExecOutputChunk.self, from: frame.payload) {
+                record.execAssembler?.append(chunk)
+            }
             return
         }
         if frame.kind == .statsResponse {

@@ -68,3 +68,25 @@ private final class WorkloadFlagProbe: @unchecked Sendable {
     var started: Bool { lock.lock(); defer { lock.unlock() }; return value }
     func mark() { lock.lock(); value = true; lock.unlock() }
 }
+
+/// M39：exec 的退出码传递。
+final class ExecExitStatusTests: XCTestCase {
+    func testGuestExitCodeIsPassedThrough() {
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 0), 0)
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 1), 1)
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 7), 7)
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 137), 137)
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 255), 255)
+    }
+
+    func testInternalNegativeCodesFollowTheShellConvention() {
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: -2), 254, "超时")
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: -1), 255, "未能启动")
+    }
+
+    func testNonZeroNeverBecomesZero() {
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 256), 1)
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: -256), 1)
+        XCTAssertEqual(ExecExitStatus.processStatus(forGuestExitCode: 512), 1)
+    }
+}

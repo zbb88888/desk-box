@@ -87,6 +87,9 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     case statsRequest = 24
     /// Guest -> host: 资源统计响应（M21）。payload 为 SandboxStats JSON。
     case statsResponse = 25
+    /// Guest -> host: exec 输出块（M39）。payload 为 ExecOutputChunk JSON；requestID 与 exec 请求相同。
+    /// 只有请求带 `streamOutput: true` 时 guest 才会发送。
+    case execOutput = 26
 }
 
 /// M21：guest cgroup v2 采样（只读、诊断用途，不构成安全边界）。
@@ -107,6 +110,9 @@ public struct SandboxStats: Sendable, Codable, Equatable {
     /// M37：guest 的 workspace 接收端版本。旧 guest 不上报（nil，按 1 处理）；
     /// 2 起逐级 O_NOFOLLOW、首块截断。宿主据此决定是否允许「workload 运行之后」的再次同步。
     public let workspaceSyncVersion: Int?
+    /// M39：guest 的 exec 输出处理版本。旧 guest 不上报（nil → 1：输出静默截到 1023 字节、
+    /// 超过 64KB 会卡到超时）；2 起边等边读、截断有标记、支持流式回传。
+    public var execOutputVersion: Int? = nil
 
     public init(cpuUsageUsec: UInt64?, memoryCurrentBytes: UInt64?, memoryMaxBytes: UInt64?,
                 pidsCurrent: Int?, pidsMax: Int?, activeExecGroups: Int? = nil,
@@ -211,6 +217,11 @@ public struct ControlRequest: Sendable, Codable, Equatable {
     public let env: [String: String]?
     public let cwd: String?
     public let timeoutSeconds: Int?
+    /// M39：请求 guest 把输出按块流式回传（`execOutput` 帧），而不是塞进单个应答帧。
+    /// 旧 guest 不认识这个字段，会按老办法应答——宿主靠应答里的 `chunked` 区分。
+    public var streamOutput: Bool? = nil
+    /// M39：每一路输出（stdout / stderr 各自）最多保留多少字节；超过的部分 guest 读掉并丢弃。
+    public var maxOutputBytes: Int? = nil
 
     public init(kind: Kind, argv: [String], env: [String: String]? = nil, cwd: String? = nil, timeoutSeconds: Int? = nil) {
         self.kind = kind
@@ -225,6 +236,18 @@ public struct ControlResponse: Sendable, Codable, Equatable {
     public let exitCode: Int32
     public let stdout: String
     public let stderr: String
+    // ---- M39：以下字段旧 guest 不发送（全为 nil） ----
+    /// guest 的 exec 输出处理版本（见 SandboxStats.execOutputVersion）。
+    public var outputVersion: Int? = nil
+    /// true = 输出已通过 `execOutput` 帧送达，本应答里的 stdout 为空。
+    public var chunked: Bool? = nil
+    public var stdoutBytes: Int? = nil
+    public var stderrBytes: Int? = nil
+    public var stdoutTruncated: Bool? = nil
+    public var stderrTruncated: Bool? = nil
+    public var timedOut: Bool? = nil
+    /// guest 在发送输出块时失败（输出不完整）。
+    public var streamError: Bool? = nil
 
     public init(exitCode: Int32, stdout: String, stderr: String) {
         self.exitCode = exitCode
