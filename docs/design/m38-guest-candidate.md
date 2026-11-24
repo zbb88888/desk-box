@@ -51,6 +51,7 @@ MANIFEST=$PWD/guest-candidate/manifest.json ./scripts/e2e-all.sh          # 全�
 ## 4. 顺手修的
 
 - `build-alpine-guest.sh` 把开发私钥拷进输出目录时用的是默认权限（0644）；输出目录在 `/tmp` 时等于把私钥放在他人可读的地方。改为 0600。
+- **`security-corpus-canary.sh` 会往真实的 `guest/` 目录里写文件**（上一轮注意到 `guest/` 的修改时间在全量 E2E 后变了，本轮查清）：它把 canary 凭据写到「manifest 所在目录」再恢复，中途被 SIGKILL 就会留下，而且那个目录可能正被你自己的 daemon 使用。现在它把 manifest 和资产克隆到本次运行的临时目录再注入；全量 E2E 前后 `guest/` 的修改时间不再变化。卫生审计此前没有覆盖 `guest/` 目录，所以没报。
 - `e2e-guest-install.sh` 用 `e2e_build_sign` 而不是裸的 `swift build`：重新链接会丢掉代码签名，之后带 `E2E_SKIP_BUILD=1` 跑的 VM 套件会因缺 entitlement 失败（本轮自己踩到了）。`e2e-release-cli.sh` 仍有同样的隐患（它要在没有 guest 资产的 CI 上跑，不能直接换），单独运行它之后请不要带 `E2E_SKIP_BUILD=1`。
 
 ## 5. 诚实边界
@@ -61,5 +62,6 @@ MANIFEST=$PWD/guest-candidate/manifest.json ./scripts/e2e-all.sh          # 全�
 - 安装脚本「不重启 daemon」意味着：你正在运行的 GUI daemon 里已有的沙箱继续用旧字节；它之后新建的沙箱读到的是新资产。App bundle（`gui/dist/DeskBox.app`）里如果自带一份 guest 资产，那一份不会被更新——没有检查过它是否自带。
 - 安装不是跨文件原子的：两个文件的 rename 之间有一个极短的窗口，此时目录里是新旧混合；这时启动沙箱会因摘要不符被拒绝（fail-closed），不会带着错的资产启动。没有测试这个窗口。
 - W11 的竞争是「尽力而为」的：40 次同步里只有一部分撞上符号链接状态；它不能证明没有更窄的窗口，安全性的依据仍是逐级 `O_NOFOLLOW` 的设计。
+- 候选是在 `build-alpine-guest.sh` 的私钥权限修改**之前**构建的，它的 SBOM 记录的是当时那份构建脚本的摘要；产物字节不受那一行改动影响。
 - guest 侧 exec kill（原 M29）没有做。
 - 宿主锁屏：9 项依赖 resume 的断言仍未验证。

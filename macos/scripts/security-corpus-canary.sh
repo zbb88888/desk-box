@@ -16,7 +16,19 @@ JSON_MODE=0
 e2e_init canary
 e2e_build_sign
 cd "$E2E_ROOT"
-CRED_FILE="${CRED_FILE:-$(dirname "$MANIFEST")/broker-credentials.local}"
+# M38：凭据文件的位置是「manifest 所在目录」。此前这里直接往真实的 guest/ 目录里写 canary 凭据再恢复——
+# 测试中途被 SIGKILL 就会把它留在那里，而且同一目录可能正被用户自己的 daemon 使用。
+# 现在把 manifest 和它引用的资产克隆（APFS clone，不占空间）到本次运行的临时目录，在那里注入。
+if [ -z "${CRED_FILE:-}" ]; then
+  SRC_GUEST="$(dirname "$MANIFEST")"
+  mkdir -p "$E2E_WORK/guest"
+  cp "$MANIFEST" "$E2E_WORK/guest/manifest.json"
+  for asset in $(python3 -c "import json,sys;print(' '.join(json.load(open(sys.argv[1]))['fileDigests']))" "$MANIFEST"); do
+    cp -c "$SRC_GUEST/$asset" "$E2E_WORK/guest/$asset" 2>/dev/null || cp "$SRC_GUEST/$asset" "$E2E_WORK/guest/$asset"
+  done
+  MANIFEST="$E2E_WORK/guest/manifest.json"
+  CRED_FILE="$E2E_WORK/guest/broker-credentials.local"
+fi
 pass() { PASS=$((PASS+1)); [ "$JSON_MODE" = "1" ] || printf '[canary] PASS: %s\n' "$1"; }
 
 CANARY="DBXCANARY$(date +%s)$RANDOM"
