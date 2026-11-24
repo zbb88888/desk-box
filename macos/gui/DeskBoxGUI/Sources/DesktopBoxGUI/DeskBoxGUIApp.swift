@@ -58,6 +58,10 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
     @Published var errorText: String? = nil
     /// 一次性 exec 的输出（移入 viewModel：exec 必须离主线程，@State 不便跨线程回写）。
     @Published var execOutput: String = ""
+    /// M41：正在执行 exec 的沙箱（nil = 没有在途的 exec）；Cancel 按钮据此启用。
+    @Published var execRunningSandboxId: String?
+    /// M41：最近一次取消请求的结果说明。
+    @Published var execCancelNote: String = ""
 
     let client: DaemonSocketClient
 
@@ -163,12 +167,15 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
         let client = self.client
         let timeout = Self.timeoutSeconds(forKind: "exec")
         execOutput = "running…"
+        execRunningSandboxId = sandboxId
+        execCancelNote = ""
         DispatchQueue.global().async {
             let result: Result<DaemonResponse, Error>
             do { result = .success(try client.send(request, timeoutSec: timeout)) }
             catch { result = .failure(error) }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    self.execRunningSandboxId = nil
                     switch result {
                     case .success(let resp):
                         self.execOutput = ExecOutputText.render(exitCode: resp.exitCode, stdout: resp.stdout,
@@ -181,6 +188,39 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
                         }
                     }
                     completion?(result)
+                }
+            }
+        }
+    }
+
+    /// M41：「Cancel」——取消正在运行的那条命令。结果写入 `execCancelNote`
+    ///（成功时命令本身的结果会照常出现在 `execOutput` 里，带着取消之前的输出）。
+    func cancelExec(completion: (@MainActor @Sendable (Bool) -> Void)? = nil) {
+        guard let sandboxId = execRunningSandboxId else {
+            execCancelNote = "没有正在运行的命令"
+            MainActor.assumeIsolated { completion?(false) }
+            return
+        }
+        var building = DaemonRequest(kind: "execCancel")
+        building.sandboxId = sandboxId
+        let request = building
+        let client = self.client
+        execCancelNote = "正在取消…"
+        DispatchQueue.global().async {
+            let result: Result<DaemonResponse, Error>
+            do { result = .success(try client.send(request, timeoutSec: 15)) }
+            catch { result = .failure(error) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    switch result {
+                    case .success(let resp):
+                        self.execCancelNote = resp.stdout ?? "exec cancelled"
+                        completion?(true)
+                    case .failure(let error):
+                        let shown = DaemonErrorPresenter.present(error)
+                        self.execCancelNote = "\(shown.logLine)\n\(shown.detail)"
+                        completion?(false)
+                    }
                 }
             }
         }

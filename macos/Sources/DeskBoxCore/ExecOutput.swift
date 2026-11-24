@@ -23,6 +23,8 @@ public struct ExecResult: Sendable, Equatable {
     /// 输出**可能**被截断：旧 guest 不报告截断，但某一路输出的长度达到了它的固定上限。
     public var possiblyTruncated = false
     public var timedOut = false
+    /// M41：命令被取消（guest 已杀掉进程组）；stdout / stderr 是取消之前的输出。
+    public var cancelled = false
     /// 输出不完整的其它原因（块丢失 / 字节数对不上 / guest 发送失败）。nil = 没有问题。
     public var integrityProblem: String?
     /// guest 的 exec 输出处理版本（1 = 旧 guest）。
@@ -99,6 +101,7 @@ public struct ExecOutputAssembler: Sendable {
             result.stdoutTruncated = response.stdoutTruncated ?? false
             result.stderrTruncated = response.stderrTruncated ?? false
             result.timedOut = response.timedOut ?? (response.exitCode == -2)
+            result.cancelled = response.cancelled ?? false
             if version < 2 {
                 result.possiblyTruncated = response.stdout.utf8.count >= ExecOutputPolicy.legacyStdoutCap
                     || response.stderr.utf8.count >= ExecOutputPolicy.legacyStdoutCap
@@ -115,6 +118,7 @@ public struct ExecOutputAssembler: Sendable {
         result.stdoutTruncated = (response.stdoutTruncated ?? false) || hostTruncatedStdout
         result.stderrTruncated = (response.stderrTruncated ?? false) || hostTruncatedStderr
         result.timedOut = response.timedOut ?? false
+        result.cancelled = response.cancelled ?? false
         // guest 自己的说明（例如超时提示）接在收到的 stderr 之后。
         if !response.stderr.isEmpty {
             if !result.stderr.isEmpty, !result.stderr.hasSuffix("\n") { result.stderr += "\n" }

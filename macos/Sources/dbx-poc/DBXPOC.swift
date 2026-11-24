@@ -71,6 +71,10 @@ struct DBXPOC {
             case "run":   try daemonRunCli(args: Array(args.dropFirst()))
             case "ps":    try daemonPsCli(args: Array(args.dropFirst()))
             case "exec":  try daemonExecCli(args: Array(args.dropFirst()))
+            case "exec-cancel":
+                let inv = try DaemonCLI.single(Array(args.dropFirst()), spec: DaemonCLISpecs.execCancel, kind: "execCancel")
+                let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+                print(response.stdout ?? "exec cancelled")
             case "stop":  try daemonStopCli(args: Array(args.dropFirst()))
             case "rm":    try daemonRmCli(args: Array(args.dropFirst()))
             case "shutdown": try daemonShutdownCli(args: Array(args.dropFirst()))
@@ -849,11 +853,20 @@ private extension DBXPOC {
 
     static func daemonExecCli(args: [String]) throws {
         let inv = try DaemonCLI.exec(args)
+        // M41：Ctrl-C / SIGTERM → 请求 guest 取消这条命令，然后照常等应答（带回取消之前的输出）。
+        // guest 不支持取消（旧资产）或取消失败时退回原来的行为：客户端立刻退出，命令在 guest 里跑到结束 / 超时。
+        let interrupt = ExecInterruptHandler(sandboxId: inv.request.sandboxId, domain: inv.request.domain, sock: inv.sock)
+        interrupt.install()
         let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
+        interrupt.uninstall()
         if let out = response.stdout { print(out, terminator: "") }
         if let err = response.stderr, !err.isEmpty { fputs(err + (err.hasSuffix("\n") ? "" : "\n"), stderr) }
         // M39：截断 / 不完整必须让调用方知道（此前 stdout 被静默截到 1023 字节，退出码照样是 0）。
         for notice in response.notices ?? [] { fputs("dbx-poc: 注意：\(notice)\n", stderr) }
+        // 被自己的 Ctrl-C 取消：按 shell 的约定以 128 + 信号退出。
+        if response.cancelled == true, let signal = interrupt.receivedSignal {
+            throw CLIError.exit(128 + Int(signal))
+        }
         if response.exitCode ?? 1 != 0 {
             throw CLIError.exit(Int(response.exitCode ?? 1))
         }

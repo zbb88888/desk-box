@@ -277,6 +277,12 @@ step_ok daemon-connected && pass "G10 GUI 自动拉起的 daemon 已连接" || f
 step_ok run && step_ok listed-running && pass "G10 Run New Sandbox：真实 VM 引导完成并出现在列表（$(step_detail run)）" || fail "G10 run 未完成"
 step_ok exec-quoted && pass "G10 Exec：带引号的命令行在 guest 内正确执行（/bin/sh -c 'echo flow-ok; id -u' → uid 65534）" || fail "G10 exec 失败：$(step_detail exec-quoted)"
 step_ok exec-bad-quoting-rejected && pass "G10 Exec：引号未闭合的命令行在本地被拒" || fail "G10 非法命令行未被拒"
+case "$(step_detail exec-cancel)" in
+  cancelled)    step_ok exec-cancel && pass "G10 Cancel：在途的命令被取消，输出里保留了取消之前的内容" || fail "G10 Cancel 失败" ;;
+  unsupported*) step_ok exec-cancel && pass "G10 Cancel：旧 guest 不支持取消 → 界面显示可读原因，命令照常跑完" || fail "G10 Cancel（旧 guest）异常" ;;
+  *)            fail "G10 Cancel 步骤缺失或失败：$(step_detail exec-cancel)" ;;
+esac
+step_ok exec-cancel-idle && pass "G10 命令结束后 Cancel 恢复为不可用" || fail "G10 Cancel 状态未复位：$(step_detail exec-cancel-idle)"
 step_ok rejection-keeps-daemon-connected && pass "G10 被 daemon 拒绝的请求显示可读原因，daemon 状态保持 connected" || fail "G10 拒绝处理异常：$(step_detail rejection-keeps-daemon-connected)"
 step_ok pty-roundtrip-1 && pass "G10 Terminal：PTY 打开 → 输入 → 看到输出（$(step_detail pty-roundtrip-1)），输出里没有转义/控制字符" || fail "G10 PTY 失败：$(grep 'pty-' "$E2E_WORK/flow.out" | tail -1)"
 step_ok pty-roundtrip-2 && pass "G10 Terminal：关闭后再次打开仍可用（$(step_detail pty-roundtrip-2)）" || fail "G10 PTY 关闭后无法再次打开：$(grep 'pty-' "$E2E_WORK/flow.out" | tail -1)"

@@ -90,6 +90,9 @@ public enum ControlMessageKind: UInt16, Sendable, Codable {
     /// Guest -> host: exec 输出块（M39）。payload 为 ExecOutputChunk JSON；requestID 与 exec 请求相同。
     /// 只有请求带 `streamOutput: true` 时 guest 才会发送。
     case execOutput = 26
+    /// Host -> guest: 取消在途的 exec（M41）。requestID 必须与那条 exec 请求相同；payload 为空对象。
+    /// 旧 guest 不认识这个类型，会在 exec 结束后把它当作未知帧忽略。
+    case execCancel = 27
 }
 
 /// M21：guest cgroup v2 采样（只读、诊断用途，不构成安全边界）。
@@ -113,6 +116,8 @@ public struct SandboxStats: Sendable, Codable, Equatable {
     /// M39：guest 的 exec 输出处理版本。旧 guest 不上报（nil → 1：输出静默截到 1023 字节、
     /// 超过 64KB 会卡到超时）；2 起边等边读、截断有标记、支持流式回传。
     public var execOutputVersion: Int? = nil
+    /// M41：guest 是否支持取消在途 exec（nil / 0 = 不支持）。
+    public var execCancelVersion: Int? = nil
 
     public init(cpuUsageUsec: UInt64?, memoryCurrentBytes: UInt64?, memoryMaxBytes: UInt64?,
                 pidsCurrent: Int?, pidsMax: Int?, activeExecGroups: Int? = nil,
@@ -248,6 +253,8 @@ public struct ControlResponse: Sendable, Codable, Equatable {
     public var timedOut: Bool? = nil
     /// guest 在发送输出块时失败（输出不完整）。
     public var streamError: Bool? = nil
+    /// M41：命令被取消（宿主请求，或控制通道断开），进程组已被杀。
+    public var cancelled: Bool? = nil
 
     public init(exitCode: Int32, stdout: String, stderr: String) {
         self.exitCode = exitCode

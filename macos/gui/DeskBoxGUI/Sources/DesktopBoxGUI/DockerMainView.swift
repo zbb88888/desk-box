@@ -189,9 +189,17 @@ struct DockerMainView: View {
                     .textFieldStyle(.roundedBorder).frame(width: 220)
                 TextField("commandline, e.g. /bin/echo hello", text: $execCommand)
                     .textFieldStyle(.roundedBorder)
-                Button("Exec") { exec() }.disabled(execSandboxId.isEmpty || execCommand.isEmpty)
+                Button("Exec") { exec() }
+                    .disabled(execSandboxId.isEmpty || execCommand.isEmpty || viewModel.execRunningSandboxId != nil)
+                Button("Cancel") { viewModel.cancelExec() }
+                    .disabled(viewModel.execRunningSandboxId == nil)
+                    .help("取消正在运行的命令（需要较新的 guest 资产）")
             }
             .padding(.horizontal)
+            if !viewModel.execCancelNote.isEmpty {
+                Text(viewModel.execCancelNote).font(.caption).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal)
+            }
             if !viewModel.execOutput.isEmpty {
                 ScrollView {
                     Text(viewModel.execOutput).font(.system(.caption, design: .monospaced))

@@ -5,6 +5,8 @@
   pty_client.py <sock> roundtrip <sandbox-id> <标记>   → 打开、echo 标记、读到后关闭；成功打印 OK
   pty_client.py <sock> spawn <sandbox-id> <命令行>      → 打开、送入一行命令、保持会话打开；打印 ptySessionId
   pty_client.py <sock> close <ptySessionId>            → 关闭会话
+  pty_client.py <sock> input <ptySessionId> <一行>      → 向已打开的会话送入一行
+  pty_client.py <sock> expect <ptySessionId> <标记> [秒] → 轮询输出直到出现标记；成功打印 OK
 """
 import json, socket, sys
 
@@ -27,6 +29,22 @@ def main():
     if action == "close":
         res = req(sock, {"kind": "ptyClose", "ptySessionId": sid})
         print("OK" if res.get("ok") else "FAIL:close:%s" % (res.get("error") or res)); return 0 if res.get("ok") else 1
+    if action == "input":
+        res = req(sock, {"kind": "ptyInput", "ptySessionId": sid, "dataHex": (sys.argv[4] + "\n").encode().hex()})
+        print("OK" if res.get("ok") else "FAIL:input:%s" % (res.get("error") or res)); return 0 if res.get("ok") else 1
+    if action == "expect":
+        import time
+        marker = sys.argv[4]; deadline = time.time() + float(sys.argv[5] if len(sys.argv) > 5 else 8)
+        out = ""
+        while time.time() < deadline:
+            res = req(sock, {"kind": "ptyPoll", "ptySessionId": sid, "waitMillis": 300})
+            if res.get("outputHex"):
+                out += bytes.fromhex(res["outputHex"]).decode(errors="replace")
+            if marker in out:
+                print("OK"); return 0
+            if not res.get("ok"):
+                break
+        print("FAIL:expect:%s" % out[-160:].replace("\n", " ")); return 1
     opened = req(sock, {"kind": "ptyOpen", "sandboxId": sid, "argv": ["/bin/ash", "-l"]})
     sess = opened.get("ptySessionId")
     if not sess:

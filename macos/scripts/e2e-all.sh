@@ -36,6 +36,8 @@ SUITES=(
   "m37-workspace-patched:e2e-workspace-sync-patched.sh:INV-05,INV-08"
   "m39-exec-output:e2e-exec-output.sh:INV-08"
   "m39-exec-output-patched:e2e-exec-output-patched.sh:INV-08"
+  "m41-exec-cancel:e2e-exec-cancel.sh:INV-08"
+  "m41-exec-cancel-patched:e2e-exec-cancel-patched.sh:INV-08"
   "m20-persistence:e2e-lifecycle-persistence.sh:INV-10"
   "m20b-fault-injection:e2e-fault-injection.sh:INV-08,INV-10"
   "m21-stats:e2e-resource-stats.sh:INV-08"

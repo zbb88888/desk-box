@@ -12,7 +12,7 @@ import Foundation
 /// - `DBX-DOMAIN-SESSION-MISMATCH: …`
 /// - `ptyOpen: sandbox already has an active pty session`
 enum DaemonRoute: String, CaseIterable, Sendable {
-    case run, ps, exec, stop, rm
+    case run, ps, exec, execCancel, stop, rm
     case ptyOpen, ptyInput, ptyPoll, ptyClose
     case wsSync, consoleLog, stats, suspend, resume, restart, shutdown
 }
@@ -51,6 +51,8 @@ enum DaemonDecision {
         case .exec:
             try requireSession(request, op: "exec", state: state)
             guard let argv = request.argv, !argv.isEmpty else { throw CLIError.usage("exec: argv required") }
+        case .execCancel:
+            try requireSession(request, op: "execCancel", state: state)
         case .stop:
             try requireSession(request, op: "stop", state: state)
         case .rm:

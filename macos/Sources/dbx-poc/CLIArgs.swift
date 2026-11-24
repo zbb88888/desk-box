@@ -170,6 +170,8 @@ enum DaemonCLISpecs {
     static let restart = single("restart")
     static let console = single("console")
     static let suspend = single("suspend")
+    /// M41：取消沙箱里在途的 exec。
+    static let execCancel = single("exec-cancel")
     static let resume = single("resume")
 
     static let rm = CLISpec(
@@ -194,5 +196,5 @@ enum DaemonCLISpecs {
                 positionals: ["sandbox id"], valueOptions: [sock, domain])
     }
 
-    static let all: [CLISpec] = [run, ps, exec, stop, restart, console, suspend, resume, rm, stats, wsSync, shutdown, daemon, sweep]
+    static let all: [CLISpec] = [run, ps, exec, execCancel, stop, restart, console, suspend, resume, rm, stats, wsSync, shutdown, daemon, sweep]
 }

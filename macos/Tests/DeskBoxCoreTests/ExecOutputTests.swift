@@ -90,6 +90,29 @@ final class ExecOutputTests: XCTestCase {
         XCTAssertNil(result.integrityProblem)
     }
 
+    func testCancelledExecKeepsOutputProducedBeforeTheCancel() throws {
+        var a = ExecOutputAssembler()
+        a.append(ExecOutputChunk(s: 1, dataHex: hex("started\n")))
+        var response = chunked(exit: -3, out: 8, err: 0, stderr: "exec cancelled; process group killed")
+        response.cancelled = true
+        let result = a.finish(response)
+        XCTAssertTrue(result.cancelled)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.stdout, "started\n")
+        XCTAssertEqual(result.stderr, "exec cancelled; process group killed")
+        XCTAssertEqual(result.exitCode, -3)
+        XCTAssertEqual(result.notices, [])
+        // 线上格式
+        let decoded = try JSONDecoder().decode(ControlResponse.self, from: Data(
+            #"{"exitCode":-3,"stdout":"","stderr":"exec cancelled; process group killed","chunked":true,"cancelled":true}"#.utf8))
+        XCTAssertEqual(decoded.cancelled, true)
+        XCTAssertEqual(ControlMessageKind.execCancel.rawValue, 27)
+        let stats = try JSONDecoder().decode(SandboxStats.self, from: Data(#"{"execCancelVersion":1}"#.utf8))
+        XCTAssertEqual(stats.execCancelVersion, 1)
+        XCTAssertNil(ExecOutputAssembler().finish(ControlResponse(exitCode: 0, stdout: "", stderr: "")).integrityProblem)
+        XCTAssertFalse(ExecOutputAssembler().finish(ControlResponse(exitCode: 0, stdout: "", stderr: "")).cancelled)
+    }
+
     // ---- 旧 guest（单帧应答，没有任何新字段） ----
 
     func testLegacyGuestShortOutputHasNoNotice() {

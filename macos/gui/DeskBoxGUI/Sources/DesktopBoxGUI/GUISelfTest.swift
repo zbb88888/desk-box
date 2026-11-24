@@ -277,6 +277,39 @@ final class GUISelfTest: @unchecked Sendable {
         }
         step("exec-bad-quoting-rejected", true)
 
+        // 3b2) Cancel：命令在途时 Cancel 可用；按下之后的结果取决于 guest——
+        //      新 guest → 命令被取消（输出里有取消之前的内容）；旧 guest → 界面给出可读原因，命令照常跑完。
+        //      两者都是正确行为；空闲时 Cancel 不可用。
+        guard viewModel.execRunningSandboxId == nil else { return step("exec-cancel", false, "空闲时 execRunningSandboxId 非空") }
+        async let longRunning = exec(id, "/bin/sh -c 'echo cancel-me; sleep 4; echo ran-to-end'")
+        var waited = 0
+        while viewModel.execRunningSandboxId == nil, waited < 40 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            waited += 1
+        }
+        guard viewModel.execRunningSandboxId == id else { _ = await longRunning; return step("exec-cancel", false, "命令在途时 Cancel 未启用") }
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        let cancelAccepted: Bool = await withCheckedContinuation { continuation in
+            viewModel.cancelExec { ok in continuation.resume(returning: ok) }
+        }
+        _ = await longRunning
+        let afterCancel = viewModel.execOutput
+        if cancelAccepted {
+            guard viewModel.execCancelNote == "exec cancelled", afterCancel.contains("cancel-me"),
+                  afterCancel.contains("exec cancelled"), !afterCancel.contains("ran-to-end") else {
+                return step("exec-cancel", false, "note=\(viewModel.execCancelNote) out=\(afterCancel)")
+            }
+            step("exec-cancel", true, "cancelled")
+        } else {
+            guard viewModel.execCancelNote.contains("无法取消"), afterCancel.contains("exit=0"),
+                  afterCancel.contains("ran-to-end"), daemonManager.status == .connected else {
+                return step("exec-cancel", false, "note=\(viewModel.execCancelNote) out=\(afterCancel)")
+            }
+            step("exec-cancel", true, "unsupported: \(viewModel.execCancelNote.prefix(60))")
+        }
+        guard viewModel.execRunningSandboxId == nil else { return step("exec-cancel-idle", false, "结束后 Cancel 仍然启用") }
+        step("exec-cancel-idle", true)
+
         // 3c) daemon 拒绝的请求：界面显示可读原因，且**不**把 daemon 标成 stopped
         _ = await exec(id, "/usr/bin/not-allowed")
         guard viewModel.execOutput.contains("请求被 daemon 拒绝") || viewModel.execOutput.contains("["),

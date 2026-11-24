@@ -28,6 +28,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         var pendingExecRequestID: UUID?
         /// M39：当前 exec 的输出块汇总（只接受 requestID 与 pendingExecRequestID 相同的块）。
         var execAssembler: ExecOutputAssembler?
+        /// M41：exec 请求已发出、应答尚未被取走。只有此时 cancelExec 才会发送取消帧。
+        var execInFlight = false
         var lastStatsFrame: ControlFrame?
         var lastDecodedStats: SandboxStats?
         var pendingStatsRequestID: UUID?
@@ -735,6 +737,21 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         return assembler.finish(response)
     }
 
+    /// M41：请求 guest 取消在途的 exec（杀掉它的进程组并立刻应答）。
+    /// - Returns: 是否发出了取消帧（没有在途 exec 时为 false）。发出不等于生效：旧 guest 会忽略它。
+    @discardableResult
+    public func cancelExec(_ handle: SandboxHandle) async throws -> Bool {
+        try await onQueue {
+            let record = try self.require(handle)
+            guard record.execInFlight, let requestID = record.pendingExecRequestID,
+                  record.lifecycle.state == .running, record.controlSocket != nil else { return false }
+            let frame = try ControlFrame(kind: .execCancel, sequence: record.nextRequestSequence(),
+                                         requestID: requestID, payload: Data("{}".utf8))
+            try self.sendFrameOnQueue(record, frame: frame)
+            return true
+        }
+    }
+
     private func runExec(_ handle: SandboxHandle, request: ControlRequest) async throws
         -> (response: ControlResponse, assembler: ExecOutputAssembler) {
         // M2-2: 允许 echo/sh 诊断与 /workspace 下经策略同步的可执行面。
@@ -774,6 +791,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
             record.lastExecResponse = nil
             do {
                 try self.sendFrameOnQueue(record, frame: frame)
+                record.execInFlight = true
                 self.recordAudit(record, action: .channelEvent, decision: .allow())
             } catch {
                 record.lifecycle.forceFail(reason: .bootstrapProofMismatch)
@@ -793,10 +811,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                       responseFrame.requestID == record.pendingExecRequestID else { return nil }
                 let assembler = record.execAssembler ?? ExecOutputAssembler()
                 record.execAssembler = nil
+                record.execInFlight = false
                 return (decoded, assembler)
             }
             if let response { return response }
             if Date() >= deadline {
+                _ = try? await onQueue { (try? self.require(handle))?.execInFlight = false }
                 throw SandboxFailure(.bootstrapProofMismatch,
                                      "exec response timeout（guest 在命令超时 \(timeout)s 之后的 \(ExecOutputPolicy.responseGraceSeconds)s 内仍未应答）")
             }

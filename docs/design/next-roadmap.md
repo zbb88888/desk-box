@@ -41,7 +41,8 @@
 | M38 ✅ | 正式构建的 guest 候选：验证、安装与回滚 | INV-06 / INV-08 / INV-09 | M | 已完成：候选用正式脚本构建，全量 E2E 在候选上 0 失败；`install-guest-candidate.sh`（备份 / 自动回滚 / 重签 GPU manifest）；workload 与同步并发的真机用例。**安装到 `macos/guest` 留给用户**，见 `m38-guest-candidate.md` |
 | M39 ✅ | exec 的输出：不卡住、不静默截断、退出码原样传递 | INV-08 | M | 已完成：guest 边等边读 + 流式回传（`execOutput` 帧）；宿主汇总并再次执行上限；旧 guest 给出提示；CLI 传递退出码。候选已按本轮源码重建。见 `m39-exec-output.md` |
 | M39b | 安装候选（`macos/guest` 与 App bundle 里的那份） | INV-06 / INV-08 | S | 需用户确认：`install-guest-candidate.sh ./guest-candidate`；bundle 需停 daemon 后重新打包 |
-| M41 | guest 侧 exec kill（原 M29） | INV-08 | M | 在 M39 的 poll 循环里加入控制通道；需要处理 exec 期间到达的其它帧 |
+| M41 ✅ | 取消在途的 exec（原 M29） | INV-08 | M | 已完成：guest 在 exec 期间读控制通道（`execCancel` 帧；其它帧排队）；daemon `execCancel` 按实际结果下结论；CLI `exec-cancel` 与 Ctrl-C；GUI Cancel。候选已重建。见 `m41-exec-cancel.md` |
+| M42 | 客户端断开时自动取消 exec；exec 期间的 broker 请求 | INV-08 | M | daemon 监视 exec 客户端连接；guest 在 exec 期间不 accept broker socket（待确认是否构成死锁） |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 

@@ -47,6 +47,8 @@ struct DaemonResponse: Codable {
     var stdoutTruncated: Bool? = nil
     var stderrTruncated: Bool? = nil
     var timedOut: Bool? = nil
+    /// M41：exec 被取消（stdout / stderr 是取消之前的输出）。
+    var cancelled: Bool? = nil
     var notices: [String]? = nil
     var sandboxes: [SandboxInfo]? = nil
     var pid: Int32? = nil
@@ -89,6 +91,8 @@ final class SandboxSession: @unchecked Sendable {
     let opQueue: DispatchQueue
     /// M26b：拆除类操作用它打断在途/排队中的 guest 操作。
     let cancellation = OpCancellation()
+    /// M41：正在 guest 上执行的那条 exec（供 execCancel 使用）。
+    let execTracker = ExecTracker()
     /// M37：这台沙箱里是否已经运行过 workload（exec / pty）。一旦为 true，/workspace 的内容
     /// 就可能被不可信代码动过手脚。只增不减。
     private let workloadLock = NSLock()
@@ -326,6 +330,8 @@ final class SandboxDaemon: @unchecked Sendable {
             return try self.dispatchPs(request)
         case .exec:
             return try self.dispatchExec(request)
+        case .execCancel:
+            return try self.dispatchExecCancel(request)
         case .stop:
             return try self.dispatchStop(request)
         case .rm:
@@ -614,8 +620,18 @@ final class SandboxDaemon: @unchecked Sendable {
             timeoutSeconds: request.timeoutSeconds ?? 30
         )
         session.markWorkloadStarted()
+        let tracker = session.execTracker
         let result = try self.guestOp(session, op: "exec") {
-            try await session.runtime.executeCollectingOutput(session.handle, request: controlRequest)
+            // 轮到它、即将发给 guest 时才算「在途」（排队中的 exec 不能被 execCancel 命中）。
+            let token = tracker.begin()
+            do {
+                let result = try await session.runtime.executeCollectingOutput(session.handle, request: controlRequest)
+                tracker.end(token, cancelled: result.cancelled)
+                return result
+            } catch {
+                tracker.end(token, cancelled: false)
+                throw error
+            }
         }
         var response = DaemonResponse(ok: true, sandboxId: sandboxId, state: "running",
                                       exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
@@ -623,11 +639,33 @@ final class SandboxDaemon: @unchecked Sendable {
         if result.stdoutTruncated || result.possiblyTruncated { response.stdoutTruncated = true }
         if result.stderrTruncated { response.stderrTruncated = true }
         if result.timedOut { response.timedOut = true }
+        if result.cancelled { response.cancelled = true }
         let notices = result.notices
         if !notices.isEmpty { response.notices = notices }
         return response
     }
 
+
+    /// M41：取消在途的 exec。**不**经过 opQueue（那条 exec 正占着它）。
+    /// 结论按实际结果给出：发出取消帧后等那一条 exec 结束；等不到就是 guest 不支持。
+    private func dispatchExecCancel(_ request: DaemonRequest) throws -> DaemonResponse {
+        let (session, _) = try self.sessionFor(request, op: "execCancel")
+        let tracker = session.execTracker
+        var outcome = ExecTracker.Outcome.finished(cancelled: false)
+        let token = tracker.current
+        if let token {
+            _ = try runBlocking { try await session.runtime.cancelExec(session.handle) }
+            let deadline = Date().addingTimeInterval(ExecCancelVerdict.waitSeconds)
+            repeat {
+                outcome = tracker.outcome(of: token)
+                if outcome != .running { break }
+                Thread.sleep(forTimeInterval: 0.02)
+            } while Date() < deadline
+        }
+        let verdict = ExecCancelVerdict.classify(hadInFlight: token != nil, outcomeAfterWait: outcome)
+        if let refusal = verdict.refusal { throw CLIError.usage(refusal) }
+        return DaemonResponse(ok: true, sandboxId: session.id, state: "running", stdout: verdict.message)
+    }
 
     /// M26b：在沙箱 opQueue 上执行一个可被拆除类操作打断的 guest 操作。
     private func guestOp<T>(_ session: SandboxSession, op: String,

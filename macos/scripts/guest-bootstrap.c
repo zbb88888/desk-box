@@ -40,6 +40,9 @@
 /* M39：exec 输出的处理方式。1 = 历史行为（子进程退出后才读管道；输出超过管道容量会卡到超时；
  * stdout 静默截到 1023 字节）；2 = 边等边读、截断有标记、可按块流式回传（请求带 "streamOutput":true 时）。 */
 #define DBX_EXEC_OUTPUT_VERSION 2
+/* M41：exec 取消。0（旧 guest 不上报）= 不支持；1 = exec 期间读取控制通道：收到 execCancel（帧类型 27，
+ * requestID 与在途 exec 相同）或控制通道断开时，立刻杀掉进程组并应答。 */
+#define DBX_EXEC_CANCEL_VERSION 1
 
 static uint16_t be16(uint16_t x) { return (uint16_t)((x >> 8) | (x << 8)); }
 static uint32_t be32(uint32_t x) { return __builtin_bswap32(x); }
@@ -561,8 +564,8 @@ static int collect_stats_json(char *out, size_t cap) {
     unsigned long long pids_total = cg_read_u64("/sys/fs/cgroup/pids.current", NULL, &pids_found);
 
     if (!cpu_found && !mem_found && !pids_found) {
-        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d}",
-                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION);
+        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d}",
+                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION);
         return n > 0 ? n : -1;
     }
 
@@ -622,9 +625,9 @@ static int collect_stats_json(char *out, size_t cap) {
     int n = snprintf(out, cap,
                      "{\"cpuUsageUsec\":%s,\"memoryCurrentBytes\":%s,"
                      "\"memoryMaxBytes\":%s,\"pidsCurrent\":%s,\"pidsMax\":%s,"
-                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d}",
+                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d}",
                      cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups,
-                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION);
+                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION);
     return n > 0 ? n : -1;
 #else
     (void)out; (void)cap;
@@ -674,6 +677,46 @@ struct exec_stream {
     uint64_t *sequence;
     const uint8_t *request_id;
 };
+static ssize_t recv_frame(int fd, uint8_t *buf, size_t cap);
+static ssize_t recv_record(int fd, uint8_t *buf, size_t cap);
+
+/* M41：exec 期间从控制通道读到、但不是「取消当前 exec」的帧，按到达顺序存在这里，
+ * exec 结束后由主循环照常处理（此前它们只是留在 socket 缓冲区里，效果相同）。 */
+enum { PENDING_FRAMES_MAX = 128, CONTROL_FRAME_MAX = 4096 };
+static struct { uint8_t *data; size_t len; } pending_frames[PENDING_FRAMES_MAX];
+static int pending_head = 0;
+static int pending_count = 0;
+
+static int pending_push(const uint8_t *data, size_t len) {
+    if (pending_count >= PENDING_FRAMES_MAX) return -1;
+    uint8_t *copy = (uint8_t *)malloc(len ? len : 1);
+    if (!copy) return -1;
+    memcpy(copy, data, len);
+    int slot = (pending_head + pending_count) % PENDING_FRAMES_MAX;
+    pending_frames[slot].data = copy;
+    pending_frames[slot].len = len;
+    pending_count++;
+    return 0;
+}
+
+static ssize_t pending_pop(uint8_t *buf, size_t cap) {
+    if (pending_count == 0) return 0;
+    size_t len = pending_frames[pending_head].len;
+    if (len > cap) len = cap;
+    memcpy(buf, pending_frames[pending_head].data, len);
+    free(pending_frames[pending_head].data);
+    pending_frames[pending_head].data = NULL;
+    pending_head = (pending_head + 1) % PENDING_FRAMES_MAX;
+    pending_count--;
+    return (ssize_t)len;
+}
+
+/* 控制通道重连后，旧会话里没处理完的帧作废。 */
+static void pending_clear(void) {
+    uint8_t scratch[1];
+    while (pending_count > 0) (void)pending_pop(scratch, 0);
+    pending_head = 0;
+}
 static int send_any_frame(int fd, int encrypted, uint16_t kind, uint64_t seq,
                           const uint8_t *request_id, const void *payload, size_t len);
 static size_t bin_to_hex(const uint8_t *data, size_t len, char *out, size_t cap);
@@ -853,6 +896,8 @@ static int run_exec_request(const char *request_json, char *response, size_t res
 
     int status = 0;
     int timed_out = 0;
+    int cancelled = 0;          /* 1 = 宿主请求取消；2 = 控制通道断开 */
+    int control_readable = (st != NULL);
     int child_done = 0;
     int idle_rounds_after_exit = 0;
     for (;;) {
@@ -872,22 +917,57 @@ static int run_exec_request(const char *request_json, char *response, size_t res
                 }
             }
         }
-        struct pollfd pfd[2];
-        int map[2];
+        struct pollfd pfd[3];
+        int map[3];
         int n = 0;
         for (int i = 0; i < 2; i++) {
             if (fds[i] < 0) continue;
             pfd[n].fd = fds[i]; pfd[n].events = POLLIN; pfd[n].revents = 0; map[n] = i; n++;
         }
+        /* M41：子进程还在跑时，同时看着控制通道（等待队列满了就不再读，帧留在 socket 里）。 */
+        int control_slot = -1;
+        if (!child_done && control_readable && pending_count < PENDING_FRAMES_MAX) {
+            control_slot = n;
+            pfd[n].fd = st->fd; pfd[n].events = POLLIN; pfd[n].revents = 0; map[n] = -1; n++;
+        }
         if (n == 0) {
             if (child_done) break;
-            usleep(50000);      /* 两路都已 EOF，但子进程还在跑：等它退出或超时 */
+            usleep(50000);      /* 两路都已 EOF，控制通道也不可读，但子进程还在跑：等它退出或超时 */
             continue;
         }
         int ready = poll(pfd, (nfds_t)n, 100);
         int got_any = 0;
+        if (ready > 0 && control_slot >= 0 && pfd[control_slot].revents != 0) {
+            int kill_now = 0;
+            if (pfd[control_slot].revents & POLLIN) {
+                uint8_t frame[CONTROL_FRAME_MAX + 1];
+                ssize_t got = st->encrypted ? recv_record(st->fd, frame, CONTROL_FRAME_MAX)
+                                            : recv_frame(st->fd, frame, CONTROL_FRAME_MAX);
+                if (got <= 0) {
+                    control_readable = 0; cancelled = 2; kill_now = 1;
+                } else if (got >= 36) {
+                    uint16_t k; memcpy(&k, frame + 6, 2); k = be16(k);
+                    if (k == 27) {
+                        /* 只取消「正是这一个」exec；requestID 不符的是迟到的取消，丢弃。 */
+                        if (memcmp(frame + 16, st->request_id, 16) == 0) { cancelled = 1; kill_now = 1; }
+                    } else if (pending_push(frame, (size_t)got) != 0) {
+                        control_readable = 0;   /* 内存不足：不再读，避免丢帧 */
+                    }
+                }
+            } else {
+                /* HUP / ERR：宿主不在了，没有人等这个结果，别让命令跑到超时。 */
+                control_readable = 0; cancelled = 2; kill_now = 1;
+            }
+            if (kill_now) {
+                kill(-pid, SIGKILL);
+                kill(pid, SIGKILL);
+                (void)waitpid(pid, &status, 0);
+                child_done = 1;
+            }
+        }
         if (ready > 0) {
             for (int k = 0; k < n; k++) {
+                if (map[k] < 0) continue;
                 if (!(pfd[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
                 uint8_t chunk[EXEC_CHUNK_BYTES];
                 ssize_t r = read(pfd[k].fd, chunk, sizeof(chunk));
@@ -912,7 +992,8 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     err_buf[streaming ? 0 : sinks[1].total] = 0;
 
     int exit_code = 0;
-    if (timed_out) exit_code = -2;
+    if (cancelled) exit_code = -3;
+    else if (timed_out) exit_code = -2;
     else if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) exit_code = 128 + WTERMSIG(status);
     else exit_code = -1;
@@ -923,15 +1004,21 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     size_t err_len = err_buf[0] ? strlen(err_buf) : 0;
     json_escape(err_buf, err_len, esc_err, sizeof(esc_err));
     /* 附加字段：旧宿主的解码器会忽略不认识的键。 */
-    char extra[224];
+    char extra[256];
     snprintf(extra, sizeof(extra),
         ",\"outputVersion\":%d,\"chunked\":%s,\"stdoutBytes\":%lu,\"stderrBytes\":%lu,"
-        "\"stdoutTruncated\":%s,\"stderrTruncated\":%s,\"timedOut\":%s,\"streamError\":%s",
+        "\"stdoutTruncated\":%s,\"stderrTruncated\":%s,\"timedOut\":%s,\"streamError\":%s,\"cancelled\":%s",
         DBX_EXEC_OUTPUT_VERSION, streaming ? "true" : "false",
         (unsigned long)sinks[0].total, (unsigned long)sinks[1].total,
         sinks[0].truncated ? "true" : "false", sinks[1].truncated ? "true" : "false",
         timed_out ? "true" : "false",
-        (sinks[0].send_failed || sinks[1].send_failed) ? "true" : "false");
+        (sinks[0].send_failed || sinks[1].send_failed) ? "true" : "false",
+        cancelled ? "true" : "false");
+    if (cancelled) {
+        return snprintf(response, response_cap,
+            "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"exec cancelled; process group killed\"%s}",
+            exit_code, esc_out, extra);
+    }
     if (timed_out) {
         return snprintf(response, response_cap,
             "{\"exitCode\":%d,\"stdout\":\"%s\",\"stderr\":\"exec timed out; process group killed\"%s}",
@@ -1508,7 +1595,8 @@ reconnect:
     uint32_t next_broker_req_id = 1;
     int broker_open_fd[4] = {-1, -1, -1, -1};
     uint32_t broker_open_id[4] = {0, 0, 0, 0};
-    uint8_t incoming[4096];
+    uint8_t incoming[CONTROL_FRAME_MAX + 1];    /* +1：payload 之后要补一个 NUL */
+    pending_clear();
     for (;;) {
         struct pollfd pfds[3];
         pfds[0].fd = fd;
@@ -1528,8 +1616,10 @@ reconnect:
             pfds[broker_slot].revents = 0;
             nfds++;
         }
-        int ready = poll(pfds, nfds, 250);
+        /* M41：exec 期间攒下的帧优先处理，不等待。 */
+        int ready = poll(pfds, nfds, pending_count > 0 ? 0 : 250);
         if (ready < 0 && errno != EINTR) break;
+        if (ready < 0) { for (int i = 0; i < nfds; i++) pfds[i].revents = 0; }
 
         /* reap the current PTY child before reading more events */
         if (pty.pid > 0) {
@@ -1610,23 +1700,26 @@ reconnect:
             }
         }
 
-        if (ready <= 0) continue;
+        if (ready <= 0 && pending_count == 0) continue;
 
         /* M20：VZ restore 后旧 vsock 句柄会变成 HUP/ERR。只处理 POLLIN 会导致
          * 永久 poll 一个死 fd，从而永远不重连 —— 必须显式退出循环去重连。 */
-        if (pfds[0].revents & (POLLHUP | POLLERR | POLLNVAL)) {
+        if (pending_count == 0 && (pfds[0].revents & (POLLHUP | POLLERR | POLLNVAL))) {
             break;
         }
 
-        if (pfds[0].revents & POLLIN) {
-            ssize_t got = (record_mode ? recv_record(fd, incoming, sizeof(incoming))
-                                       : recv_frame(fd, incoming, sizeof(incoming)));
+        if (pending_count > 0 || (pfds[0].revents & POLLIN)) {
+            ssize_t got = pending_count > 0
+                ? pending_pop(incoming, CONTROL_FRAME_MAX)
+                : (record_mode ? recv_record(fd, incoming, CONTROL_FRAME_MAX)
+                               : recv_frame(fd, incoming, CONTROL_FRAME_MAX));
             if (got <= 0) break;
             if (got < 36) continue;
             uint16_t kind; memcpy(&kind, incoming + 6, 2);
             kind = be16(kind);
             uint32_t paylen_be; memcpy(&paylen_be, incoming + 32, 4);
             size_t paylen = be32(paylen_be);
+            if (36 + paylen > (size_t)got) continue;    /* 头部声明的长度超过实际收到的：丢弃 */
             incoming[36 + paylen] = 0;
             uint8_t request_id[16];
             memcpy(request_id, incoming + 16, 16);

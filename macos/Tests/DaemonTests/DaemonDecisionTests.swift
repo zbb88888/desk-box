@@ -33,7 +33,7 @@ final class DaemonDecisionTests: XCTestCase {
         }
         // 线上协议名锁定：改名即破坏 CLI/GUI 兼容。
         XCTAssertEqual(Set(DaemonRoute.allCases.map(\.rawValue)), [
-            "run", "ps", "exec", "stop", "rm", "ptyOpen", "ptyInput", "ptyPoll", "ptyClose",
+            "run", "ps", "exec", "execCancel", "stop", "rm", "ptyOpen", "ptyInput", "ptyPoll", "ptyClose",
             "wsSync", "consoleLog", "stats", "suspend", "resume", "restart", "shutdown",
         ])
     }
