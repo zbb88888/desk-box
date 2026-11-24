@@ -37,7 +37,9 @@
 | M34 ✅ | 签名 / 发布 / 校验类子命令 fail-closed | 供应链（M5/M7） | S | 已完成：15 个子命令迁到声明式解析（拼错的选项不再被静默忽略）、私钥文件 0600；no-VM e2e 53/53 并接入 CI；用旧二进制对照 31 项失败，见 `m34-release-cli-fail-closed.md` |
 | M35 ✅ | 宿主侧状态的访问权限不依赖父目录 | INV-03 / INV-10 周边 | M | 已完成：沙箱盘 / 快照 / 密钥 / 明文 VM 状态临时文件 / 日志收紧到仅属主可读且无窗口期；daemon socket 对端身份检查；`umask 000` 下真机 e2e 27 通过（旧二进制 17 项失败），见 `m35-host-state-permissions.md` |
 | M36 ✅ | E2E 证据化 + 安全验证矩阵同步 | 全部（证据面） | S | 已完成：`e2e-all.sh` 产出机器可读证据（含未验证的断言），按不变量汇总；矩阵新增 §2.1。当前证据：INV-01/04/06/09 通过，INV-02/03/08/10 不完整（锁屏），见 `m36-e2e-evidence.md` |
-| M37 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
+| M37 ✅ | workspace 同步的边界（INV-05） | INV-05 / INV-06 / INV-08 | L | 已完成：宿主 TOCTOU 修复；发现并修复 guest 接收端跟随 workload 预置符号链接（guest 内提权到 root）；宿主闸门在 guest 更新前生效；真机 e2e 旧 guest 45 / 补丁版 guest 54。**本机 guest 资产待重建**，见 `m37-workspace-sync-boundary.md` |
+| M38 | 重建本机 guest 资产 + guest 侧 exec kill | INV-06 / INV-08 | M | `build-alpine-guest.sh` 重建（需能访问 Docker Hub）；确认正式构建的 guest 上 `e2e-workspace-sync.sh` 走新接收端分支；原 M29 的 exec kill 协议一并做 |
+| M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 
 ---

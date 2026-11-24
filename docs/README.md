@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M37 workspace 同步的边界](design/m37-workspace-sync-boundary.md)：INV-05 的真机证据；宿主 TOCTOU、guest 接收端跟随符号链接（guest 内提权）及其修复与宿主闸门。
 - [M36 E2E 证据化](design/m36-e2e-evidence.md)：`e2e-all.sh` 产出机器可读证据并按安全不变量汇总；安全验证矩阵 §2.1 由证据文件生成。
 - [M35 宿主侧状态权限](design/m35-host-state-permissions.md)：沙箱盘、快照、密钥、明文 VM 状态临时文件、日志的权限不再依赖父目录与 umask；daemon socket 对端身份检查。
 - [M34 签名/发布类子命令 fail-closed](design/m34-release-cli-fail-closed.md)：拼错的选项不再被静默忽略（曾导致防回滚下限被悄悄放宽、密钥文件被原地覆盖）；私钥文件 0600；no-VM e2e 接入 CI。

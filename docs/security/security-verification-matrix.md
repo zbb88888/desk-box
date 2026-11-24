@@ -1,7 +1,7 @@
 # 安全验证追踪矩阵
 
 状态：测试计划基线；§2 为各阶段的历史结论，**当前自动化证据见 §2.1**
-日期：2026-10-23（§2.1 更新于 2026-11-24，M36）
+日期：2026-10-23（§2.1 更新于 2026-11-25，M37）
 
 ## 1. 使用方式
 
@@ -36,9 +36,9 @@
 > 再对产出的文件运行 `summarize --markdown` 并替换下表。`e2e-evidence.py check <文件>` 的退出码：
 > 0 = 可作为发布证据，3 = 无失败但不完整，1 = 失败或证据无效。
 
-证据文件：[`evidence/e2e-20261124T161558Z-8213149.json`](evidence/e2e-20261124T161558Z-8213149.json)
+证据文件：[`evidence/e2e-20261124T175017Z-355af18.json`](evidence/e2e-20261124T175017Z-355af18.json)
 
-证据：commit 8213149 · 2026-11-24T16:15:58Z · macOS 27.2.1 (26B131) Mac14,6
+证据：commit 355af18 · 2026-11-24T17:50:17Z · macOS 27.2.1 (26B131) Mac14,6
 
 | 不变量 | e2e 结果 | 相关套件 | 未验证的断言 |
 | --- | --- | --- | --- |
@@ -46,10 +46,10 @@
 | INV-02 | 不完整 | m27-cli-instance、m23-domains | m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume<br>m23-domains: 同域恢复成功 |
 | INV-03 | 不完整 | m35-permissions、m19-canary | m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件 |
 | INV-04 | 通过 | m19-network | — |
-| INV-05 | 未覆盖 | — | — |
+| INV-05 | 通过 | m37-workspace、m37-workspace-patched | — |
 | INV-06 | 通过 | m18-kernel | — |
 | INV-07 | 未覆盖 | — | — |
-| INV-08 | 不完整 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume |
+| INV-08 | 不完整 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m37-workspace、m37-workspace-patched、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume |
 | INV-09 | 通过 | m34-release-cli | — |
 | INV-10 | 不完整 | m34-release-cli、m24-concurrency、m27-cli-instance、m35-permissions、m20-persistence、m20b-fault-injection | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume<br>m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件<br>m20-persistence: 原始快照可恢复 / 恢复后状态 running<br>m20-persistence: 恢复后可以打开新终端（suspend 前的终端没有占住 pty）<br>m20-persistence: 恢复后数据仍在、权限未复活<br>m20-persistence: 二次 suspend/resume |
 
@@ -63,8 +63,9 @@
 - 「不完整」= 相关套件没有失败，但其中有断言因宿主登录会话锁屏而被跳过（Virtualization.framework 在锁屏期间
   拒绝恢复已保存的 VM 状态，见 `design/m27-host-robustness.md` §5）。归属按**套件**计：一个套件里只要有断言被跳过，
   它所支撑的全部不变量都记为不完整，哪怕被跳过的断言与其中某个不变量无关。这是有意的保守。
-- 「未覆盖」= `e2e-all.sh` 里没有套件为它提供证据。INV-05（宿主侧文件系统 corpus）与 INV-07（控制通道）
-  的证据来自 `swift test` 与 `security-corpus.sh`，不在这张表里。
+- 「未覆盖」= `e2e-all.sh` 里没有套件为它提供证据。INV-07（控制通道）的证据来自 `swift test`，不在这张表里。
+- INV-05 的「通过」包含两部分：旧 guest 上验证的是**宿主侧**边界与再次同步的闸门；guest 侧接收端的修复是在
+  **补丁版 guest**（当前源码的 bootstrap，测试夹具）上验证的，不是在正式构建的 guest 资产上。见 `design/m37-workspace-sync-boundary.md` §6。
 
 **自 M23 以来影响证据的变更（按 §1「任何关键控制变更都会使关联证据过期」）**
 
@@ -80,6 +81,8 @@ M24–M35 改动了生命周期、清理、快照、PTY、宿主侧状态文件�
 | INV-03 / INV-10 | 沙箱盘、快照密钥、明文 VM 状态临时文件的保密性依赖父目录与 umask | M35 |
 | INV-08 | daemon 串行处理导致生命周期操作互相阻塞；拆除操作要等在途 exec；第二个 daemon 可抢占 socket；终端关闭后 guest 内 shell 不退出 | M24 / M26 / M27 / M33 |
 | INV-02 | `rm` 不比对声明的凭据域 | M27 |
+| INV-05 | 快照校验与推送之间的 TOCTOU：推送阶段按路径重新读取文件（跟随符号链接、不比对摘要） | M37 |
+| INV-06 / INV-08 | guest 的 workspace 接收端以 root 跟随 workload 预置的符号链接（guest 内从 uid 65534 提权到 root；VM 边界不受影响）；文件变短后重新同步残留旧内容。**修复在 guest 源码里，本机现有 guest 资产尚未重建**，在此之前由宿主闸门（`DBX-WS-RESYNC-UNSAFE`）挡住默认路径 | M37 |
 
 按 §6 的发布规则，在得到一份 `check` 退出码为 0 的证据之前，INV-02、INV-03、INV-08、INV-10 应按 `已实现待验证` 对待。
 
