@@ -52,6 +52,7 @@ MANIFEST=$PWD/guest-candidate/manifest.json ./scripts/e2e-all.sh          # 全�
 
 - `build-alpine-guest.sh` 把开发私钥拷进输出目录时用的是默认权限（0644）；输出目录在 `/tmp` 时等于把私钥放在他人可读的地方。改为 0600。
 - **`security-corpus-canary.sh` 会往真实的 `guest/` 目录里写文件**（上一轮注意到 `guest/` 的修改时间在全量 E2E 后变了，本轮查清）：它把 canary 凭据写到「manifest 所在目录」再恢复，中途被 SIGKILL 就会留下，而且那个目录可能正被你自己的 daemon 使用。现在它把 manifest 和资产克隆到本次运行的临时目录再注入；全量 E2E 前后 `guest/` 的修改时间不再变化。卫生审计此前没有覆盖 `guest/` 目录，所以没报。
+- `e2e-harness-selftest.sh` 的一项检查偶发失败（M36 引入）：它取「临时目录里第一个 `ev-$RANDOM.json`」做 markdown 检查，偶尔拿到故意弄坏的那份。本轮全量 E2E 撞上一次。改为使用一份明确的未改动证据。
 - `e2e-guest-install.sh` 用 `e2e_build_sign` 而不是裸的 `swift build`：重新链接会丢掉代码签名，之后带 `E2E_SKIP_BUILD=1` 跑的 VM 套件会因缺 entitlement 失败（本轮自己踩到了）。`e2e-release-cli.sh` 仍有同样的隐患（它要在没有 guest 资产的 CI 上跑，不能直接换），单独运行它之后请不要带 `E2E_SKIP_BUILD=1`。
 
 ## 5. 诚实边界

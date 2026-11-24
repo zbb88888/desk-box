@@ -36,9 +36,9 @@
 > 再对产出的文件运行 `summarize --markdown` 并替换下表。`e2e-evidence.py check <文件>` 的退出码：
 > 0 = 可作为发布证据，3 = 无失败但不完整，1 = 失败或证据无效。
 
-证据文件：[`evidence/e2e-20261124T175017Z-355af18.json`](evidence/e2e-20261124T175017Z-355af18.json)
+证据文件：[`evidence/e2e-20261124T191514Z-b55531b.json`](evidence/e2e-20261124T191514Z-b55531b.json)
 
-证据：commit 355af18 · 2026-11-24T17:50:17Z · macOS 27.2.1 (26B131) Mac14,6
+证据：commit b55531b · 2026-11-24T19:15:14Z · macOS 27.2.1 (26B131) Mac14,6
 
 | 不变量 | e2e 结果 | 相关套件 | 未验证的断言 |
 | --- | --- | --- | --- |
@@ -50,7 +50,7 @@
 | INV-06 | 通过 | m18-kernel | — |
 | INV-07 | 未覆盖 | — | — |
 | INV-08 | 不完整 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m37-workspace、m37-workspace-patched、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume |
-| INV-09 | 通过 | m34-release-cli | — |
+| INV-09 | 通过 | m34-release-cli、m38-guest-install | — |
 | INV-10 | 不完整 | m34-release-cli、m24-concurrency、m27-cli-instance、m35-permissions、m20-persistence、m20b-fault-injection | m24-concurrency: B resume 后 exec 正常<br>m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume<br>m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件<br>m20-persistence: 原始快照可恢复 / 恢复后状态 running<br>m20-persistence: 恢复后可以打开新终端（suspend 前的终端没有占住 pty）<br>m20-persistence: 恢复后数据仍在、权限未复活<br>m20-persistence: 二次 suspend/resume |
 
 整体结论：无失败但不完整
@@ -64,6 +64,8 @@
   拒绝恢复已保存的 VM 状态，见 `design/m27-host-robustness.md` §5）。归属按**套件**计：一个套件里只要有断言被跳过，
   它所支撑的全部不变量都记为不完整，哪怕被跳过的断言与其中某个不变量无关。这是有意的保守。
 - 「未覆盖」= `e2e-all.sh` 里没有套件为它提供证据。INV-07（控制通道）的证据来自 `swift test`，不在这张表里。
+- 这份证据跑在本机**现有的（旧）guest 资产**上。正式构建的 guest 候选另外跑过一遍全量回归（0 失败，同样因锁屏不完整），
+  记录在 `design/m38-guest-candidate.md`，没有单独的证据文件。
 - INV-05 的「通过」包含两部分：旧 guest 上验证的是**宿主侧**边界与再次同步的闸门；guest 侧接收端的修复是在
   **补丁版 guest**（当前源码的 bootstrap，测试夹具）上验证的，不是在正式构建的 guest 资产上。见 `design/m37-workspace-sync-boundary.md` §6。
 
