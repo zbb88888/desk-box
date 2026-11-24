@@ -35,7 +35,9 @@ final class TerminalTextTests: XCTestCase {
     func testCSISequencesAreRemovedCompletely() {
         // 回归：旧实现把 `[` 当成终止字节，屏幕上会留下 "0;32m"。
         XCTAssertEqual(render("\u{1B}[0;32mgreen\u{1B}[0m plain"), "green plain")
-        XCTAssertEqual(render("a\u{1B}[2Kb\u{1B}[1;1Hc\u{1B}[?25ld"), "abcd")
+        // M44：ESC[2K 现在按语义执行（擦掉当前行的 "a"）；其余序列照旧只是被移除。
+        XCTAssertEqual(render("a\u{1B}[2Kb\u{1B}[1;1Hc\u{1B}[?25ld"), "bcd")
+        XCTAssertEqual(render("a\u{1B}[5Cb\u{1B}[1;1Hc\u{1B}[?25ld"), "abcd")
         XCTAssertEqual(render("x\u{1B}[38;5;196my"), "xy")
     }
 
@@ -79,7 +81,56 @@ final class TerminalTextTests: XCTestCase {
         XCTAssertEqual(render("x\u{7F}y"), "y")
         XCTAssertEqual(render("line\n\u{08}\u{08}z"), "line\nz", "退格不跨行")
         XCTAssertEqual(render("\u{08}a"), "a", "空缓冲上的退格是空操作")
-        XCTAssertEqual(render("a\r\nb\rc"), "a\nbc")
+        XCTAssertEqual(render("a\r\nb\rc"), "a\nc", "\\r 回到行首，c 覆盖 b")
+    }
+
+    // MARK: M44 —— \r 行内重绘
+
+    func testCarriageReturnOverwritesTheCurrentLine() {
+        // 进度条：此前显示成 10%20%30%。
+        XCTAssertEqual(render(" 10%\r 20%\r 30%\n"), " 30%\n")
+        XCTAssertEqual(render("download 1/3\rdownload 2/3\rdownload 3/3\ndone\n"), "download 3/3\ndone\n")
+        // CRLF 不受影响。
+        XCTAssertEqual(render("one\r\ntwo\r\n"), "one\ntwo\n")
+        // 只覆盖最后一行，前面的行不动。
+        XCTAssertEqual(render("keep\nabc\rX"), "keep\nXbc")
+    }
+
+    func testShorterRedrawLeavesTheTailUnlessErased() {
+        // 真实终端的行为：不擦除就会留下旧内容的尾巴。
+        XCTAssertEqual(render("long text\rab"), "abng text")
+        // \r + ESC[K：擦到行尾。
+        XCTAssertEqual(render("long text\rab\u{1B}[K"), "ab")
+        XCTAssertEqual(render("long text\r\u{1B}[Kab"), "ab")
+        XCTAssertEqual(render("long text\rab\u{1B}[0K!"), "ab!")
+        // ESC[2K：擦整行。
+        XCTAssertEqual(render("first\nlong text\u{1B}[2K\rnew"), "first\nnew")
+        // ESC[J（ash 行编辑重绘用）在最后一行上等同于擦到行尾。
+        XCTAssertEqual(render("$ old-command\r$ ls\u{1B}[J"), "$ ls")
+        // 不认识的擦除模式 / 行尾的 ESC[K 是空操作。
+        XCTAssertEqual(render("abc\u{1B}[K"), "abc")
+        XCTAssertEqual(render("abc\rx\u{1B}[1K"), "xbc")
+    }
+
+    func testOverwriteRunningPastTheEndAppends() {
+        XCTAssertEqual(render("ab\rxyz!"), "xyz!")
+        XCTAssertEqual(render("ab\rxyz\nnext"), "xyz\nnext")
+        XCTAssertEqual(render("\rstart"), "start", "空行上的 \\r")
+    }
+
+    func testBackspaceWhileRedrawingOnlyMovesTheCursor() {
+        XCTAssertEqual(render("abcd\rxy\u{08}Z"), "xZcd")
+        XCTAssertEqual(render("abcd\r\u{08}\u{08}Q"), "Qbcd", "行首的退格不越界")
+    }
+
+    func testCarriageReturnStateSurvivesChunkBoundaries() {
+        XCTAssertEqual(render([Data(" 10%\r".utf8), Data(" 2".utf8), Data("0%\r 30".utf8), Data("%\n".utf8)]), " 30%\n")
+        XCTAssertEqual(render([Data("long\r".utf8), Data("a\u{1B}".utf8), Data("[".utf8), Data("K".utf8)]), "a")
+    }
+
+    func testOverwriteHandlesWideAndCombiningCharacters() {
+        XCTAssertEqual(render("进度一\r进度二"), "进度二")
+        XCTAssertEqual(render("abc\r中"), "中bc")
     }
 
     func testControlCharactersAreDropped() {

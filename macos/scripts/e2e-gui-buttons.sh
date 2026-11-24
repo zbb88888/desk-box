@@ -19,7 +19,7 @@ if [ "${E2E_GUI_LIVE:-0}" = 1 ]; then
   if ps aux | grep -q 'DeskBoxGU[I]'; then pass "GUI 进程在"; else fail "GUI 不在"; fi
 else
   e2e_start_daemon || die "daemon 未就绪"
-  skip "GUI 进程检查（隔离模式不依赖 GUI；E2E_GUI_LIVE=1 时检查）"
+  skip_na "GUI 进程检查" "隔离模式不依赖 GUI；E2E_GUI_LIVE=1 时检查"
 fi
 if "$BIN" ps --daemon-sock "$SOCK" > /dev/null 2>&1; then pass "Start Daemon/autotart 充 daemon 可连（client.probing ok)"; else fail "daemon 不可连"; fi
 

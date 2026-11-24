@@ -929,6 +929,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 return true
             }
             if opened { break }
+            try await self.failIfControlLost(handle, waitingFor: "ptyOpen")
             if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "ptyOpen timeout") }
             try await Task.sleep(for: .milliseconds(40))
         }
@@ -1016,7 +1017,12 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 }
                 return PtyPollResult(output: output, running: false, exitCode: exitCode, signal: signal)
             }
-            if !output.isEmpty || Date() >= deadline {
+            if !output.isEmpty {
+                return PtyPollResult(output: output, running: true, exitCode: nil, signal: nil)
+            }
+            // M44：guest 的控制进程没了，终端不会再有输出——此前轮询会一直返回「还在运行、没有输出」。
+            try await self.failIfControlLost(handle, waitingFor: "pty")
+            if Date() >= deadline {
                 return PtyPollResult(output: output, running: true, exitCode: nil, signal: nil)
             }
             try await Task.sleep(for: .milliseconds(40))
@@ -1187,6 +1193,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 }
                 return ack
             }
+            try await self.failIfControlLost(handle, waitingFor: "workspace sync")
             if Date() >= deadline { throw SandboxFailure(.bootstrapProofMismatch, "workspace sync timeout") }
             try await Task.sleep(for: .milliseconds(40))
         }

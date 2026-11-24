@@ -101,6 +101,7 @@ snapshot "$AUDIT/before"
 
 TOTAL_FAIL=0
 LOCK_SKIPS=0
+ENV_SKIPS=0
 SUMMARY=()
 for entry in "${SUITES[@]}"; do
   name="${entry%%:*}"; rest="${entry#*:}"; script="${rest%%:*}"; invs="${rest#*:}"
@@ -126,6 +127,16 @@ for entry in "${SUITES[@]}"; do
     grep -a 'HOST-LOCKED：' "$AUDIT/$name.out" | sed -E 's/ \[HOST-LOCKED.*//; s/^/        未验证 /'
     # 证据文件里逐条记录「没有被验证的断言」。
     grep -a 'HOST-LOCKED：' "$AUDIT/$name.out" | sed -E 's/ \[HOST-LOCKED.*//; s/^\[[^]]*\] SKIP: //' > "$AUDIT/$name.locked"
+  fi
+  # M44：其余的跳过——标了 NOT-APPLICABLE 的不影响结论；没标的一律按「环境缺失」计入不完整。
+  grep -a ' SKIP: ' "$AUDIT/$name.out" | grep -av 'HOST-LOCKED：' | grep -a 'NOT-APPLICABLE：' \
+    | sed -E 's/^\[[^]]*\] SKIP: //' > "$AUDIT/$name.na" || true
+  grep -a ' SKIP: ' "$AUDIT/$name.out" | grep -av 'HOST-LOCKED：' | grep -av 'NOT-APPLICABLE：' \
+    | sed -E 's/^\[[^]]*\] SKIP: //' > "$AUDIT/$name.envskip" || true
+  n_env=$(wc -l < "$AUDIT/$name.envskip" | tr -d ' ')
+  if [ "${n_env:-0}" -gt 0 ]; then
+    ENV_SKIPS=$((ENV_SKIPS + n_env))
+    sed 's/^/        未验证（环境） /' "$AUDIT/$name.envskip"
   fi
   num() { printf '%s' "$result" | sed -n "s/.*$1=\([0-9]*\).*/\1/p"; }
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$script" "$invs" "$rc" \
@@ -186,12 +197,17 @@ if [ -n "${E2E_EVIDENCE_DIR:-}" ]; then
   fi
 fi
 
-printf '\n[all] 套件失败=%d 卫生问题=%d 因锁屏未验证=%d\n' "$TOTAL_FAIL" "$HYGIENE" "$LOCK_SKIPS"
+printf '\n[all] 套件失败=%d 卫生问题=%d 因锁屏未验证=%d 因环境缺失未验证=%d\n' "$TOTAL_FAIL" "$HYGIENE" "$LOCK_SKIPS" "$ENV_SKIPS"
 [ "$TOTAL_FAIL" -eq 0 ] && [ "$HYGIENE" -eq 0 ] || exit 1
+if [ "$ENV_SKIPS" -gt 0 ]; then
+  # M44：缺工具 / 没网络 / 缺资产导致的跳过同样是「没有验证」，不能算一次完整通过。
+  printf '[all] INCOMPLETE：%d 项断言因环境缺失（缺工具、没网络、缺资产）未验证，见上面的「未验证（环境）」。\n' "$ENV_SKIPS"
+fi
 if [ "$LOCK_SKIPS" -gt 0 ]; then
   # 没有失败，但覆盖不完整：宿主锁屏期间 Virtualization.framework 无法恢复 VM 状态，
   # 所有依赖 resume 的断言都被跳过。用独立的退出码 3，避免被当成一次完整通过。
   printf '[all] INCOMPLETE：宿主处于锁屏状态，%d 项依赖 resume 的断言未验证。解锁后重跑以获得完整结果。\n' "$LOCK_SKIPS"
   exit 3
 fi
+[ "$ENV_SKIPS" -eq 0 ] || exit 3
 exit 0

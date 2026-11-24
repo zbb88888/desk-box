@@ -172,6 +172,11 @@ else
   log "KNOWN-DEFECT（旧 guest）K1：exec 里调用 brokerreq → 那条 exec rc=$FIRST_RC（${FIRST_MS}ms，卡到超时）；随后的 exec rc=$RC，沙箱 state=$ST（failed = guest 的控制面被 SIGPIPE 杀掉）"
   [ "$RC" != 0 ] && [ "$MS" -lt 2000 ] && grep -q 'DBX-GUEST-CONTROL-LOST\|control socket closed' "$E" \
     && pass "K3 控制面死掉之后：随后的 exec ${MS}ms 内失败并说明原因（$(grep -o 'DBX-GUEST-CONTROL-LOST\|control socket closed' "$E" | head -1)）" || fail "K3 rc=$RC ${MS}ms err=[$(head -c 200 "$E")]"
+  mkdir -p "$E2E_WORK/k3ws"; echo x > "$E2E_WORK/k3ws/f.txt"
+  t0=$(now_ms); "$BIN" ws-sync --daemon-sock "$SOCK" "$ID" "$E2E_WORK/k3ws" --allow-unsafe-resync >"$E2E_WORK/k3.out" 2>&1 && WRC=0 || WRC=$?
+  [ "$WRC" != 0 ] && [ $(( $(now_ms) - t0 )) -lt 2000 ] && pass "K3 同步请求同样立刻失败（$(( $(now_ms) - t0 ))ms），不会等到同步超时" || fail "K3 ws-sync rc=$WRC $(head -c 200 "$E2E_WORK/k3.out")"
+  t0=$(now_ms); PTYRES=$(python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" open "$ID" 2>&1)
+  case "$PTYRES" in FAIL*) [ $(( $(now_ms) - t0 )) -lt 2000 ] && pass "K3 打开终端同样立刻失败" || fail "K3 ptyOpen 等了 $(( $(now_ms) - t0 ))ms" ;; *) fail "K3 控制面已死，终端却打开了：$PTYRES" ;; esac
   "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1 && pass "K2 宿主能收拾：那台沙箱可以 rm" || fail "K2 rm 失败"
   new_sandbox
   x 8 'echo fresh-sandbox-ok'

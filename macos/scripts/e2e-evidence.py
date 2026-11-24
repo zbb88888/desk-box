@@ -24,9 +24,26 @@ def suite_status(suite):
     """单个套件的状态。"""
     if suite["exitCode"] != 0 or suite.get("fail", 0) > 0:
         return "fail"
-    if suite.get("lockSkipped"):
+    if suite.get("lockSkipped") or env_skipped(suite):
         return "incomplete"
     return "pass"
+
+
+def env_skipped(suite):
+    """因环境缺失（缺工具、没网络、缺资产……）而没有验证的断言。
+
+    M44：此前只有锁屏的跳过会让结果「不完整」——少了交叉编译器时，guest 侧修复的全部验证整套跳过，
+    结论却仍是「完整通过」。现在任何没有标成「不适用」的跳过都算。
+    记录的 SKIP 数多于有明细的条数时，差额按「未说明原因的跳过」计入（宁可多报）。
+    """
+    listed = list(suite.get("envSkipped", []))
+    accounted = len(listed) + len(suite.get("lockSkipped", [])) + len(suite.get("notApplicable", []))
+    # 旧证据文件没有 envSkipped / notApplicable 字段：不对它们追溯（否则历史文件的结论会变）。
+    if "envSkipped" in suite or "notApplicable" in suite:
+        extra = suite.get("skip", 0) - accounted
+        if extra > 0:
+            listed.append("%d 项跳过没有说明原因" % extra)
+    return listed
 
 
 def invariant_summary(evidence):
@@ -39,6 +56,7 @@ def invariant_summary(evidence):
             continue
         worst = max((suite_status(s) for s in related), key=ORDER.index)
         unverified = ["%s: %s" % (s["name"], text) for s in related for text in s.get("lockSkipped", [])]
+        unverified += ["%s: [环境] %s" % (s["name"], text) for s in related for text in env_skipped(s)]
         out[inv] = {"status": worst, "suites": [s["name"] for s in related], "unverified": unverified}
     return out
 
@@ -47,14 +65,14 @@ def verdict(evidence):
     """整次运行的结论。
 
     failed      有套件失败，或卫生审计发现残留 / 用户状态被改动
-    incomplete  没有失败，但有断言因宿主状态（锁屏）未被验证
-    complete    全部通过，没有任何跳过
+    incomplete  没有失败，但有断言没有被验证（宿主锁屏，或环境缺失）
+    complete    全部通过；跳过的只有明确标为「不适用」的条目
     """
     if any(suite_status(s) == "fail" for s in evidence["suites"]):
         return "failed"
     if any(v != "clean" for v in evidence.get("hygiene", {}).values()):
         return "failed"
-    if any(s.get("lockSkipped") for s in evidence["suites"]):
+    if any(s.get("lockSkipped") or env_skipped(s) for s in evidence["suites"]):
         return "incomplete"
     return "complete"
 
@@ -67,7 +85,11 @@ def release_blockers(evidence):
         reasons.append("有套件失败或卫生审计不干净")
     if v == "incomplete":
         n = sum(len(s.get("lockSkipped", [])) for s in evidence["suites"])
-        reasons.append("%d 项断言因宿主锁屏未验证" % n)
+        if n:
+            reasons.append("%d 项断言因宿主锁屏未验证" % n)
+        m = sum(len(env_skipped(s)) for s in evidence["suites"])
+        if m:
+            reasons.append("%d 项断言因环境缺失未验证" % m)
     if evidence.get("commitDirty"):
         reasons.append("工作区有未提交的改动（%d 个文件）：证据无法对应到一个确定的 commit" % evidence.get("dirtyFiles", 0))
     if evidence.get("partial"):
@@ -121,6 +143,8 @@ def build(audit_dir, out_path):
             "invariants": [x for x in invs.split(",") if x],
             "exitCode": int(rc), "pass": int(p), "fail": int(f), "skip": int(sk), "seconds": int(secs),
             "lockSkipped": read_lines("%s/%s.locked" % (audit_dir, name)),
+            "envSkipped": read_lines("%s/%s.envskip" % (audit_dir, name)),
+            "notApplicable": read_lines("%s/%s.na" % (audit_dir, name)),
         })
     hygiene = {}
     for line in read_lines(audit_dir + "/hygiene.tsv"):

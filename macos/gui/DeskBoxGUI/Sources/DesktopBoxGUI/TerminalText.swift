@@ -46,6 +46,11 @@ struct TerminalTextFilter {
 
     private var state = State.ground
     private var pendingBytes = Data()
+    /// M44：光标在当前行（最后一行）里的列。nil = 在行尾（追加）。
+    /// `\r` 把它置 0，之后的可打印字符**覆盖**该列上已有的字符——进度条、行内重绘靠这个。
+    /// 此前 `\r` 被直接丢弃，`10%\r20%\r30%` 会显示成 `10%20%30%`。
+    private var column: Int?
+    private var csiParameters = ""
     /// 累计文本上限（字符数）。超出后丢弃最早的内容。
     static let maxCharacters = 200_000
 
@@ -97,17 +102,25 @@ struct TerminalTextFilter {
         case .ground:
             switch v {
             case 0x1B: state = .escape
-            case 0x0A, 0x09: text.unicodeScalars.append(s)            // \n \t
-            case 0x08, 0x7F:                                           // 退格 / DEL：删掉本行的前一个字符
-                if let last = text.last, last != "\n" { text.removeLast() }
-            case 0x9B: state = .csi                                    // 8-bit CSI
+            case 0x0A:                                                 // \n：换行总是接在全文末尾
+                column = nil
+                text.unicodeScalars.append(s)
+            case 0x0D: column = 0                                      // \r：回到行首（\r\n 时随后的 \n 会复位）
+            case 0x09: put(Character(s), into: &text)                  // \t
+            case 0x08, 0x7F:                                           // 退格 / DEL
+                if let current = column {
+                    column = max(0, current - 1)                       // 行内重绘中：只移动光标
+                } else if let last = text.last, last != "\n" {
+                    text.removeLast()                                  // 在行尾：删掉本行的前一个字符
+                }
+            case 0x9B: state = .csi; csiParameters = ""                // 8-bit CSI
             case 0x9D, 0x90, 0x98, 0x9E, 0x9F: state = .stringSequence // 8-bit OSC / DCS / SOS / PM / APC
-            case 0x00...0x1F, 0x80...0x9F: break                       // 其余 C0 / C1（含 \r、BEL）：丢弃
-            default: text.unicodeScalars.append(s)
+            case 0x00...0x1F, 0x80...0x9F: break                       // 其余 C0 / C1（BEL 等）：丢弃
+            default: put(Character(s), into: &text)
             }
         case .escape:
             switch v {
-            case 0x5B: state = .csi                                    // ESC [
+            case 0x5B: state = .csi; csiParameters = ""                // ESC [
             case 0x5D, 0x50, 0x58, 0x5E, 0x5F: state = .stringSequence // ESC ] P X ^ _
             case 0x28, 0x29, 0x2A, 0x2B: state = .charset              // ESC ( ) * + ：后面还有一个字符
             default: state = .ground                                   // 其它两字节转义
@@ -116,13 +129,57 @@ struct TerminalTextFilter {
             state = .ground
         case .csi:
             // 参数 0x30–0x3F、中间字节 0x20–0x2F 继续；0x40–0x7E 是终止字节；其它视为序列被打断。
-            if (0x20...0x3F).contains(v) { break }
+            if (0x20...0x3F).contains(v) {
+                if csiParameters.count < 16 { csiParameters.unicodeScalars.append(s) }
+                break
+            }
             state = .ground
+            // 只解释「擦除行」（EL）：`\r` + `ESC[K` 是行内重绘最常见的组合。其余 CSI 序列照旧丢弃。
+            if v == 0x4B { eraseInLine(mode: csiParameters, in: &text) }
+            // ED（擦到屏幕末尾）：我们只有「最后一行」这一个概念，缺省 / 0 等同于擦到行尾（ash 的行编辑重绘用它）。
+            if v == 0x4A, csiParameters.isEmpty || csiParameters == "0" { eraseInLine(mode: "0", in: &text) }
         case .stringSequence:
             if v == 0x07 || v == 0x9C { state = .ground }              // BEL 或 ST 结束
             else if v == 0x1B { state = .stringEscape }                // ESC \ 结束
         case .stringEscape:
             state = .ground
+        }
+    }
+}
+
+extension TerminalTextFilter {
+    /// 当前行（全文最后一个换行之后的部分）的起点。
+    private func lineStart(in text: String) -> String.Index {
+        text.lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+    }
+
+    /// 写一个可打印字符：光标在行内时覆盖，在行尾时追加。
+    fileprivate mutating func put(_ character: Character, into text: inout String) {
+        guard let current = column else { text.append(character); return }
+        let start = lineStart(in: text)
+        guard let position = text.index(start, offsetBy: current, limitedBy: text.endIndex), position < text.endIndex else {
+            text.append(character)
+            column = nil
+            return
+        }
+        text.replaceSubrange(position...position, with: String(character))
+        column = current + 1
+    }
+
+    /// CSI K：0 / 缺省 = 擦到行尾；1 = 擦到行首（不支持，忽略）；2 = 擦整行。
+    fileprivate mutating func eraseInLine(mode: String, in text: inout String) {
+        let start = lineStart(in: text)
+        switch mode {
+        case "", "0":
+            guard let current = column,
+                  let position = text.index(start, offsetBy: current, limitedBy: text.endIndex) else { return }
+            text.removeSubrange(position..<text.endIndex)
+            column = nil            // 光标现在就在行尾
+        case "2":
+            text.removeSubrange(start..<text.endIndex)
+            column = nil
+        default:
+            break
         }
     }
 }

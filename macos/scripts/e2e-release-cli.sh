@@ -15,6 +15,7 @@ e2e_init rel
 # 不需要 guest manifest，也不需要签名（不触碰 Virtualization）；只要有可执行文件。
 if [ "${E2E_SKIP_BUILD:-0}" != 1 ]; then
   ( cd "$E2E_ROOT" && swift build -c release --product dbx-poc >/dev/null 2>&1 ) || die "swift build failed"
+  e2e_sign_if_needed
 fi
 [ -x "$BIN" ] || die "dbx-poc 不存在：$BIN"
 cd "$E2E_ROOT"

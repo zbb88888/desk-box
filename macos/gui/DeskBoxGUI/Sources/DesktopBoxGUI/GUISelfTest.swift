@@ -330,6 +330,19 @@ final class GUISelfTest: @unchecked Sendable {
             guard await waitUntil(10, { pty.output.contains(expected) }) else {
                 return step("pty-roundtrip-\(round)", false, "error=\(pty.error ?? "nil") output=\(pty.output.suffix(200))")
             }
+            // M44：真实 shell 输出的「回车重绘」——进度条只显示最后一次的内容，不是全部拼在一起。
+            if round == 1 {
+                pty.sendInput("printf 'step-A\\rstep-B\\rstep-C\\n'; echo redraw-done")
+                guard await waitUntil(10, { pty.output.contains("redraw-done\n") }) else {
+                    return step("pty-carriage-return", false, "output=\(pty.output.suffix(200))")
+                }
+                // 取 printf 的输出行（不是回显的命令行：那一行里是字面的反斜杠 r）。
+                let lines = pty.output.split(separator: "\n").map(String.init)
+                guard lines.contains("step-C"), !lines.contains(where: { $0.contains("step-Astep-B") || $0 == "step-A" }) else {
+                    return step("pty-carriage-return", false, "lines=\(lines.suffix(6))")
+                }
+                step("pty-carriage-return", true)
+            }
             let clean = !pty.output.unicodeScalars.contains { $0.value == 0x1B || ($0.value < 0x20 && $0 != "\n" && $0 != "\t") }
             pty.close()
             guard clean else { return step("pty-output-sanitized-\(round)", false, String(pty.output.suffix(200))) }

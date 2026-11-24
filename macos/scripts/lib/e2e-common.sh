@@ -50,6 +50,12 @@ except Exception:
 sys.exit(0 if locked else 1)
 PY
 }
+# M44：跳过分三类，e2e-all.sh 按标记分类——
+#   skip_locked  宿主锁屏（[HOST-LOCKED：…]）                → 结果「不完整」
+#   skip_na      这个模式下本来就不该做的检查（[NOT-APPLICABLE：…]） → 不影响结论
+#   skip         其它一切（缺工具、没网络、缺资产……）          → 结果「不完整」
+# 默认是「算不完整」：新写的 skip 不加标记就不会被悄悄当成通过。
+skip_na() { skip "$1 [NOT-APPLICABLE：$2]"; }
 # 固定措辞，e2e-all.sh 据此统计「因锁屏未验证」的条目。
 skip_locked() { skip "$1 [HOST-LOCKED：宿主锁屏，VZ 无法恢复 VM 状态；解锁后重跑]"; }
 
@@ -96,6 +102,18 @@ e2e_init() {
 }
 
 # e2e_build_sign：构建并签名 release dbx-poc。E2E_SKIP_BUILD=1 时跳过（e2e-all.sh 统一构建一次）。
+# e2e_sign_if_needed：二进制没有 virtualization entitlement（刚被重新链接过）且本机有签名身份时补签。
+# 不需要 VM 的套件（没有 guest 资产也要能跑）在自己 swift build 之后调用——
+# 否则它们会把签名弄丢，随后带 E2E_SKIP_BUILD=1 运行的 VM 套件全部因缺 entitlement 失败。
+e2e_sign_if_needed() {
+  [ -x "$BIN" ] || return 0
+  codesign -d --entitlements - "$BIN" 2>/dev/null | grep -q 'com.apple.security.virtualization' && return 0
+  CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-Apple Development: 1220582684@qq.com (9LM4RS5GL6)}"
+  security find-identity -v -p codesigning 2>/dev/null | grep -qF "$CODESIGN_IDENTITY" || return 0
+  codesign --force --sign "$CODESIGN_IDENTITY" --entitlements "$E2E_ROOT/Resources/DeskBox.entitlements" \
+    --timestamp "$BIN" >/dev/null 2>&1 || true
+}
+
 e2e_build_sign() {
   [ -f "$MANIFEST" ] || die "manifest not found: $MANIFEST (run ./scripts/build-alpine-guest.sh ./guest first)"
   if [ "${E2E_SKIP_BUILD:-0}" != 1 ]; then
