@@ -205,7 +205,9 @@ ev_expect "手改的 verdict 与明细不符 → 证据无效" \
   "e['suites'][0]['exitCode'] = 1; e['verdict'] = 'complete'" 1 "记录的 verdict=complete 与明细不符"
 ev_expect "引用未知不变量 → 证据无效" "e['suites'][0]['invariants'] = ['INV-99']" 1 "未知不变量 INV-99"
 ev_expect "schema 不符 → 证据无效" "e['schema'] = 'something/else'" 1 "schema 不是"
-python3 "$EVPY" summarize --markdown "$(ls "$SCRATCH"/ev-*.json | head -1)" | grep -q '^| INV-01 |' \
+# 用一份明确的、未改动的证据（此前取「目录里第一个 ev-$RANDOM.json」，偶尔会拿到上面故意弄坏的那份）。
+mkev "$SCRATCH/ev-markdown.json" "pass"
+python3 "$EVPY" summarize --markdown "$SCRATCH/ev-markdown.json" | grep -q '^| INV-01 |' \
   && pass "证据：summarize --markdown 输出表格" || fail "证据：markdown 输出异常"
 
 LEFT=$(ls -d /tmp/dbx-st-* 2>/dev/null | tr '\n' ' ')
