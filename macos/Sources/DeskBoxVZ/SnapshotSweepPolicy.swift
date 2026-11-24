@@ -59,6 +59,12 @@ public enum SnapshotSweepPolicy {
         if name.hasSuffix(".snap") {
             return liveSandboxIDs.contains(String(name.dropLast(5))) ? .keep : .remove
         }
+        // M35：SecureFile 的原子写入临时文件（`.<name>.tmp-<uuid>`）。正常情况下毫秒级就被 rename 掉；
+        // 留下来的只可能是写入中途崩溃的残留——里面可能是明文 VM 状态，过了宽限期就删。
+        if name.hasPrefix("."), name.contains(".tmp-") {
+            guard let age else { return .keep }
+            return age > legacyGrace ? .remove : .keep
+        }
         guard name.hasPrefix("tmp-") else { return .ignore }
         if let age, age > maxAge { return .remove }
         if let pid = ownerPID(ofTempName: name) {

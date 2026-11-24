@@ -61,6 +61,8 @@ CI：`macos-build-test` 新增一步运行该套件。它是真机 e2e 里第一
 
 ## 5. 诚实边界
 
+- **更正**：§3 的「对照实验」里，旧二进制的 `launch` 触碰了用户真实的 cow-root（重写了一个内容不变的空 `registry.json`）。详见 `m35-host-state-permissions.md` §5。
+
 - `launch` 只验证了解析（未知选项 / 非法整数在触碰 Virtualization 之前被拒）；没有用新解析真正启动一台 VM（`launch` 是早期 POC 入口，日常路径是 daemon 的 `run`）。
 - 没有对「值看起来像路径但写错了」这类语义错误做任何检查；fail-closed 只覆盖语法层面。
 - `gen-*-key` 仍会覆盖已存在的密钥文件而不提示。

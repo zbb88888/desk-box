@@ -1,3 +1,4 @@
+import DeskBoxVZ
 import Foundation
 
 /// M34：签名 / 发布 / 校验 / 直启类子命令的参数规格。
@@ -101,23 +102,9 @@ enum ReleaseCLISpecs {
 /// 目标路径上任何时刻都不会出现「内容已是私钥、权限还没收紧」的窗口。
 enum PrivateKeyFile {
     static func write(_ content: String, to url: URL) throws {
-        let fm = FileManager.default
-        try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temp = url.deletingLastPathComponent()
-            .appendingPathComponent(".\(url.lastPathComponent).tmp-\(UUID().uuidString)")
-        guard fm.createFile(atPath: temp.path, contents: Data(content.utf8),
-                            attributes: [.posixPermissions: 0o600]) else {
-            throw CLIError.usage("cannot write key material to \(url.path)")
-        }
-        do {
-            // createFile 的权限受 umask 影响只会更严，不会更松；仍显式设置一次。
-            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temp.path)
-            if rename(temp.path, url.path) != 0 {
-                throw CLIError.usage("cannot move key material into place at \(url.path): errno=\(errno)")
-            }
-        } catch {
-            try? fm.removeItem(at: temp)
-            throw error
-        }
+        // M35：统一走 DeskBoxVZ.SecureFile（同一套实现也用于快照密钥、快照、沙箱盘域标记）。
+        // 私钥所在目录若需要新建，同样是 0700。
+        do { try SecureFile.write(Data(content.utf8), to: url) }
+        catch { throw CLIError.usage("cannot write key material to \(url.path): \(error.localizedDescription)") }
     }
 }

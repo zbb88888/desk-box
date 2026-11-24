@@ -163,7 +163,8 @@ final class DisplaySandboxViewModel: ObservableObject, @unchecked Sendable {
     private func consoleFileHandle() throws -> FileHandle {
         let path = DeskBoxPaths.supportRoot.appendingPathComponent("display-console.log")
         try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: path.path, contents: nil)
+        FileManager.default.createFile(atPath: path.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        SecureFile.tighten(path)
         return try FileHandle(forWritingTo: path)
     }
 }

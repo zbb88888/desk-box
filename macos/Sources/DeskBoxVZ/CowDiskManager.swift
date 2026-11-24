@@ -37,7 +37,8 @@ public final class CowDiskManager: @unchecked Sendable {
     public init(root: URL, fileManager: FileManager = .default) throws {
         self.root = root.standardizedFileURL
         self.fileManager = fileManager
-        try fileManager.createDirectory(at: self.root, withIntermediateDirectories: true)
+        // M35：我们新建的目录是 0700；用户给的已存在目录不去改它的权限（clone 自身会是 0600）。
+        try PrivateDirectory.create(self.root)
     }
 
     /// Creates a clone in a fixed product-owned directory. The sandbox ID is
@@ -67,9 +68,16 @@ public final class CowDiskManager: @unchecked Sendable {
             let error = errno
             throw SandboxFailure(.platformCowUnavailable, "APFS clonefile 失败（errno=\(error)），拒绝回退到基础盘")
         }
+        // M35：clonefile 继承基础镜像的权限（通常 0644）。沙箱盘里随后会有 guest 写入的数据
+        //（workspace 内容等），不能让同机其他用户读到——收紧失败即视为创建失败。
+        guard chmod(cloneURL.path, 0o600) == 0 else {
+            let error = errno
+            try? fileManager.removeItem(at: cloneURL)
+            throw SandboxFailure(.platformCowUnavailable, "无法收紧 COW 盘权限（errno=\(error)）")
+        }
         // M23：域标记失败也必须清理 clone（否则会留下无法归属的 COW）。
         do {
-            try Data(domainID.raw.utf8).write(to: Self.domainMarkerURL(forClone: cloneURL), options: .atomic)
+            try SecureFile.write(Data(domainID.raw.utf8), to: Self.domainMarkerURL(forClone: cloneURL))
         } catch {
             try? fileManager.removeItem(at: cloneURL)
             throw SandboxFailure(.platformCowUnavailable, "写入 COW 域标记失败：\(error)")

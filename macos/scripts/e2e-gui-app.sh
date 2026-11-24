@@ -129,6 +129,9 @@ SPAWNED=$(pgrep -f "$APP/Contents/MacOS/dbx-poc daemon" | head -1)
 [ -n "$SPAWNED" ] && [ "$(ps -o ppid= -p "$SPAWNED" | tr -d ' ')" = "$GUI1" ] \
   && pass "G1 该 daemon 是这个 GUI 进程拉起的（pid $SPAWNED，ppid=$GUI1）" || fail "G1 找不到由 GUI 拉起的 daemon（pid=${SPAWNED:-none}）"
 [ -f "$DBX_SUPPORT_ROOT/dbxd-gui.log" ] && pass "G1 daemon 日志写在隔离目录" || fail "G1 daemon 日志不在隔离目录"
+# M35：日志里有 guest console 输出。
+[ "$(stat -f '%Lp' "$DBX_SUPPORT_ROOT/dbxd-gui.log" 2>/dev/null)" = 600 ] && pass "G1 daemon 日志权限 0600" \
+  || fail "G1 daemon 日志权限=$(stat -f '%Lp' "$DBX_SUPPORT_ROOT/dbxd-gui.log" 2>/dev/null)"
 
 wait_gui_exit "$GUI1" 15
 [ -s "$R1" ] || fail "自检报告未生成（自检钩子未启动？）：$(head -c 300 "$R1.stdout" 2>/dev/null)"

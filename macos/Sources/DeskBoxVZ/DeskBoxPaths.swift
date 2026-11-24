@@ -60,7 +60,6 @@ public enum DeskBoxPaths {
     public static func ensureSupportRootExists() {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: supportRoot.path) else { return }
-        try? fm.createDirectory(at: supportRoot, withIntermediateDirectories: true,
-                                attributes: [.posixPermissions: 0o700])
+        try? PrivateDirectory.create(supportRoot)
     }
 }

@@ -88,20 +88,19 @@ public struct SnapshotStore: Sendable {
 
     /// 读取既有 key；不存在则生成并落盘（0600）。
     public func loadOrCreateKey() throws -> SymmetricKey {
-        let fm = FileManager.default
         if let data = try? Data(contentsOf: keyURL), data.count == 32 {
+            // M35：旧版本（或被外部改动过）的 key 文件若对组/其他用户可读，收紧它。
+            SecureFile.tighten(keyURL)
             return SymmetricKey(data: data)
         }
-        let dir = keyURL.deletingLastPathComponent()
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         var bytes = Data(count: 32)
         let status = bytes.withUnsafeMutableBytes { buffer -> Int32 in
             guard let base = buffer.baseAddress else { return -1 }
             return SecRandomCopyBytes(kSecRandomDefault, 32, base)
         }
         guard status == 0 else { throw SnapshotError.keyUnavailable(keyURL.path) }
-        try bytes.write(to: keyURL, options: [.atomic])
-        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
+        // M35：此前是「按默认权限原子写入，再 chmod 0600」——快照加密密钥有一个短暂的可读窗口。
+        try SecureFile.write(bytes, to: keyURL)
         return SymmetricKey(data: bytes)
     }
 
@@ -131,10 +130,9 @@ public struct SnapshotStore: Sendable {
         out.append(sealed.ciphertext)
         out.append(sealed.tag)
 
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true)
-        try out.write(to: url, options: [.atomic])
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // M35：快照目录归我们所有（0700）；快照文件 0600 且无窗口期。
+        try PrivateDirectory.ensureOwned(url.deletingLastPathComponent())
+        try SecureFile.write(out, to: url)
     }
 
     /// 读取信封（不解密）。用于「三道闸」先把关，避免把不可用快照交给 VZ。

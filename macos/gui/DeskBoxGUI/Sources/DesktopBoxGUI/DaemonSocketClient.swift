@@ -217,7 +217,9 @@ final class DaemonProcessManager: ObservableObject, @unchecked Sendable {
         // GUI 由 LogStore.loadExternal 追加显示。
         let logDir = (sockPath ?? self.clientPath).replacingOccurrences(of: "/dbxd.sock", with: "")
         let logPath = logDir + "/dbxd-gui.log"
-        FileManager.default.createFile(atPath: logPath, contents: nil)
+        // M35：daemon 日志里有 guest console 输出；0600，且已存在的旧日志也收紧。
+        FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
+        SecureFile.tighten(URL(fileURLWithPath: logPath))
         let logHandle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath))
         try? logHandle?.truncate(atOffset: 0)
         process.standardOutput = logHandle

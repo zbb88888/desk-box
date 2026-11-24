@@ -80,7 +80,7 @@ public final class SandboxRegistry: @unchecked Sendable {
         self.cowRoot = root
         self.fileURL = root.appendingPathComponent("registry.json", isDirectory: false)
         self.lockURL = root.appendingPathComponent("registry.lock", isDirectory: false)
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try PrivateDirectory.create(root)
     }
 
     /// flock 按 open-file-description 计：每次调用各自 open，同进程线程间也互斥。
@@ -137,11 +137,9 @@ public final class SandboxRegistry: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        // 临时文件名带 UUID：即便锁失效也不会两个 writer 写同一个 tmp。
-        let tmpURL = fileURL.appendingPathExtension("tmp-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: tmpURL) }
-        try encoder.encode(entries).write(to: tmpURL, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tmpURL)
+        // M35：0600 原子写入。SecureFile 用带 UUID 的临时文件 + rename，
+        // 即便锁失效也不会两个 writer 写同一个临时文件。
+        try SecureFile.write(try encoder.encode(entries), to: fileURL)
     }
 
     public static func processIsAlive(_ pid: Int32) -> Bool {

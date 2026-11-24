@@ -436,8 +436,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
         let tempURL = snapshotURL.deletingLastPathComponent()
             .appendingPathComponent(SnapshotSweepPolicy.suspendTempName())
-        try? FileManager.default.createDirectory(at: snapshotURL.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
+        // M35：这里随后会落一份**明文** VM 内存状态（VZ 的保存文件，权限由 VZ 决定）。
+        // 目录必须先是 0700，保存期间才不会被同机其他用户读到。
+        try PrivateDirectory.ensureOwned(snapshotURL.deletingLastPathComponent())
         // defer 必须在保存之前登记：保存中途失败留下的半截文件也要删。
         defer { try? FileManager.default.removeItem(at: tempURL) }
         try await self.vzOperation { completion in
@@ -576,7 +577,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         let payload = try self.snapshots.open(at: snapshotURL)
         let tempURL = snapshotURL.deletingLastPathComponent()
             .appendingPathComponent(SnapshotSweepPolicy.restoreTempName())
-        try payload.write(to: tempURL, options: [.atomic])
+        // M35：解密后的明文 VM 状态。此前按默认权限（0644）写入。
+        try PrivateDirectory.ensureOwned(tempURL.deletingLastPathComponent())
+        try SecureFile.write(payload, to: tempURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         // VZ 要求 restore 目标 machine 处于 stopped：从同一 configuration 重建一台。

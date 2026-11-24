@@ -28,6 +28,7 @@ SUITES=(
   "m24-concurrency:e2e-daemon-concurrency.sh"
   "m26-boot-cancel:e2e-boot-and-cancel.sh"
   "m27-cli-instance:e2e-cli-and-instance.sh"
+  "m35-permissions:e2e-state-permissions.sh"
   "m20-persistence:e2e-lifecycle-persistence.sh"
   "m20b-fault-injection:e2e-fault-injection.sh"
   "m21-stats:e2e-resource-stats.sh"

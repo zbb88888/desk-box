@@ -208,6 +208,12 @@ final class SandboxDaemon: @unchecked Sendable {
                 break
             }
             if clientFD < 0 { continue }
+            // M35：对端必须是 daemon 自己的用户（或 root）。不回任何内容，直接断开。
+            guard DaemonPeerPolicy.admits(fd: clientFD) else {
+                fputs("daemon: rejected connection from uid=\(DaemonPeerPolicy.peerUID(of: clientFD).map(String.init) ?? "unknown")\n", stderr)
+                Darwin.close(clientFD)
+                continue
+            }
             // M24b：并发处理；状态互斥下沉到 stateQueue / 每沙箱 opQueue。
             handlerGroup.enter()
             handlerQueue.async {
