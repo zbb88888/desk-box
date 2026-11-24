@@ -42,7 +42,8 @@
 | M39 ✅ | exec 的输出：不卡住、不静默截断、退出码原样传递 | INV-08 | M | 已完成：guest 边等边读 + 流式回传（`execOutput` 帧）；宿主汇总并再次执行上限；旧 guest 给出提示；CLI 传递退出码。候选已按本轮源码重建。见 `m39-exec-output.md` |
 | M39b | 安装候选（`macos/guest` 与 App bundle 里的那份） | INV-06 / INV-08 | S | 需用户确认：`install-guest-candidate.sh ./guest-candidate`；bundle 需停 daemon 后重新打包 |
 | M41 ✅ | 取消在途的 exec（原 M29） | INV-08 | M | 已完成：guest 在 exec 期间读控制通道（`execCancel` 帧；其它帧排队）；daemon `execCancel` 按实际结果下结论；CLI `exec-cancel` 与 Ctrl-C；GUI Cancel。候选已重建。见 `m41-exec-cancel.md` |
-| M42 | 客户端断开时自动取消 exec；exec 期间的 broker 请求 | INV-08 | M | daemon 监视 exec 客户端连接；guest 在 exec 期间不 accept broker socket（待确认是否构成死锁） |
+| M42 ✅ | broker 入口不能搞垮控制面；exec 的客户端走了就别再跑 | INV-08 | M | 已完成：发现并修复「workload 经 broker socket 杀掉 guest 控制面」（SIGPIPE / 阻塞读 / exec 期间不受理）；daemon 监视 exec 客户端连接；修 M39 的超时提前回归。候选已重建。见 `m42-broker-entry-and-client-disconnect.md` |
+| M43 | guest 控制面死亡的快速发现；broker 结果回传给 guest | INV-08 | M | 控制 socket 关闭时在途 exec 立刻失败；`brokerreq` 等到拉取结束并返回真实结果 |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 

@@ -83,6 +83,7 @@ M24–M35 改动了生命周期、清理、快照、PTY、宿主侧状态文件�
 | INV-03 / INV-10 | 沙箱盘、快照密钥、明文 VM 状态临时文件的保密性依赖父目录与 umask | M35 |
 | INV-08 | daemon 串行处理导致生命周期操作互相阻塞；拆除操作要等在途 exec；第二个 daemon 可抢占 socket；终端关闭后 guest 内 shell 不退出 | M24 / M26 / M27 / M33 |
 | INV-02 | `rm` 不比对声明的凭据域 | M27 |
+| INV-08 | workload 经 guest 内的 broker 入口杀掉自己沙箱的控制面（向已关闭的对端回写触发 SIGPIPE；阻塞读；exec 期间不受理）。**修复在 guest 源码里，本机现有 guest 资产尚未重建**，旧 guest 上宿主无法缓解 | M42 |
 | INV-05 | 快照校验与推送之间的 TOCTOU：推送阶段按路径重新读取文件（跟随符号链接、不比对摘要） | M37 |
 | INV-06 / INV-08 | guest 的 workspace 接收端以 root 跟随 workload 预置的符号链接（guest 内从 uid 65534 提权到 root；VM 边界不受影响）；文件变短后重新同步残留旧内容。**修复在 guest 源码里，本机现有 guest 资产尚未重建**，在此之前由宿主闸门（`DBX-WS-RESYNC-UNSAFE`）挡住默认路径 | M37 |
 

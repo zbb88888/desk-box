@@ -87,7 +87,8 @@ if [ "$XV" -ge 2 ]; then
 
   x 3 'echo before-timeout; echo err-before >&2; sleep 30; echo never'
   [ "$RC" = 254 ] && pass "X6 超时：退出码 254（guest 的 -2）" || fail "X6 rc=$RC"
-  [ "$MS" -ge 2500 ] && [ "$MS" -lt 6000 ] && pass "X6 在超时时刻返回（${MS}ms；超时 3s）" || fail "X6 用时 ${MS}ms"
+  # 下限 2950：超时不能提前（M42 修过一次「只比较整秒，最多提前 1 秒」）。
+  [ "$MS" -ge 2950 ] && [ "$MS" -lt 6000 ] && pass "X6 在超时时刻返回（${MS}ms；超时 3s，不提前）" || fail "X6 用时 ${MS}ms"
   [ "$(cat "$O")" = before-timeout ] && grep -q '^err-before$' "$E" && grep -q 'exec timed out; process group killed' "$E" && ! grep -q never "$O" \
     && pass "X6 超时前的 stdout / stderr 都保留，stderr 说明了超时" || fail "X6 out=[$(cat "$O")] err=[$(cat "$E")]"
   [ "$(notice)" = 0 ] && pass "X6 新 guest 的超时不带「旧 guest」提示" || fail "X6 多余的提示：$(cat "$E")"

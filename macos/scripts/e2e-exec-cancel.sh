@@ -11,6 +11,10 @@
 #     C6  exec 期间到达的其它帧不丢：取消之前送入终端的输入，取消之后照常生效
 #     C7  大量输出中取消：照样立刻停
 #     C8  之后 guest 响应正常，没有残留的 exec cgroup
+#   M42：客户端断开（两种 guest 都测；标 * 的只在支持取消的 guest 上成立）：
+#     D1* 在途 exec 的客户端被 kill -9：daemon 发现后请求取消，guest 里的命令被杀，沙箱随即可用
+#     D2  排队中 exec 的客户端被 kill -9：轮到它时不再执行
+#     D3  半关闭的客户端（发完请求就 shutdown 写端，仍在等应答）不被当成断开
 #   不支持（旧 guest）——宿主按**实际结果**如实报告：
 #     K1  exec-cancel：约 3s 后报 DBX-EXEC-CANCEL-UNSUPPORTED；那条 exec 不受影响，照常跑完
 #     K2  Ctrl-C：客户端在数秒内以 130 退出并说明原因（命令留在 guest 里跑完——与此前行为相同）
@@ -134,6 +138,52 @@ else
   [ "$RC" = 130 ] && [ "$INT_MS" -lt 4500 ] && pass "K2 旧 guest 上 Ctrl-C：客户端以 130 退出（${INT_MS}ms，不会陪着命令等到结束）" || fail "K2 rc=$RC ${INT_MS}ms"
   grep -q '无法取消 guest 里的命令' "$E2E_WORK/k2.err" && grep -q 'DBX-EXEC-CANCEL-UNSUPPORTED' "$E2E_WORK/k2.err" && pass "K2 并说明了原因" || fail "K2 没有说明：$(cat "$E2E_WORK/k2.err")"
   sleep 3   # 让留在 guest 里的那条命令跑完，免得影响收尾检查
+fi
+
+# ---------- M42：客户端断开 ----------
+gexec 'rm -f /workspace/hb /workspace/d2-ran' >/dev/null
+# D2：排队中的 exec，客户端在它开始之前就被杀（宿主侧逻辑，与 guest 版本无关）
+bg_exec d2a 20 'sleep 3; echo d2a-done'
+sleep 0.8
+"$BIN" exec --daemon-sock "$SOCK" "$ID" --timeout 20 -- /bin/sh -c 'echo ran > /workspace/d2-ran' >/dev/null 2>&1 &
+QUEUED=$!
+sleep 0.6
+kill -9 "$QUEUED" 2>/dev/null; wait "$QUEUED" 2>/dev/null
+wait_rc d2a 8000 && [ "$RC" = 0 ] && pass "D2 对照：在途的那条（别人的）exec 照常跑完" || fail "D2 在途 exec rc=${RC:-?}"
+sleep 0.5
+[ "$(gexec '[ -e /workspace/d2-ran ] && echo ran || echo not-run')" = not-run ] && pass "D2 排队中的 exec：客户端被 kill -9 之后，轮到它时没有执行" || fail "D2 没人要的 exec 仍然执行了"
+grep -q 'DBX-EXEC-CLIENT-GONE' "$DAEMON_LOG" && pass "D2 daemon 日志记录了原因（DBX-EXEC-CLIENT-GONE）" || fail "D2 daemon 日志里没有 DBX-EXEC-CLIENT-GONE"
+
+# D3：半关闭的客户端
+python3 - "$SOCK" "$ID" >"$E2E_WORK/d3.out" 2>&1 <<'PY'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.settimeout(20)
+s.sendall((json.dumps({"kind": "exec", "sandboxId": sys.argv[2], "argv": ["/bin/sh", "-c", "sleep 1.5; echo half-close-ok"], "timeoutSeconds": 10}) + "\n").encode())
+s.shutdown(socket.SHUT_WR)
+buf = b""
+while not buf.endswith(b"\n"):
+    chunk = s.recv(65536)
+    if not chunk: break
+    buf += chunk
+r = json.loads(buf.decode())
+print("exit=%s cancelled=%s out=%s" % (r.get("exitCode"), r.get("cancelled"), (r.get("stdout") or "").strip()))
+PY
+[ "$(cat "$E2E_WORK/d3.out")" = "exit=0 cancelled=None out=half-close-ok" ] && pass "D3 半关闭的客户端不被当成断开：命令跑完，应答完整（前导探测字节不影响解析）" || fail "D3 $(cat "$E2E_WORK/d3.out")"
+
+# D1：在途 exec 的客户端被 kill -9
+"$BIN" exec --daemon-sock "$SOCK" "$ID" --timeout 8 -- /bin/sh -c "$HEARTBEAT" >/dev/null 2>&1 &
+VICTIM=$!
+sleep 1.5
+kill -9 "$VICTIM" 2>/dev/null; wait "$VICTIM" 2>/dev/null
+sleep 1
+grep -q 'exec client disconnected; cancelling in-flight exec' "$DAEMON_LOG" && pass "D1 daemon 发现在途 exec 的客户端断开，并请求取消" || fail "D1 daemon 没有发现客户端断开"
+if [ "$CV" -ge 1 ]; then
+  t0=$(now_ms); H1=$(hb_count); PROBE_MS=$(( $(now_ms) - t0 )); sleep 1; H2=$(hb_count)
+  [ "$H1" -ge 3 ] && [ "$H1" = "$H2" ] && pass "D1 guest 里的命令被杀掉了（心跳停在 $H1）" || fail "D1 心跳 $H1 → $H2"
+  [ "$PROBE_MS" -lt 2000 ] && pass "D1 沙箱随即可用（下一条 exec ${PROBE_MS}ms 返回，没有排在那条 8s 的命令后面）" || fail "D1 下一条 exec 等了 ${PROBE_MS}ms"
+else
+  log "D1 旧 guest：取消帧被忽略，命令在 guest 里跑到超时（与此前行为相同）"
+  sleep 7
 fi
 
 # ---------- 收尾 ----------

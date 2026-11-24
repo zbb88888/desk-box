@@ -43,6 +43,9 @@
 /* M41：exec 取消。0（旧 guest 不上报）= 不支持；1 = exec 期间读取控制通道：收到 execCancel（帧类型 27，
  * requestID 与在途 exec 相同）或控制通道断开时，立刻杀掉进程组并应答。 */
 #define DBX_EXEC_CANCEL_VERSION 1
+/* M42：broker 入口。1（旧 guest 不上报）= 只有主循环受理，exec 期间不受理；对端提前关闭时 bootstrap 会被
+ * SIGPIPE 杀掉。2 = exec 期间同样受理；忽略 SIGPIPE；空闲的客户端连接有接收超时。 */
+#define DBX_BROKER_VERSION 2
 
 static uint16_t be16(uint16_t x) { return (uint16_t)((x >> 8) | (x << 8)); }
 static uint32_t be32(uint32_t x) { return __builtin_bswap32(x); }
@@ -564,8 +567,8 @@ static int collect_stats_json(char *out, size_t cap) {
     unsigned long long pids_total = cg_read_u64("/sys/fs/cgroup/pids.current", NULL, &pids_found);
 
     if (!cpu_found && !mem_found && !pids_found) {
-        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d}",
-                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION);
+        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d,\"brokerVersion\":%d}",
+                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION, DBX_BROKER_VERSION);
         return n > 0 ? n : -1;
     }
 
@@ -625,9 +628,9 @@ static int collect_stats_json(char *out, size_t cap) {
     int n = snprintf(out, cap,
                      "{\"cpuUsageUsec\":%s,\"memoryCurrentBytes\":%s,"
                      "\"memoryMaxBytes\":%s,\"pidsCurrent\":%s,\"pidsMax\":%s,"
-                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d}",
+                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d,\"brokerVersion\":%d}",
                      cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups,
-                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION);
+                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION, DBX_BROKER_VERSION);
     return n > 0 ? n : -1;
 #else
     (void)out; (void)cap;
@@ -655,6 +658,7 @@ struct exec_child_ctx {
 
 static int exec_child_main(void *argp) {
     struct exec_child_ctx *ctx = (struct exec_child_ctx *)argp;
+    (void)signal(SIGPIPE, SIG_DFL);     /* bootstrap 自己忽略 SIGPIPE；workload 要保持默认行为 */
     (void)setpgid(0, 0);
     (void)dup2(ctx->out_w, STDOUT_FILENO);
     (void)dup2(ctx->err_w, STDERR_FILENO);
@@ -679,6 +683,9 @@ struct exec_stream {
 };
 static ssize_t recv_frame(int fd, uint8_t *buf, size_t cap);
 static ssize_t recv_record(int fd, uint8_t *buf, size_t cap);
+static int g_broker_listen_fd;
+static void broker_accept_one(int ctl_fd, int record_mode, uint64_t *sequence);
+static void broker_handle_frame(uint16_t kind, const char *payload);
 
 /* M41：exec 期间从控制通道读到、但不是「取消当前 exec」的帧，按到达顺序存在这里，
  * exec 结束后由主循环照常处理（此前它们只是留在 socket 缓冲区里，效果相同）。 */
@@ -908,7 +915,10 @@ static int run_exec_request(const char *request_json, char *response, size_t res
             } else {
                 struct timespec now;
                 clock_gettime(CLOCK_MONOTONIC, &now);
-                if (now.tv_sec - started.tv_sec >= timeout_seconds) {
+                /* 按纳秒比较：只比较秒数会在「跨过整秒」时提前最多 1 秒判超时。 */
+                long long elapsed_ms = (long long)(now.tv_sec - started.tv_sec) * 1000
+                                     + (now.tv_nsec - started.tv_nsec) / 1000000;
+                if (elapsed_ms >= (long long)timeout_seconds * 1000) {
                     timed_out = 1;
                     kill(-pid, SIGKILL);
                     kill(pid, SIGKILL);
@@ -917,8 +927,8 @@ static int run_exec_request(const char *request_json, char *response, size_t res
                 }
             }
         }
-        struct pollfd pfd[3];
-        int map[3];
+        struct pollfd pfd[4];
+        int map[4];
         int n = 0;
         for (int i = 0; i < 2; i++) {
             if (fds[i] < 0) continue;
@@ -930,6 +940,12 @@ static int run_exec_request(const char *request_json, char *response, size_t res
             control_slot = n;
             pfd[n].fd = st->fd; pfd[n].events = POLLIN; pfd[n].revents = 0; map[n] = -1; n++;
         }
+        /* M42：exec 里的程序也可能调用 brokerreq——继续受理 broker 的请求入口。 */
+        int broker_slot = -1;
+        if (!child_done && st != NULL && control_readable && g_broker_listen_fd >= 0) {
+            broker_slot = n;
+            pfd[n].fd = g_broker_listen_fd; pfd[n].events = POLLIN; pfd[n].revents = 0; map[n] = -1; n++;
+        }
         if (n == 0) {
             if (child_done) break;
             usleep(50000);      /* 两路都已 EOF，控制通道也不可读，但子进程还在跑：等它退出或超时 */
@@ -937,6 +953,9 @@ static int run_exec_request(const char *request_json, char *response, size_t res
         }
         int ready = poll(pfd, (nfds_t)n, 100);
         int got_any = 0;
+        if (ready > 0 && broker_slot >= 0 && (pfd[broker_slot].revents & POLLIN)) {
+            broker_accept_one(st->fd, st->encrypted, st->sequence);
+        }
         if (ready > 0 && control_slot >= 0 && pfd[control_slot].revents != 0) {
             int kill_now = 0;
             if (pfd[control_slot].revents & POLLIN) {
@@ -950,6 +969,14 @@ static int run_exec_request(const char *request_json, char *response, size_t res
                     if (k == 27) {
                         /* 只取消「正是这一个」exec；requestID 不符的是迟到的取消，丢弃。 */
                         if (memcmp(frame + 16, st->request_id, 16) == 0) { cancelled = 1; kill_now = 1; }
+                    } else if (k == 22 || k == 23) {
+                        /* M42：broker 的回传数据当场落盘（exec 里的程序正等着这个文件），不排队。 */
+                        uint32_t plen_be; memcpy(&plen_be, frame + 32, 4);
+                        size_t plen = be32(plen_be);
+                        if (36 + plen <= (size_t)got) {
+                            frame[36 + plen] = 0;
+                            broker_handle_frame(k, (const char *)(frame + 36));
+                        }
                     } else if (pending_push(frame, (size_t)got) != 0) {
                         control_readable = 0;   /* 内存不足：不再读，避免丢帧 */
                     }
@@ -1286,6 +1313,7 @@ static int pty_spawn(struct pty_session *s, char **argv, unsigned int rows, unsi
     pid_t pid = fork();
     if (pid < 0) { close(master); return -4; }
     if (pid == 0) {
+        (void)signal(SIGPIPE, SIG_DFL);
         close(master);
         if (setsid() < 0) _exit(120);
         int slave = open(slave_name, O_RDWR);
@@ -1435,6 +1463,108 @@ static ssize_t recv_frame(int fd, uint8_t *buf, size_t cap) {
     return (ssize_t)(36 + paylen);
 }
 
+/* ---- 在线 broker（M2-3b）：guest 内的请求入口与宿主回传的数据帧 ----
+ * M42：状态与处理函数提到文件作用域，主循环和 exec 的等待循环共用。此前只有主循环处理它们，
+ * 而 exec 期间主循环不转——在 exec 里调用 brokerreq 会一直卡到 exec 超时。 */
+static int g_broker_listen_fd = -1;
+static uint32_t next_broker_req_id = 1;
+static int broker_open_fd[4] = {-1, -1, -1, -1};
+static uint32_t broker_open_id[4] = {0, 0, 0, 0};
+
+/* 接受一个 broker 客户端连接并处理它的一行请求。 */
+static void broker_accept_one(int ctl_fd, int record_mode, uint64_t *sequence) {
+    int cfd = accept(g_broker_listen_fd, NULL, NULL);
+    if (cfd >= 0) {
+        /* M42：客户端连上来却什么都不发时，不能让 bootstrap 永远卡在 recv 上（那样宿主的所有请求都得不到应答）。 */
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
+        (void)setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        char line[768];
+        ssize_t n = recv(cfd, line, sizeof(line) - 1, 0);
+        if (n > 0) {
+            line[n] = 0;
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            /* 格式：GET <url>（savePath 在 guest 侧由 /workspace/inbound/ + basename(url) 决定）*/
+            if (strncmp(line, "GET ", 4) == 0 && strncmp(line + 4, "http", 4) == 0 && strlen(line + 4) <= 480) {
+                const char *url = line + 4;
+                /* savePath: /workspace/inbound/<url basename> */
+                const char *base = strrchr(url, '/');
+                base = base ? base + 1 : url;
+                if (!*base || strstr(base, "..")) base = "index.html";
+                char save[256];
+                int sn = snprintf(save, sizeof(save), "/workspace/inbound/%s", base);
+                /* savePath 仅在 ws_path_ok 检查之下；inbound 目录用 mkdir -p 防御父目录缺失 */
+                if (sn > 0 && (size_t)sn < sizeof(save)) {
+                    uint32_t req_id = next_broker_req_id++;
+                    char body[768];
+                    int bn = snprintf(body, sizeof(body),
+                                      "{\"reqId\":%u,\"url\":\"%s\",\"savePath\":\"%s\"}",
+                                      req_id, url, save);
+                    if (bn > 0) {
+                        (void)send_any_frame(ctl_fd, record_mode, 21, (*sequence)++,
+                                             NULL, body, (size_t)bn);
+                        /* guest 侧 immediately 以 in-place fd 预开（待 brokerData 逐块写） */
+                        char mkdir_line[256];
+                        /* M37：与 workspace 同步同一个问题——这里由 workload 自己触发，且带 O_TRUNC。 */
+                        int mn = snprintf(mkdir_line, sizeof(mkdir_line), "inbound/%s", base);
+                        int ofd = (mn > 0 && (size_t)mn < sizeof(mkdir_line)) ? ws_open_beneath(mkdir_line, 0644, 1) : -1;
+                        if (ofd >= 0) {
+                            (void)fchown(ofd, 65534, 65534);
+                            int placed = 0;
+                            for (int i = 0; i < 4 && !placed; i++) {
+                                if (broker_open_fd[i] < 0) {
+                                    broker_open_fd[i] = ofd;
+                                    broker_open_id[i] = req_id;
+                                    placed = 1;
+                                }
+                            }
+                            if (!placed) close(ofd);
+                        }
+                        /* 立即答复 client OK（拉取异步；完成事件以 brokerEnd 反映），简化 client 流程 */
+                        const char *ok = "OK\n";
+                        (void)send(cfd, ok, 3, MSG_NOSIGNAL);
+                    }
+                } else {
+                    const char *err = "ERR bad-savepath\n";
+                    (void)send(cfd, err, strlen(err), MSG_NOSIGNAL);
+                }
+            } else {
+                const char *err = "ERR bad-request\n";
+                (void)send(cfd, err, strlen(err), MSG_NOSIGNAL);
+            }
+        }
+        close(cfd);
+    }
+}
+
+/* 宿主回传的 brokerData（22）/ brokerEnd（23）。 */
+static void broker_handle_frame(uint16_t kind, const char *payload) {
+    uint32_t rid = (uint32_t)ws_extract_u64(payload, "\"reqId\"", 0);
+    if (kind == 22) {
+        int found = -1;
+        for (int i = 0; i < 4; i++) if (broker_open_fd[i] >= 0 && broker_open_id[i] == rid) { found = i; break; }
+        if (found < 0) return;
+        uint8_t bytes[1024];
+        int blen = extract_hex_field(payload, "\"dataHex\"", bytes, sizeof(bytes));
+        if (blen <= 0) return;
+        size_t w = 0;
+        while (w < (size_t)blen) {
+            ssize_t n = write(broker_open_fd[found], bytes + w, (size_t)blen - w);
+            if (n <= 0) break;
+            w += (size_t)n;
+        }
+    } else if (kind == 23) {
+        for (int i = 0; i < 4; i++) if (broker_open_fd[i] >= 0 && broker_open_id[i] == rid) {
+            (void)fsync(broker_open_fd[i]);
+            close(broker_open_fd[i]);
+            broker_open_fd[i] = -1;
+            broker_open_id[i] = 0;
+            break;
+        }
+    }
+}
+
 /* Receive one record-protected ControlFrame. Returns payload length or < 0. */
 static ssize_t recv_record(int fd, uint8_t *buf, size_t cap) {
     uint8_t lenbuf[4];
@@ -1477,6 +1607,10 @@ static int extract_host_public_hex(const char *ack_payload, char *out_hex /* 65 
 
 #ifndef DBX_TEST_NO_MAIN
 int main(void) {
+    /* M42：bootstrap 往已经关闭的对端写数据时（broker 客户端提前退出、控制通道被宿主关闭），
+     * 默认的 SIGPIPE 会直接杀掉 bootstrap——workload 只要在 broker 应答之前退出就能做到。
+     * 忽略它，让写操作返回 EPIPE，由各处已有的错误处理接手。子进程（exec / pty）恢复默认行为。 */
+    (void)signal(SIGPIPE, SIG_IGN);
     const char *diag = "Desk Box bootstrap: starting\n";
     write(STDOUT_FILENO, diag, strlen(diag));
     fsync(STDOUT_FILENO);
@@ -1584,6 +1718,7 @@ reconnect:
             if (bind(lfd, (struct sockaddr *)&su, sizeof(su)) == 0 && listen(lfd, 8) == 0) {
                 (void)chmod(su.sun_path, 0666);
                 broker_listen_fd = lfd;
+                g_broker_listen_fd = lfd;
             } else {
                 close(lfd);
             }
@@ -1592,9 +1727,6 @@ reconnect:
 
     struct pty_session pty = {.pid = -1, .master_fd = -1, .id = 0};
     struct ws_session ws = {.active = 0, .ws_id = {0}, .declared_files = 0, .declared_bytes = 0, .received_files = 0, .received_bytes = 0};
-    uint32_t next_broker_req_id = 1;
-    int broker_open_fd[4] = {-1, -1, -1, -1};
-    uint32_t broker_open_id[4] = {0, 0, 0, 0};
     uint8_t incoming[CONTROL_FRAME_MAX + 1];    /* +1：payload 之后要补一个 NUL */
     pending_clear();
     for (;;) {
@@ -1639,65 +1771,7 @@ reconnect:
 
         /* guest→host 在线 broker（M2-3b）：UNIX socket 连接进来的 URL 请求。 */
         if (broker_listen_fd >= 0 && (pfds[broker_slot].revents & POLLIN)) {
-            int cfd = accept(broker_listen_fd, NULL, NULL);
-            if (cfd >= 0) {
-                char line[768];
-                ssize_t n = recv(cfd, line, sizeof(line) - 1, 0);
-                if (n > 0) {
-                    line[n] = 0;
-                    char *nl = strchr(line, '\n');
-                    if (nl) *nl = 0;
-                    /* 格式：GET <url>（savePath 在 guest 侧由 /workspace/inbound/ + basename(url) 决定）*/
-                    if (strncmp(line, "GET ", 4) == 0 && strncmp(line + 4, "http", 4) == 0 && strlen(line + 4) <= 480) {
-                        const char *url = line + 4;
-                        /* savePath: /workspace/inbound/<url basename> */
-                        const char *base = strrchr(url, '/');
-                        base = base ? base + 1 : url;
-                        if (!*base || strstr(base, "..")) base = "index.html";
-                        char save[256];
-                        int sn = snprintf(save, sizeof(save), "/workspace/inbound/%s", base);
-                        /* savePath 仅在 ws_path_ok 检查之下；inbound 目录用 mkdir -p 防御父目录缺失 */
-                        if (sn > 0 && (size_t)sn < sizeof(save)) {
-                            uint32_t req_id = next_broker_req_id++;
-                            char body[768];
-                            int bn = snprintf(body, sizeof(body),
-                                              "{\"reqId\":%u,\"url\":\"%s\",\"savePath\":\"%s\"}",
-                                              req_id, url, save);
-                            if (bn > 0) {
-                                (void)send_any_frame(fd, record_mode, 21, response_sequence++,
-                                                     NULL, body, (size_t)bn);
-                                /* guest 侧 immediately 以 in-place fd 预开（待 brokerData 逐块写） */
-                                char mkdir_line[256];
-                                /* M37：与 workspace 同步同一个问题——这里由 workload 自己触发，且带 O_TRUNC。 */
-                                int mn = snprintf(mkdir_line, sizeof(mkdir_line), "inbound/%s", base);
-                                int ofd = (mn > 0 && (size_t)mn < sizeof(mkdir_line)) ? ws_open_beneath(mkdir_line, 0644, 1) : -1;
-                                if (ofd >= 0) {
-                                    (void)fchown(ofd, 65534, 65534);
-                                    int placed = 0;
-                                    for (int i = 0; i < 4 && !placed; i++) {
-                                        if (broker_open_fd[i] < 0) {
-                                            broker_open_fd[i] = ofd;
-                                            broker_open_id[i] = req_id;
-                                            placed = 1;
-                                        }
-                                    }
-                                    if (!placed) close(ofd);
-                                }
-                                /* 立即答复 client OK（拉取异步；完成事件以 brokerEnd 反映），简化 client 流程 */
-                                const char *ok = "OK\n";
-                                (void)send(cfd, ok, 3, 0);
-                            }
-                        } else {
-                            const char *err = "ERR bad-savepath\n";
-                            (void)send(cfd, err, strlen(err), 0);
-                        }
-                    } else {
-                        const char *err = "ERR bad-request\n";
-                        (void)send(cfd, err, strlen(err), 0);
-                    }
-                }
-                close(cfd);
-            }
+            broker_accept_one(fd, record_mode, &response_sequence);
         }
 
         if (ready <= 0 && pending_count == 0) continue;
@@ -1846,31 +1920,8 @@ reconnect:
                     }
                     memset(&ws, 0, sizeof(ws));
                 }
-            } else if (kind == 22) { /* brokerData：宿主响应块 ，写入口径 broker_open_fd */
-                uint32_t rid = (uint32_t)ws_extract_u64((const char *)(incoming + 36), "\"reqId\"", 0);
-                int found = -1;
-                for (int i = 0; i < 4; i++) if (broker_open_fd[i] >= 0 && broker_open_id[i] == rid) { found = i; break; }
-                if (found >= 0) {
-                    uint8_t bytes[1024];
-                    int blen = extract_hex_field((const char *)(incoming + 36), "\"dataHex\"", bytes, sizeof(bytes));
-                    if (blen > 0) {
-                        size_t w = 0;
-                        while (w < (size_t)blen) {
-                            ssize_t n = write(broker_open_fd[found], bytes + w, (size_t)blen - w);
-                            if (n <= 0) break;
-                            w += (size_t)n;
-                        }
-                    }
-                }
-            } else if (kind == 23) { /* brokerEnd */
-                uint32_t rid = (uint32_t)ws_extract_u64((const char *)(incoming + 36), "\"reqId\"", 0);
-                for (int i = 0; i < 4; i++) if (broker_open_fd[i] >= 0 && broker_open_id[i] == rid) {
-                    (void)fsync(broker_open_fd[i]);
-                    close(broker_open_fd[i]);
-                    broker_open_fd[i] = -1;
-                    broker_open_id[i] = 0;
-                    break;
-                }
+            } else if (kind == 22 || kind == 23) { /* brokerData / brokerEnd */
+                broker_handle_frame(kind, (const char *)(incoming + 36));
             }
         }
 

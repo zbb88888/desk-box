@@ -1415,6 +1415,9 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                 try await self.pushBrokerChunks(handle: handle, request: request, data: data,
                                                 status: Int32(report.statusCode))
             } catch {
+                // M42：失败原因只回给 guest（而 guest 的 brokerreq 早已返回 OK）——宿主这边此前没有任何痕迹。
+                // 只记录主机名，不记录完整 URL（查询串里可能有敏感内容）。
+                fputs("broker: fetch failed host=\(url.host ?? "?") sandbox=\(handle.sandboxID): \(error)\n", stderr)
                 try? await self.sendBrokerEndAsync(handle: handle, request: request,
                                                    status: 0, ok: false,
                                                    error: String(describing: error))

@@ -288,7 +288,7 @@ final class SandboxDaemon: @unchecked Sendable {
         do {
             let request = try JSONDecoder().decode(DaemonRequest.self, from: data)
             requestKind = request.kind
-            response = try self.dispatch(request)
+            response = try self.dispatch(request, clientFD: fd)
         } catch {
             response = DaemonResponse(ok: false, error: "request rejected (kind=\(requestKind)): \(error)")
             fputs("daemon error (kind=\(requestKind)): \(error)\n", stderr)
@@ -319,7 +319,7 @@ final class SandboxDaemon: @unchecked Sendable {
         }
     }
 
-    private func dispatch(_ request: DaemonRequest) throws -> DaemonResponse {
+    private func dispatch(_ request: DaemonRequest, clientFD: Int32? = nil) throws -> DaemonResponse {
         // M24a：纯决策层先行拒绝（unknown kind / 缺参 / 域不匹配 / draining）；
         // 各 dispatch* 内保留自身 guard 防 TOCTOU。
         let route = try DaemonDecision.validate(request, state: self.stateSnapshot())
@@ -329,7 +329,7 @@ final class SandboxDaemon: @unchecked Sendable {
         case .ps:
             return try self.dispatchPs(request)
         case .exec:
-            return try self.dispatchExec(request)
+            return try self.dispatchExec(request, clientFD: clientFD)
         case .execCancel:
             return try self.dispatchExecCancel(request)
         case .stop:
@@ -608,7 +608,7 @@ final class SandboxDaemon: @unchecked Sendable {
         return DaemonResponse(ok: true, sandboxes: infos)
     }
 
-    private func dispatchExec(_ request: DaemonRequest) throws -> DaemonResponse {
+    private func dispatchExec(_ request: DaemonRequest, clientFD: Int32? = nil) throws -> DaemonResponse {
         let (session, sessionHandle) = try self.sessionFor(request, op: "exec")
         let sandboxId = session.id
         guard let argv = request.argv, !argv.isEmpty else {
@@ -621,9 +621,27 @@ final class SandboxDaemon: @unchecked Sendable {
         )
         session.markWorkloadStarted()
         let tracker = session.execTracker
+        // M42：客户端在命令结束之前走了（被杀、断线、读超时）→ 排队中的不再执行，在途的请求取消。
+        let abandonment = ExecAbandonment()
+        let watcher = clientFD.map { ClientDisconnectWatcher(fd: $0) }
+        watcher?.start {
+            guard let token = abandonment.markAbandoned() else { return }
+            fputs("daemon: exec client disconnected; cancelling in-flight exec for sandbox \(sandboxId)\n", stderr)
+            // 取消帧可能早于 exec 请求帧发出（刚轮到它）：在它仍在途的前提下重试几次。
+            for _ in 0..<10 where tracker.outcome(of: token) == .running {
+                let sent = (try? runBlocking { try await session.runtime.cancelExec(session.handle) }) ?? false
+                if sent { break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        defer { watcher?.stop() }
         let result = try self.guestOp(session, op: "exec") {
             // 轮到它、即将发给 guest 时才算「在途」（排队中的 exec 不能被 execCancel 命中）。
             let token = tracker.begin()
+            guard abandonment.begin(token: token) else {
+                tracker.end(token, cancelled: false)
+                throw CLIError.usage("\(ExecAbandonment.refusalCode): exec 的客户端在它开始执行之前已经断开，未执行")
+            }
             do {
                 let result = try await session.runtime.executeCollectingOutput(session.handle, request: controlRequest)
                 tracker.end(token, cancelled: result.cancelled)

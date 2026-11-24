@@ -118,6 +118,9 @@ public struct SandboxStats: Sendable, Codable, Equatable {
     public var execOutputVersion: Int? = nil
     /// M41：guest 是否支持取消在途 exec（nil / 0 = 不支持）。
     public var execCancelVersion: Int? = nil
+    /// M42：guest 的 broker 入口版本（nil → 1：exec 期间不受理 broker 请求，且 broker 客户端提前退出
+    /// 会连带杀掉 guest 的控制面；2 起两者都已修复）。
+    public var brokerVersion: Int? = nil
 
     public init(cpuUsageUsec: UInt64?, memoryCurrentBytes: UInt64?, memoryMaxBytes: UInt64?,
                 pidsCurrent: Int?, pidsMax: Int?, activeExecGroups: Int? = nil,
