@@ -13,3 +13,6 @@ macos/Resources/tls-dev/
 
 # M22: packaged app / DMG / checksums are build outputs, never commit.
 macos/gui/dist/
+
+# M38: verified guest candidate awaiting install (build output, never commit)
+macos/guest-candidate/

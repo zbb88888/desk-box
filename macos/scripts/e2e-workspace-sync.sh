@@ -227,6 +227,28 @@ if [ "$GV" -ge 2 ]; then
     && pass "W9 清掉预置物后，同样的目录可以正常同步（修复没有误伤正常路径）" || fail "W9 正常同步被误伤：$(cat "$E2E_WORK/sync.out")"
 fi
 
+# ================= W11：workload 与同步并发（仅新接收端） =================
+# W9 的预置物是静止的。这里 workload 在终端里**不停地**把目标文件 / 中间目录在「真实对象」与
+# 「指向 /etc 的符号链接」之间切换，同时宿主反复同步——检查「先检查、后打开」之间有没有可乘之机。
+if [ "$GV" -ge 2 ]; then
+  WR="$E2E_WORK/ws-race"; mkdir -p "$WR/r" "$WR/r2"
+  printf 'HOSTDATA-R\n' > "$WR/r/t"; printf 'HOSTDATA-R2\n' > "$WR/r2/dbx-w11b.txt"
+  gexec 'rm -rf /workspace/r /workspace/r2; mkdir -p /workspace/r' >/dev/null
+  FLIP='while :; do rm -f /workspace/r/t; ln -s /etc/dbx-w11a /workspace/r/t; rm -f /workspace/r/t; echo mine > /workspace/r/t; rm -rf /workspace/r2 2>/dev/null; ln -s /etc /workspace/r2 2>/dev/null; rm -f /workspace/r2 2>/dev/null; mkdir /workspace/r2 2>/dev/null; echo tick >> /workspace/r/ticks; done'
+  PTY=$(python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" spawn "$ID" "$FLIP")
+  case "$PTY" in FAIL*|"") fail "W11 无法在终端里启动切换循环：$PTY" ;; esac
+  sleep 1
+  OKN=0; REJ=0
+  for _ in $(seq 1 40); do sync_ws "$WR" && OKN=$((OKN+1)) || REJ=$((REJ+1)); done
+  python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" close "$PTY" >/dev/null 2>&1
+  TICKS=$(gexec 'wc -l < /workspace/r/ticks 2>/dev/null || echo 0' | tr -d ' ')
+  [ "${TICKS:-0}" -ge 20 ] && pass "W11 对照：切换循环在同步期间确实在跑（$TICKS 轮）" || fail "W11 对照失败：切换循环只跑了 ${TICKS:-0} 轮"
+  LEAK=$(gexec 'for f in /etc/dbx-w11a /etc/dbx-w11b.txt; do [ -e "$f" ] && echo "leak:$f"; done; echo end' | tr '\n' ' ')
+  [ "$LEAK" = "end " ] && pass "W11 并发切换下 40 次同步（$OKN 成功 / $REJ 被拒）：/etc 下始终没有被写入" || fail "W11 并发切换下写到了 /workspace 之外：$LEAK"
+  [ "$REJ" -ge 1 ] && pass "W11 确实撞上过符号链接状态（$REJ 次同步被拒）" || log "W11 注意：40 次同步没有一次被拒——竞争窗口可能没有被触及"
+  [ "$(gexec 'echo still-alive')" = still-alive ] && pass "W11 之后 guest 仍然响应" || fail "W11 之后 guest 不再响应"
+fi
+
 "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1 && pass "沙箱已移除" || fail "rm 失败"
 LEFT=$(find "$COW_ROOT" -type f ! -name 'registry.json' ! -name 'registry.lock' 2>/dev/null | tr '\n' ' ')
 [ -z "$LEFT" ] && pass "cow-root 零残留" || fail "cow-root 残留：$LEFT"

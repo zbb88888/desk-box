@@ -30,6 +30,7 @@ SUITES=(
   "m24-concurrency:e2e-daemon-concurrency.sh:INV-08,INV-10"
   "m26-boot-cancel:e2e-boot-and-cancel.sh:INV-08"
   "m27-cli-instance:e2e-cli-and-instance.sh:INV-02,INV-08,INV-10"
+  "m38-guest-install:e2e-guest-install.sh:INV-09"
   "m35-permissions:e2e-state-permissions.sh:INV-03,INV-10"
   "m37-workspace:e2e-workspace-sync.sh:INV-05,INV-08"
   "m37-workspace-patched:e2e-workspace-sync-patched.sh:INV-05,INV-08"

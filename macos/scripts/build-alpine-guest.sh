@@ -242,7 +242,8 @@ if [ "$SBOM_ONLY" != "1" ]; then
     # DevSigningPublicKey.generated.swift 与既有 manifest 失效。
     REPO_DEV_KEY="$(cd "$(dirname "$0")" && pwd)/../guest/dev-sign-key.local"
     if [ -f "$REPO_DEV_KEY" ]; then
-      cp "$REPO_DEV_KEY" "$OUT_DIR/dev-sign-key.local"
+      # M38：私钥副本 0600（OUT_DIR 可能在 /tmp 这类他人可读的地方）。
+      ( umask 077; cp "$REPO_DEV_KEY" "$OUT_DIR/dev-sign-key.local" ); chmod 600 "$OUT_DIR/dev-sign-key.local"
     else
       swift run dbx-poc gen-guest-sign-key --output-key "$OUT_DIR/dev-sign-key.local" >/dev/null
     fi

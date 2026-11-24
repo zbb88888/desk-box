@@ -3,6 +3,8 @@
 
   pty_client.py <sock> open <sandbox-id>              → 打印 ptySessionId（保持会话打开）
   pty_client.py <sock> roundtrip <sandbox-id> <标记>   → 打开、echo 标记、读到后关闭；成功打印 OK
+  pty_client.py <sock> spawn <sandbox-id> <命令行>      → 打开、送入一行命令、保持会话打开；打印 ptySessionId
+  pty_client.py <sock> close <ptySessionId>            → 关闭会话
 """
 import json, socket, sys
 
@@ -22,11 +24,19 @@ def req(sock_path, d, timeout=30):
 
 def main():
     sock, action, sid = sys.argv[1], sys.argv[2], sys.argv[3]
+    if action == "close":
+        res = req(sock, {"kind": "ptyClose", "ptySessionId": sid})
+        print("OK" if res.get("ok") else "FAIL:close:%s" % (res.get("error") or res)); return 0 if res.get("ok") else 1
     opened = req(sock, {"kind": "ptyOpen", "sandboxId": sid, "argv": ["/bin/ash", "-l"]})
     sess = opened.get("ptySessionId")
     if not sess:
         print("FAIL:open:%s" % (opened.get("error") or opened)); return 1
     if action == "open":
+        print(sess); return 0
+    if action == "spawn":
+        sent = req(sock, {"kind": "ptyInput", "ptySessionId": sess, "dataHex": (sys.argv[4] + "\n").encode().hex()})
+        if not sent.get("ok"):
+            print("FAIL:input:%s" % (sent.get("error") or sent)); return 1
         print(sess); return 0
     marker = sys.argv[4]
     req(sock, {"kind": "ptyInput", "ptySessionId": sess, "dataHex": ("echo %s\n" % marker).encode().hex()})
