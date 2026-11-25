@@ -50,6 +50,8 @@ final class GUISelfTest: @unchecked Sendable {
     private var flowStarted = false
     private var flowSteps: [[String: Any]] = []
     private var quitFired = false
+    private var modalDiagnostics = "open panel still up"
+    private var modalKind = "openPanel"
 
     /// 主界面出现时调用（DockerMainView.onAppear）。
     @MainActor
@@ -78,10 +80,29 @@ final class GUISelfTest: @unchecked Sendable {
                 MainActor.assumeIsolated {
                     let panel = NSOpenPanel()
                     panel.canChooseDirectories = true
-                    _ = panel.runModal()
+                    let began = Date()
+                    let response = panel.runModal()
+                    // 诊断：面板是不是一打开就自己返回了（那样场景无效，而不是被测代码的问题）。
+                    self.modalDiagnostics = "open panel returned \(response.rawValue) after \(String(format: "%.2f", Date().timeIntervalSince(began)))s"
+                    // M46：在有人使用的会话里，后台（accessory）应用弹出的文件面板会在约 2 秒后被系统自行取消
+                    //（锁屏时不会）。那样到点时已经没有模态会话，场景无效。退出请求还没发出就返回了 →
+                    // 改用一个本进程内的应用级模态窗口：同样是 NSApp 的模态会话，但不依赖系统的面板服务。
+                    guard !self.quitFired else { return }
+                    let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 120),
+                                         styleMask: [.titled], backing: .buffered, defer: false)
+                    window.title = "Desk Box self-test modal"
+                    self.modalDiagnostics += "; fell back to an in-process modal window"
+                    self.modalKind = "window"
+                    _ = NSApp.runModal(for: window)
+                    window.orderOut(nil)
                 }
             }
             RunLoop.main.add(timer, forMode: .common)
+            // M46：等面板**真的**进入模态再发退出请求，而不是到固定时间就发。
+            // 文件面板由系统的独立服务进程提供，在有人使用的会话里、机器忙的时候，它出现得比 5 秒晚
+            //（全量 E2E 在解锁的会话里连续两次因此判为「场景无效」；锁屏时它一直很快）。
+            scheduleModalQuitCheck(started: Date(), minimum: seconds)
+            return
         }
         if scenario == "display" || scenario == "sheet" {
             // 等主窗口就绪后打开对应的 sheet；到点再发退出请求。
@@ -95,6 +116,21 @@ final class GUISelfTest: @unchecked Sendable {
         }
     }
 
+    /// 每 0.2s 看一次：面板已进入模态且过了最短等待时间就发退出请求；20s 仍未出现则照发（由脚本判为场景无效）。
+    private func scheduleModalQuitCheck(started: Date, minimum: Double) {
+        let timer = Timer(timeInterval: 0.2, repeats: false) { [self] _ in
+            MainActor.assumeIsolated {
+                let waited = Date().timeIntervalSince(started)
+                if (NSApp.modalWindow != nil && waited >= minimum) || waited > 20 {
+                    self.fireCommandQ()
+                } else {
+                    self.scheduleModalQuitCheck(started: started, minimum: minimum)
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     @MainActor
     private func fireCommandQ() {
         guard !quitFired else { return }
@@ -104,7 +140,7 @@ final class GUISelfTest: @unchecked Sendable {
         if scenario == "sheet" { target = NSApp.windows.first { $0.sheetParent != nil } }
         let sheetOpen = AppQuit.anySheetAttached
         writeReport(extra: ["phase": "before-cmd-q", "sheetAttachedBeforeQuit": sheetOpen, "quitVia": quitVia,
-                            "appModalBeforeQuit": NSApp.modalWindow != nil])
+                            "appModalBeforeQuit": NSApp.modalWindow != nil, "modalDiagnostics": modalDiagnostics, "modalKind": modalKind])
         if quitVia == "appleevent" {
             let quit = NSAppleEventDescriptor(
                 eventClass: AEEventClass(kCoreEventClass), eventID: AEEventID(kAEQuitApplication),

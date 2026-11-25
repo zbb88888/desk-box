@@ -361,10 +361,10 @@ fi
 
 # ================= G11：应用级模态面板打开时的 quit AppleEvent =================
 R8="$E2E_WORK/report-8.json"
-launch_gui "$R8" 5 NO modal appleevent
-wait_gui_exit "$GUI_PID" 15
+launch_gui "$R8" 5 NO modal appleevent      # 5s 是下限：自检会等面板真的进入模态（最多 20s）再发退出请求
+wait_gui_exit "$GUI_PID" 35
 [ -s "$R8" ] || fail "G11 自检报告未生成：$(head -c 300 "$R8.stdout" 2>/dev/null)"
-[ "$(field "$R8" appModalBeforeQuit)" = True ] && pass "G11 对照：退出请求发出时文件选择面板（应用级模态）处于打开状态" || fail "G11 模态面板未打开（场景无效）"
+[ "$(field "$R8" appModalBeforeQuit)" = True ] && pass "G11 对照：退出请求发出时有应用级模态会话在进行（$([ "$(field "$R8" modalKind)" = openPanel ] && echo 文件选择面板 || echo "进程内模态窗口；文件面板在有人使用的会话里被系统自行取消了")）" || fail "G11 模态面板未打开（场景无效；$(field "$R8" modalDiagnostics)）"
 HOW=$(cat "$R8.terminated" 2>/dev/null)
 [ "$GUI_RC" = 0 ] && { [ "$HOW" = terminate ] || [ "$HOW" = forced ]; } \
   && pass "G11 模态面板打开时收到 quit AppleEvent 仍能退出（rc=0，退出方式=$HOW）" \
