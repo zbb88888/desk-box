@@ -1,0 +1,541 @@
+{
+  "binarySha256": "973c5ebbedc949e6c3b3ba3c9f81fc316d777da82e513b8014931a7d1346d6cb",
+  "commit": "f6f0c56",
+  "commitDirty": false,
+  "dirtyFiles": 0,
+  "entrypoint": "macos/scripts/e2e-all.sh",
+  "generatedAtUtc": "2026-11-25T00:39:06Z",
+  "guestManifestSha256": "1d2e650ee23d25b12e376cce9f4a2eee0b3eb832ae8060cb40ce7f5270fa315c",
+  "host": {
+    "arch": "arm64",
+    "model": "Mac14,6",
+    "osBuild": "26B131",
+    "osVersion": "27.2.1"
+  },
+  "hostSessionLocked": {
+    "atEnd": true,
+    "atStart": true
+  },
+  "hygiene": {
+    "library": "clean",
+    "procs": "clean",
+    "support": "clean",
+    "tmp": "clean"
+  },
+  "invariants": {
+    "INV-01": {
+      "status": "pass",
+      "suites": [
+        "m12-lifecycle"
+      ],
+      "unverified": []
+    },
+    "INV-02": {
+      "status": "incomplete",
+      "suites": [
+        "m27-cli-instance",
+        "m23-domains"
+      ],
+      "unverified": [
+        "m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume",
+        "m23-domains: 同域恢复成功"
+      ]
+    },
+    "INV-03": {
+      "status": "incomplete",
+      "suites": [
+        "m35-permissions",
+        "m19-canary"
+      ],
+      "unverified": [
+        "m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件"
+      ]
+    },
+    "INV-04": {
+      "status": "pass",
+      "suites": [
+        "m19-network"
+      ],
+      "unverified": []
+    },
+    "INV-05": {
+      "status": "pass",
+      "suites": [
+        "m37-workspace",
+        "m37-workspace-patched"
+      ],
+      "unverified": []
+    },
+    "INV-06": {
+      "status": "pass",
+      "suites": [
+        "m18-kernel"
+      ],
+      "unverified": []
+    },
+    "INV-07": {
+      "status": "not-covered",
+      "suites": [],
+      "unverified": []
+    },
+    "INV-08": {
+      "status": "incomplete",
+      "suites": [
+        "m12-lifecycle",
+        "m24-concurrency",
+        "m26-boot-cancel",
+        "m27-cli-instance",
+        "m37-workspace",
+        "m37-workspace-patched",
+        "m39-exec-output",
+        "m39-exec-output-patched",
+        "m41-exec-cancel",
+        "m41-exec-cancel-patched",
+        "m42-broker-exec",
+        "m42-broker-exec-patched",
+        "m20b-fault-injection",
+        "m21-stats",
+        "m18-kernel",
+        "m17-gui-buttons"
+      ],
+      "unverified": [
+        "m24-concurrency: B resume 后 exec 正常",
+        "m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume"
+      ]
+    },
+    "INV-09": {
+      "status": "pass",
+      "suites": [
+        "m34-release-cli",
+        "m38-guest-install"
+      ],
+      "unverified": []
+    },
+    "INV-10": {
+      "status": "incomplete",
+      "suites": [
+        "m34-release-cli",
+        "m24-concurrency",
+        "m27-cli-instance",
+        "m35-permissions",
+        "m20-persistence",
+        "m20b-fault-injection"
+      ],
+      "unverified": [
+        "m24-concurrency: B resume 后 exec 正常",
+        "m27-cli-instance: CLI sweep 持续并发下 3 轮 suspend/resume",
+        "m35-permissions: P4 resume 后数据仍在 / 无遗留的解密临时文件",
+        "m20-persistence: 原始快照可恢复 / 恢复后状态 running",
+        "m20-persistence: 恢复后可以打开新终端（suspend 前的终端没有占住 pty）",
+        "m20-persistence: 恢复后数据仍在、权限未复活",
+        "m20-persistence: 二次 suspend/resume"
+      ]
+    }
+  },
+  "partial": false,
+  "releaseBlockers": [
+    "9 项断言因宿主锁屏未验证"
+  ],
+  "schema": "deskbox-e2e-evidence/v1",
+  "suites": [
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [],
+      "lockSkipped": [],
+      "name": "selftest",
+      "notApplicable": [],
+      "pass": 52,
+      "script": "e2e-harness-selftest.sh",
+      "seconds": 4,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-09",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m34-release-cli",
+      "notApplicable": [],
+      "pass": 56,
+      "script": "e2e-release-cli.sh",
+      "seconds": 0,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-01",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m12-lifecycle",
+      "notApplicable": [],
+      "pass": 20,
+      "script": "e2e-sandbox-lifecycle.sh",
+      "seconds": 18,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08",
+        "INV-10"
+      ],
+      "lockSkipped": [
+        "B resume 后 exec 正常"
+      ],
+      "name": "m24-concurrency",
+      "notApplicable": [],
+      "pass": 37,
+      "script": "e2e-daemon-concurrency.sh",
+      "seconds": 36,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m26-boot-cancel",
+      "notApplicable": [],
+      "pass": 48,
+      "script": "e2e-boot-and-cancel.sh",
+      "seconds": 74,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-02",
+        "INV-08",
+        "INV-10"
+      ],
+      "lockSkipped": [
+        "CLI sweep 持续并发下 3 轮 suspend/resume"
+      ],
+      "name": "m27-cli-instance",
+      "notApplicable": [],
+      "pass": 56,
+      "script": "e2e-cli-and-instance.sh",
+      "seconds": 9,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-09"
+      ],
+      "lockSkipped": [],
+      "name": "m38-guest-install",
+      "notApplicable": [],
+      "pass": 21,
+      "script": "e2e-guest-install.sh",
+      "seconds": 2,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-03",
+        "INV-10"
+      ],
+      "lockSkipped": [
+        "P4 resume 后数据仍在 / 无遗留的解密临时文件"
+      ],
+      "name": "m35-permissions",
+      "notApplicable": [],
+      "pass": 27,
+      "script": "e2e-state-permissions.sh",
+      "seconds": 14,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-05",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m37-workspace",
+      "notApplicable": [],
+      "pass": 45,
+      "script": "e2e-workspace-sync.sh",
+      "seconds": 22,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-05",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m37-workspace-patched",
+      "notApplicable": [],
+      "pass": 58,
+      "script": "e2e-workspace-sync-patched.sh",
+      "seconds": 91,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m39-exec-output",
+      "notApplicable": [],
+      "pass": 11,
+      "script": "e2e-exec-output.sh",
+      "seconds": 12,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m39-exec-output-patched",
+      "notApplicable": [],
+      "pass": 22,
+      "script": "e2e-exec-output-patched.sh",
+      "seconds": 11,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m41-exec-cancel",
+      "notApplicable": [],
+      "pass": 15,
+      "script": "e2e-exec-cancel.sh",
+      "seconds": 35,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m41-exec-cancel-patched",
+      "notApplicable": [],
+      "pass": 28,
+      "script": "e2e-exec-cancel-patched.sh",
+      "seconds": 28,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m42-broker-exec",
+      "notApplicable": [],
+      "pass": 11,
+      "script": "e2e-broker-exec.sh",
+      "seconds": 24,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m42-broker-exec-patched",
+      "notApplicable": [],
+      "pass": 15,
+      "script": "e2e-broker-exec-patched.sh",
+      "seconds": 11,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-10"
+      ],
+      "lockSkipped": [
+        "原始快照可恢复 / 恢复后状态 running",
+        "恢复后可以打开新终端（suspend 前的终端没有占住 pty）",
+        "恢复后数据仍在、权限未复活",
+        "二次 suspend/resume"
+      ],
+      "name": "m20-persistence",
+      "notApplicable": [],
+      "pass": 25,
+      "script": "e2e-lifecycle-persistence.sh",
+      "seconds": 11,
+      "skip": 4
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m20b-fault-injection",
+      "notApplicable": [],
+      "pass": 6,
+      "script": "e2e-fault-injection.sh",
+      "seconds": 22,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m21-stats",
+      "notApplicable": [],
+      "pass": 7,
+      "script": "e2e-resource-stats.sh",
+      "seconds": 9,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-06",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m18-kernel",
+      "notApplicable": [],
+      "pass": 12,
+      "script": "e2e-kernel-hardening.sh",
+      "seconds": 7,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-02"
+      ],
+      "lockSkipped": [
+        "同域恢复成功"
+      ],
+      "name": "m23-domains",
+      "notApplicable": [],
+      "pass": 23,
+      "script": "e2e-credential-domains.sh",
+      "seconds": 33,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m17-gui-buttons",
+      "notApplicable": [
+        "GUI 进程检查 [NOT-APPLICABLE：隔离模式不依赖 GUI；E2E_GUI_LIVE=1 时检查]"
+      ],
+      "pass": 19,
+      "script": "e2e-gui-buttons.sh",
+      "seconds": 19,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [],
+      "lockSkipped": [
+        "G10 Resume 成功 + 之后 exec 正常"
+      ],
+      "name": "m30-gui-app",
+      "notApplicable": [],
+      "pass": 58,
+      "script": "e2e-gui-app.sh",
+      "seconds": 66,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-03"
+      ],
+      "lockSkipped": [],
+      "name": "m19-canary",
+      "notApplicable": [],
+      "pass": 6,
+      "script": "security-corpus-canary.sh",
+      "seconds": 17,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-04"
+      ],
+      "lockSkipped": [],
+      "name": "m19-network",
+      "notApplicable": [],
+      "pass": 5,
+      "script": "security-corpus-network.sh",
+      "seconds": 7,
+      "skip": 0
+    }
+  ],
+  "verdict": "incomplete"
+}
