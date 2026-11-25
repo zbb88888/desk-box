@@ -50,7 +50,9 @@ sandbox    7DAC0849-…  running
 
 GUI 应用内自检（`e2e-gui-app.sh` 新增 1 项）：App 查到了它拉起的 daemon 的修订号，与自己相同，没有提示条。
 
-全量 `e2e-all.sh`：见 §4 之后的记录与证据文件。
+候选 guest 上的 `e2e-doctor.sh`（走「guest 是新资产」那一支）：正式构建的候选没有任何发现，`--strict` 退出码 0。
+
+全量 `e2e-all.sh`（本机现有 guest，屏幕解锁）：28 个套件 0 失败，卫生五项 clean，退出码 0（完整通过）。
 
 ## 4. 诚实边界
 

@@ -36,9 +36,9 @@
 > 再对产出的文件运行 `summarize --markdown` 并替换下表。`e2e-evidence.py check <文件>` 的退出码：
 > 0 = 可作为发布证据，3 = 无失败但不完整，1 = 失败或证据无效。
 
-证据文件：[`evidence/e2e-20261125T071730Z-34925d1.json`](evidence/e2e-20261125T071730Z-34925d1.json)
+证据文件：[`evidence/e2e-20261125T082300Z-6ea7385.json`](evidence/e2e-20261125T082300Z-6ea7385.json)
 
-证据：commit 34925d1 · 2026-11-25T07:17:30Z · macOS 27.2.1 (26B131) Mac14,6
+证据：commit 6ea7385 · 2026-11-25T08:23:00Z · macOS 27.2.1 (26B131) Mac14,6
 
 | 不变量 | e2e 结果 | 相关套件 | 未验证的断言 |
 | --- | --- | --- | --- |
@@ -49,7 +49,7 @@
 | INV-05 | 通过 | m37-workspace、m37-workspace-patched | — |
 | INV-06 | 通过 | m18-kernel | — |
 | INV-07 | 未覆盖 | — | — |
-| INV-08 | 通过 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m37-workspace、m37-workspace-patched、m39-exec-output、m39-exec-output-patched、m41-exec-cancel、m41-exec-cancel-patched、m42-broker-exec、m42-broker-exec-patched、m46-control-loss、m46-runtime-race、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | — |
+| INV-08 | 通过 | m12-lifecycle、m24-concurrency、m26-boot-cancel、m27-cli-instance、m37-workspace、m37-workspace-patched、m39-exec-output、m39-exec-output-patched、m41-exec-cancel、m41-exec-cancel-patched、m42-broker-exec、m42-broker-exec-patched、m46-control-loss、m46-runtime-race、m51-doctor、m20b-fault-injection、m21-stats、m18-kernel、m17-gui-buttons | — |
 | INV-09 | 通过 | m34-release-cli、m38-guest-install | — |
 | INV-10 | 通过 | m34-release-cli、m24-concurrency、m27-cli-instance、m35-permissions、m20-persistence、m20b-fault-injection | — |
 
