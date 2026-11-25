@@ -152,9 +152,12 @@ struct DockerMainView: View {
                     .width(min: 170)
                 TableColumn("State") { sb in
                     HStack {
-                        Circle().fill(sb.state == "running" ? Color.green : Color.orange).frame(width: 8, height: 8)
+                        Circle().fill(sb.state == "running" ? Color.green : (sb.state == "failed" ? Color.red : Color.orange))
+                            .frame(width: 8, height: 8)
                         Text(sb.state)
                     }
+                    // M45：failed 的原因与出路，悬停可见。
+                    .help(SandboxRowActions.stateNote(state: sb.state, detail: sb.stateDetail) ?? sb.state)
                 }
                 .width(70)
                 TableColumn("Uptime") { sb in

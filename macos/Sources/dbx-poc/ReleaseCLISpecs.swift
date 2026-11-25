@@ -28,8 +28,8 @@ enum ReleaseCLISpecs {
         valueOptions: ["--kernel", "--root-disk", "--initrd", "--asset-version", "--sbom-digest", "--output"])
 
     static let genGuestSignKey = CLISpec(command: "gen-guest-sign-key",
-                                         usage: "dbx-poc gen-guest-sign-key --output-key <path>",
-                                         valueOptions: ["--output-key"])
+                                         usage: "dbx-poc gen-guest-sign-key --output-key <path> [--force]",
+                                         valueOptions: ["--output-key"], flags: ["--force"])
 
     static let signManifest = CLISpec(
         command: "sign-manifest",
@@ -37,8 +37,8 @@ enum ReleaseCLISpecs {
         valueOptions: ["--manifest", "--key", "--output", "--asset-version"])
 
     static let genReleaseKey = CLISpec(command: "gen-release-key",
-                                       usage: "dbx-poc gen-release-key --output-key <path>",
-                                       valueOptions: ["--output-key"])
+                                       usage: "dbx-poc gen-release-key --output-key <path> [--force]",
+                                       valueOptions: ["--output-key"], flags: ["--force"])
 
     static let rotateReleaseKey = CLISpec(
         command: "rotate-release-key",
@@ -101,6 +101,26 @@ enum ReleaseCLISpecs {
 /// 同机任何用户可读）。这里先在同目录建一个 0600 的临时文件，写完再 rename 覆盖目标——
 /// 目标路径上任何时刻都不会出现「内容已是私钥、权限还没收紧」的窗口。
 enum PrivateKeyFile {
+    static let existsCode = "DBX-KEY-EXISTS"
+
+    /// M45：生成密钥前检查目标是否已存在（纯判定；`exists` 由调用方给出）。
+    /// 此前直接覆盖：对着现有的签名私钥再跑一次 gen-*-key，旧私钥就没了——用它签过的 manifest /
+    /// 发布链从此无法再续签，而命令没有任何提示。
+    static func overwriteRefusal(path: String, exists: Bool, force: Bool) -> String? {
+        guard exists, !force else { return nil }
+        return "\(existsCode): \(path) 已经存在。覆盖它会丢失现有的私钥（用它签名的资产将无法再续签 / 轮换）。"
+            + "换一个输出路径，或确认不再需要旧密钥后加 --force。"
+    }
+
+    static func write(_ content: String, to url: URL, force: Bool) throws {
+        // 符号链接本身也算「存在」（不跟随）：指向别处的悬空链接同样不能被悄悄替换。
+        let exists = (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil
+        if let refusal = overwriteRefusal(path: url.path, exists: exists, force: force) {
+            throw CLIError.usage(refusal)
+        }
+        try write(content, to: url)
+    }
+
     static func write(_ content: String, to url: URL) throws {
         // M35：统一走 DeskBoxVZ.SecureFile（同一套实现也用于快照密钥、快照、沙箱盘域标记）。
         // 私钥所在目录若需要新建，同样是 0700。

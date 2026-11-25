@@ -17,7 +17,7 @@ public enum ControlLossPolicy {
     }
 
     public static func message(waitingFor op: String, detail: String) -> String {
-        "\(code): 等待 \(op) 的应答时，guest 关闭了控制连接（\(detail)）——guest 里的控制进程已退出或崩溃，"
+        "\(code): \(op) 无法完成——guest 关闭了控制连接（\(detail)），guest 里的控制进程已退出或崩溃，"
             + "这台沙箱不会再响应。用 rm 移除后重新创建。"
     }
 }

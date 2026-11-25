@@ -65,6 +65,8 @@ struct SandboxInfo: Codable {
     var workspaceId: String? = nil
     /// M23（INV-02）：凭据域（`ps` 可审计）。
     var domain: String? = nil
+    /// M45：状态的补充说明（目前只有 failed：guest 的控制连接为什么断了）。
+    var stateDetail: String? = nil
 }
 
 struct SandboxRunOptions: Codable {
@@ -602,7 +604,8 @@ final class SandboxDaemon: @unchecked Sendable {
                 bootedAtUtc: ISO8601DateFormatter().string(from: $0.bootedAt),
                 manifestPath: $0.manifestPath,
                 uptimeSeconds: Int(Date().timeIntervalSince($0.bootedAt)),
-                domain: $0.domainID.raw
+                domain: $0.domainID.raw,
+                stateDetail: $0.runtime.cachedControlLoss(of: $0.handle).map { "\(ControlLossPolicy.code): \($0)" }
             )
         }
         return DaemonResponse(ok: true, sandboxes: infos)

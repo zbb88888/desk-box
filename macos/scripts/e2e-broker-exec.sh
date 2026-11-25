@@ -166,18 +166,34 @@ else
   # ---------- 旧 guest ----------
   x 5 'brokerreq https://not-allowed.invalid/probe.txt; echo "rc=$?"'
   FIRST_RC=$RC; FIRST_MS=$MS
-  sleep 1
-  x 5 'echo probe-after'      # 宿主要到下一次写控制通道时才发现对端没了
+  # M45：不需要再发任何请求——控制连接一断，沙箱就该显示为 failed，并带上原因。
+  ST=running; for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do ST=$(state_of "$ID"); [ "$ST" = failed ] && break; sleep 0.1; done
+  [ "$ST" = failed ] && pass "K4 控制面一死，ps 立刻显示 failed（没有任何后续请求去「撞」它）" || fail "K4 1.5s 后 ps 仍显示 $ST"
+  "$BIN" ps --daemon-sock "$SOCK" 2>/dev/null | awk -F'\t' -v id="$ID" '$1==id {print $6}' | grep -q 'DBX-GUEST-CONTROL-LOST' \
+    && pass "K4 ps 带上了原因（DBX-GUEST-CONTROL-LOST）" || fail "K4 ps 没有原因列：$("$BIN" ps --daemon-sock "$SOCK" 2>/dev/null | head -2)"
+  x 5 'echo probe-after'
   ST=$(state_of "$ID")
   log "KNOWN-DEFECT（旧 guest）K1：exec 里调用 brokerreq → 那条 exec rc=$FIRST_RC（${FIRST_MS}ms，卡到超时）；随后的 exec rc=$RC，沙箱 state=$ST（failed = guest 的控制面被 SIGPIPE 杀掉）"
-  [ "$RC" != 0 ] && [ "$MS" -lt 2000 ] && grep -q 'DBX-GUEST-CONTROL-LOST\|control socket closed' "$E" \
-    && pass "K3 控制面死掉之后：随后的 exec ${MS}ms 内失败并说明原因（$(grep -o 'DBX-GUEST-CONTROL-LOST\|control socket closed' "$E" | head -1)）" || fail "K3 rc=$RC ${MS}ms err=[$(head -c 200 "$E")]"
+  [ "$RC" != 0 ] && [ "$MS" -lt 2000 ] && grep -q 'DBX-GUEST-CONTROL-LOST' "$E" \
+    && pass "K3 控制面死掉之后：随后的 exec ${MS}ms 内失败并说明原因（DBX-GUEST-CONTROL-LOST）" || fail "K3 rc=$RC ${MS}ms err=[$(head -c 200 "$E")]"
   mkdir -p "$E2E_WORK/k3ws"; echo x > "$E2E_WORK/k3ws/f.txt"
   t0=$(now_ms); "$BIN" ws-sync --daemon-sock "$SOCK" "$ID" "$E2E_WORK/k3ws" --allow-unsafe-resync >"$E2E_WORK/k3.out" 2>&1 && WRC=0 || WRC=$?
-  [ "$WRC" != 0 ] && [ $(( $(now_ms) - t0 )) -lt 2000 ] && pass "K3 同步请求同样立刻失败（$(( $(now_ms) - t0 ))ms），不会等到同步超时" || fail "K3 ws-sync rc=$WRC $(head -c 200 "$E2E_WORK/k3.out")"
+  [ "$WRC" != 0 ] && [ $(( $(now_ms) - t0 )) -lt 2000 ] && grep -q 'DBX-GUEST-CONTROL-LOST' "$E2E_WORK/k3.out" \
+    && pass "K3 同步请求同样立刻失败并说明原因" || fail "K3 ws-sync rc=$WRC $(head -c 200 "$E2E_WORK/k3.out")"
   t0=$(now_ms); PTYRES=$(python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" open "$ID" 2>&1)
-  case "$PTYRES" in FAIL*) [ $(( $(now_ms) - t0 )) -lt 2000 ] && pass "K3 打开终端同样立刻失败" || fail "K3 ptyOpen 等了 $(( $(now_ms) - t0 ))ms" ;; *) fail "K3 控制面已死，终端却打开了：$PTYRES" ;; esac
-  "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1 && pass "K2 宿主能收拾：那台沙箱可以 rm" || fail "K2 rm 失败"
+  case "$PTYRES" in
+    FAIL*DBX-GUEST-CONTROL-LOST*) [ $(( $(now_ms) - t0 )) -lt 2000 ] && pass "K3 打开终端同样立刻失败并说明原因" || fail "K3 ptyOpen 等了 $(( $(now_ms) - t0 ))ms" ;;
+    *) fail "K3 ptyOpen 结果不符：$(printf '%s' "$PTYRES" | head -c 200)" ;;
+  esac
+  # M45：failed 的沙箱一步重建（GUI 的 Restart 发的就是这个请求）。
+  OLD_ID=$ID
+  NEW_ID=$("$BIN" restart --daemon-sock "$SOCK" "$OLD_ID" 2>"$E2E_WORK/restart.err" | sed -n 's/^restarted -> //p')
+  [ -n "$NEW_ID" ] && [ "$NEW_ID" != "$OLD_ID" ] && [ "$(state_of "$NEW_ID")" = running ] && [ -z "$(state_of "$OLD_ID")" ] \
+    && pass "K5 restart：failed 的沙箱被移除，同样的参数重建出一台 running 的新沙箱" || fail "K5 restart：new=$NEW_ID old-state=$(state_of "$OLD_ID") $(head -c 200 "$E2E_WORK/restart.err")"
+  ID=${NEW_ID:-$OLD_ID}
+  x 8 'echo restarted-ok'
+  [ "$RC" = 0 ] && [ "$(cat "$O")" = restarted-ok ] && pass "K5 重建出来的沙箱正常工作" || fail "K5 新沙箱 rc=$RC err=[$(cat "$E")]"
+  "$BIN" rm --daemon-sock "$SOCK" "$ID" --force >/dev/null 2>&1 && pass "K2 宿主能收拾：沙箱可以 rm" || fail "K2 rm 失败"
   new_sandbox
   x 8 'echo fresh-sandbox-ok'
   [ "$RC" = 0 ] && [ "$(cat "$O")" = fresh-sandbox-ok ] && pass "K2 daemon 不受影响：新建的沙箱正常工作" || fail "K2 新沙箱 rc=$RC err=[$(cat "$E")]"

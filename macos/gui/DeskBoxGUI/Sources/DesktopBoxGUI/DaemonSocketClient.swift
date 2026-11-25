@@ -63,6 +63,8 @@ struct SandboxInfo: Codable, Identifiable, Sendable {
     var workspaceId: String? = nil
     /// M23（INV-02）：凭据域。
     var domain: String? = nil
+    /// M45：状态的补充说明（failed 的原因）。
+    var stateDetail: String? = nil
 }
 
 enum DaemonClientError: LocalizedError {

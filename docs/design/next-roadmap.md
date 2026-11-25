@@ -45,7 +45,8 @@
 | M42 ✅ | broker 入口不能搞垮控制面；exec 的客户端走了就别再跑 | INV-08 | M | 已完成：发现并修复「workload 经 broker socket 杀掉 guest 控制面」（SIGPIPE / 阻塞读 / exec 期间不受理）；daemon 监视 exec 客户端连接；修 M39 的超时提前回归。候选已重建。见 `m42-broker-entry-and-client-disconnect.md` |
 | M43 ✅ | guest 控制面死亡的即时发现；`brokerreq` 返回真实结果 | INV-08 | M | 已完成：控制连接意外断开时在途 exec / stats 立刻以 `DBX-GUEST-CONTROL-LOST` 失败；broker 入口等拉取结束再应答（OK / ERR + 原因）。候选已重建。见 `m43-control-loss-and-broker-result.md` |
 | M44 ✅ | 证据把环境缺失的跳过计为不完整；终端 `\r` 重绘；其余等待接入控制面丢失 | INV-08（证据质量） | S | 已完成，未改 guest、未碰 resume 路径。见 `m44-evidence-skips-terminal-redraw.md` |
-| M45 | resume 路径的回归验证（需解锁）+ 安装候选 | INV-08 / INV-10 | S | M42 / M43 有两处未经 resume 验证的改动；解锁后跑全量 E2E（现有 guest 与候选各一遍），再决定是否安装候选 |
+| M45 ✅ | failed 沙箱：立刻可见、带原因、一步重建；生成密钥不覆盖已有私钥 | INV-08 / INV-09 | S | 已完成，未改 guest。见 `m45-failed-sandbox-and-key-overwrite.md` |
+| M46 | resume 路径的回归验证（需解锁）+ 安装候选 | INV-08 / INV-10 | S | M42 / M43 / M45 共三处未经 resume 验证的改动；解锁后跑全量 E2E（现有 guest 与候选各一遍），再决定是否安装候选 |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 

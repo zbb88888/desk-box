@@ -30,9 +30,45 @@ final class SandboxRowActionsTests: XCTestCase {
     }
 
     func testTransitionalAndUnknownStatesAreConservative() {
-        for state in ["pending", "suspending", "resuming", "stopping", "stopped", "failed", "RUNNING", "garbage"] {
+        for state in ["pending", "suspending", "resuming", "stopping", "stopped", "RUNNING", "garbage"] {
             XCTAssertEqual(SandboxRowActions.available(forState: state), [.console, .rm], state)
         }
+    }
+
+    // MARK: M45 —— failed 的沙箱
+
+    func testFailedSandboxOffersRestartAsTheWayOut() {
+        XCTAssertEqual(SandboxRowActions.available(forState: "failed"), [.console, .restart, .rm])
+        // 它不会再响应：需要 guest 配合的操作一个都不给。
+        let actions = SandboxRowActions.available(forState: "failed")
+        for action in [SandboxAction.terminal, .exec, .suspend, .resume, .stop] {
+            XCTAssertFalse(actions.contains(action), action.rawValue)
+        }
+        XCTAssertEqual(SandboxRowActions.request(for: .restart, sandboxId: "SB")?.kind, "restart")
+    }
+
+    func testStateNoteExplainsFailureAndOnlyFailure() {
+        for state in ["running", "suspended", "pending", "stopped", ""] {
+            XCTAssertNil(SandboxRowActions.stateNote(state: state, detail: "DBX-GUEST-CONTROL-LOST: x"), state)
+        }
+        let lost = SandboxRowActions.stateNote(state: "failed", detail: "DBX-GUEST-CONTROL-LOST: guest control socket closed")
+        XCTAssertNotNil(lost)
+        XCTAssertTrue(lost!.contains("控制进程已退出"), lost!)
+        XCTAssertTrue(lost!.contains("Restart"), lost!)
+        XCTAssertTrue(lost!.contains("数据不保留"), "Restart 会丢数据，必须说清楚：\(lost!)")
+        let generic = SandboxRowActions.stateNote(state: "failed", detail: nil)
+        XCTAssertNotNil(generic)
+        XCTAssertFalse(generic!.contains("控制进程"), generic!)
+        XCTAssertTrue(generic!.contains("数据不保留"), generic!)
+    }
+
+    func testSandboxInfoDecodesWithAndWithoutStateDetail() throws {
+        let old = try JSONDecoder().decode(SandboxInfo.self, from: Data(
+            #"{"sandboxId":"A","state":"running","bootedAtUtc":"t","manifestPath":"m"}"#.utf8))
+        XCTAssertNil(old.stateDetail)
+        let new = try JSONDecoder().decode(SandboxInfo.self, from: Data(
+            #"{"sandboxId":"A","state":"failed","bootedAtUtc":"t","manifestPath":"m","stateDetail":"DBX-GUEST-CONTROL-LOST: guest control socket closed"}"#.utf8))
+        XCTAssertEqual(new.stateDetail, "DBX-GUEST-CONTROL-LOST: guest control socket closed")
     }
 
     func testResumeAndSuspendAreNeverOfferedTogether() {

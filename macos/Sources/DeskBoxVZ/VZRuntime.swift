@@ -641,6 +641,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
+    /// M45：guest 一侧意外关闭控制连接的说明（供 daemon `ps` 使用）；没有则为 nil。
+    public func cachedControlLoss(of handle: SandboxHandle) -> String? {
+        queue.sync { records[handle.sandboxID]?.controlLost }
+    }
+
     /// M20：VZ 的 pause/save/restore/resume 内部有 `dispatch_assert_queue`，
     /// 必须在 VM 自己的 queue 上调用，否则直接 SIGTRAP。这里统一桥接。
     private func vzOperation(_ body: @escaping (@escaping (Error?) -> Void) -> Void) async throws {
@@ -771,6 +776,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     private func runExec(_ handle: SandboxHandle, request: ControlRequest) async throws
         -> (response: ControlResponse, assembler: ExecOutputAssembler) {
+        // M45：控制面已经没了就直说（此前这里会报「authenticated control session required」）。
+        try await failIfControlLost(handle, waitingFor: "exec")
         // M2-2: 允许 echo/sh 诊断与 /workspace 下经策略同步的可执行面。
         guard let first = request.argv.first else {
             throw SandboxFailure(.bootstrapProofMissing, "exec argv 不可为空")
@@ -845,6 +852,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     /// M21：读取 guest cgroup v2 资源采样（诊断用途；不参与任何安全判定）。
     public func stats(_ handle: SandboxHandle, timeoutSeconds: Int = 5) async throws -> SandboxStats {
+        try await failIfControlLost(handle, waitingFor: "stats")
         try await onQueue {
             let record = try self.require(handle)
             guard record.lifecycle.state == .running, record.controlSocket != nil else {
@@ -903,6 +911,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
 
     /// M13b：流式 PTY 会话（同一负责 sandbox 只允许一个活跃会话，与客协议一致）。
     public func ptyOpenSession(_ handle: SandboxHandle, argv: [String], timeoutSeconds: Int = 10) async throws -> PtyStreamSession {
+        try await failIfControlLost(handle, waitingFor: "ptyOpen")
         let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         let requestID = UUID()
         try await onQueue {
@@ -1130,6 +1139,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         snapshot: WorkspaceSnapshot,
         timeoutSeconds: Int = 120
     ) async throws -> WsAckEvent {
+        try await failIfControlLost(handle, waitingFor: "workspace sync")
         let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
         try await onQueue {
             let record = try self.require(handle)
@@ -1366,6 +1376,11 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
                                     failedSocketIsCurrent: identity.socket != nil && record.controlSocket === identity.socket,
                                     state: record.lifecycle.state) {
                                     record.controlLost = message
+                                    // M45：立刻标为 failed。此前要等到下一条请求撞上去才变——在那之前 `ps` 和界面
+                                    // 一直显示 running，而这台沙箱已经不会响应任何请求。
+                                    record.execInFlight = false
+                                    record.lifecycle.forceFail(reason: .bootstrapProofMismatch)
+                                    fputs("vz: sandbox \(record.request.sandboxID) lost its guest control plane: \(message)\n", stderr)
                                 }
                             }
                         }

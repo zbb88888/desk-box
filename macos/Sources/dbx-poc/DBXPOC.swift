@@ -110,7 +110,7 @@ struct DBXPOC {
         let pair = ManifestSigner.generateKeypairHex()
         let output = URL(fileURLWithPath: outputPath).standardizedFileURL
         // M34：私钥 0600 原子写入（此前是默认权限，umask 022 下同机任何用户可读）。
-        try PrivateKeyFile.write("private:\(pair.privateHex)\n", to: output)
+        try PrivateKeyFile.write("private:\(pair.privateHex)\n", to: output, force: p.flag("--force"))
         print("public:\(pair.publicHex)")
         print("wrote key material \(output.path)")
     }
@@ -193,7 +193,8 @@ struct DBXPOC {
                 note: "generated locally (dev chain)"
             )]
         )
-        try PrivateKeyFile.write("private:\(pair.privateHex)\n", to: URL(fileURLWithPath: outputPath).standardizedFileURL)
+        try PrivateKeyFile.write("private:\(pair.privateHex)\n", to: URL(fileURLWithPath: outputPath).standardizedFileURL,
+                                 force: p.flag("--force"))
         let starterURL = URL(fileURLWithPath: outputPath).deletingLastPathComponent()
             .appendingPathComponent("release-keys.json")
         if !FileManager.default.fileExists(atPath: starterURL.path) {
@@ -847,7 +848,9 @@ private extension DBXPOC {
         let inv = try DaemonCLI.bare(args, spec: DaemonCLISpecs.ps, kind: "ps")
         let response = try DaemonClient.send(request: inv.request, sockPath: inv.sock)
         for info in response.sandboxes ?? [] {
-            print("\(info.sandboxId)\t\(info.state)\t\(info.bootedAtUtc)\t\(info.manifestPath)\t\(info.domain ?? "-")")
+            // 第 6 列只在有话要说时出现（failed 的原因）；前 5 列的位置不变。
+            let detail = info.stateDetail.map { "\t\($0)" } ?? ""
+            print("\(info.sandboxId)\t\(info.state)\t\(info.bootedAtUtc)\t\(info.manifestPath)\t\(info.domain ?? "-")\(detail)")
         }
     }
 

@@ -49,11 +49,18 @@ grep -q '^private:' "$W/channel/release-key.local" && pass "R1 私钥文件内�
   && pass "R1 release-keys.json 已生成且不含私钥材料" || fail "R1 release-keys.json 异常"
 "$BIN" gen-guest-sign-key --output-key "$W/guest-sign.local" >/dev/null 2>&1
 [ "$(mode "$W/guest-sign.local")" = 600 ] && pass "R1 guest 签名私钥权限 0600" || fail "R1 guest 私钥权限=$(mode "$W/guest-sign.local")"
-# 覆盖一个旧版本留下的 0644 私钥：结果必须是 0600。
+# M45：对着已有的私钥再生成一次——不加 --force 必须拒绝，旧私钥原样保留（此前直接覆盖，旧密钥就此丢失）。
 printf 'private:old\n' > "$W/legacy.local"; chmod 644 "$W/legacy.local"
-"$BIN" gen-guest-sign-key --output-key "$W/legacy.local" >/dev/null 2>&1
+for cmd in gen-guest-sign-key gen-release-key; do
+  "$BIN" "$cmd" --output-key "$W/legacy.local" >"$E2E_WORK/ow.out" 2>&1 && RC=0 || RC=$?
+  [ "$RC" = 2 ] && grep -q 'DBX-KEY-EXISTS' "$E2E_WORK/ow.out" && [ "$(cat "$W/legacy.local")" = "private:old" ] && [ "$(mode "$W/legacy.local")" = 644 ] \
+    && pass "R1 $cmd 不覆盖已有的私钥（exit 2，DBX-KEY-EXISTS，文件内容与权限都没动）" || fail "R1 $cmd 覆盖保护：rc=$RC $(head -c 200 "$E2E_WORK/ow.out") 内容=$(cat "$W/legacy.local")"
+done
+[ ! -e "$W/release-keys.json" ] && pass "R1 被拒绝的 gen-release-key 没有顺带生成 release-keys.json" || fail "R1 被拒绝后仍生成了 release-keys.json"
+# 显式 --force：覆盖，并且旧版本留下的 0644 权限被收紧为 0600。
+"$BIN" gen-guest-sign-key --output-key "$W/legacy.local" --force >/dev/null 2>&1
 [ "$(mode "$W/legacy.local")" = 600 ] && ! grep -q 'private:old' "$W/legacy.local" \
-  && pass "R1 覆盖旧的 0644 私钥后权限收紧为 0600" || fail "R1 覆盖后权限=$(mode "$W/legacy.local")"
+  && pass "R1 --force 覆盖旧的 0644 私钥，权限收紧为 0600" || fail "R1 覆盖后权限=$(mode "$W/legacy.local")"
 ( umask 000; "$BIN" gen-guest-sign-key --output-key "$W/umask.local" >/dev/null 2>&1 )
 [ "$(mode "$W/umask.local")" = 600 ] && pass "R1 umask 000 下私钥仍是 0600" || fail "R1 umask 000 下权限=$(mode "$W/umask.local")"
 LEFT=$(ls -A "$W" "$W/channel" | grep -c '\.tmp-' || true)
