@@ -54,6 +54,8 @@ struct DaemonResponse: Codable {
     var pid: Int32? = nil
     /// M21：资源采样（诊断）。
     var stats: SandboxStats? = nil
+    /// M51：daemon 自身的构建修订号等（`info` 请求）。
+    var info: DaemonInfo? = nil
 }
 
 struct SandboxInfo: Codable {
@@ -292,6 +294,8 @@ final class SandboxDaemon: @unchecked Sendable {
         unlink(self.sockPath)
     }
 
+    /// M51：这个 daemon 对象创建的时间（`info` 里报告）。
+    let processStartedAt = Date()
     /// accept 循环检查停机标志的间隔。
     static let acceptPollMillis: Int32 = 250
     /// 测试用：当前监听 socket 的描述符（未在监听时为 -1）。
@@ -381,6 +385,14 @@ final class SandboxDaemon: @unchecked Sendable {
             return try self.dispatchRun(request)
         case .ps:
             return try self.dispatchPs(request)
+        case .info:
+            // M51：不需要任何沙箱状态以外的东西；旧 daemon 不认识这个请求（客户端据此判断它较旧）。
+            let count = stateQueue.sync { self.sessions.count }
+            return DaemonResponse(ok: true, pid: ProcessInfo.processInfo.processIdentifier,
+                                  info: DaemonInfo(revision: BuildRevision.current,
+                                                   pid: ProcessInfo.processInfo.processIdentifier,
+                                                   startedAtUtc: ISO8601DateFormatter().string(from: self.processStartedAt),
+                                                   sandboxCount: count))
         case .exec:
             return try self.dispatchExec(request, clientFD: clientFD)
         case .execCancel:

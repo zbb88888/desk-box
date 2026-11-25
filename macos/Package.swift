@@ -25,7 +25,7 @@ let package = Package(
         .executableTarget(
             name: "DeskBoxGUI",
             // M30：复用 DeskBoxPaths（DBX_SUPPORT_ROOT 的唯一解析点），GUI 与 daemon/CLI 对同一状态根目录。
-            dependencies: ["DeskBoxVZ"],
+            dependencies: ["DeskBoxVZ", "DeskBoxCore"],
             path: "gui/DeskBoxGUI/Sources/DesktopBoxGUI"
         ),
         .testTarget(name: "DeskBoxCoreTests", dependencies: ["DeskBoxCore", "DeskBoxVZ"]),

@@ -58,6 +58,11 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
     @Published var errorText: String? = nil
     /// 一次性 exec 的输出（移入 viewModel：exec 必须离主线程，@State 不便跨线程回写）。
     @Published var execOutput: String = ""
+    /// M51：正在运行的 daemon 与这个 App 的修订不一致时的说明（nil = 一致，或还没查）。
+    @Published var daemonSkewNote: String?
+    /// 最近一次查到的 daemon 修订号（nil = 没查到 / daemon 不认识版本查询）。
+    @Published var daemonRevision: Int?
+    private var daemonSkewChecked = false
     /// M41：正在执行 exec 的沙箱（nil = 没有在途的 exec）；Cancel 按钮据此启用。
     @Published var execRunningSandboxId: String?
     /// M41：最近一次取消请求的结果说明。
@@ -79,7 +84,10 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
                     self.sandboxes = response.sandboxes ?? []
                     self.busy = false
                     self.errorText = nil
-                    MainActor.assumeIsolated { completion?() }
+                    MainActor.assumeIsolated {
+                        self.checkDaemonSkewIfNeeded()
+                        completion?()
+                    }
                 }
             } catch {
                 let line = DaemonErrorPresenter.present(error).logLine
@@ -87,7 +95,34 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
                     self.sandboxes = []
                     self.busy = false
                     self.errorText = line
+                    // daemon 不在了：下次连上的可能是另一个（重启过的）daemon，重新检查一次。
+                    self.daemonSkewChecked = false
+                    self.daemonSkewNote = nil
                     MainActor.assumeIsolated { completion?() }
+                }
+            }
+        }
+    }
+
+    // MARK: - M51：daemon 是否比这个 App 旧
+
+    /// 每次连上 daemon 只问一次（旧 daemon 不认识 `info`，会在它的日志里记一行拒绝——不能每 3 秒问一遍）。
+    private func checkDaemonSkewIfNeeded() {
+        guard !daemonSkewChecked else { return }
+        daemonSkewChecked = true
+        let client = self.client
+        DispatchQueue.global().async {
+            let result: Result<DaemonResponse, Error>
+            do { result = .success(try client.send(DaemonRequest(kind: "info"))) } catch { result = .failure(error) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if case .success(let response) = result { self.daemonRevision = response.info?.revision }
+                    switch DaemonSkewNote.evaluate(result) {
+                    case .note(let text): self.daemonSkewNote = text
+                    case .retryLater:
+                        self.daemonSkewNote = nil
+                        self.daemonSkewChecked = false
+                    }
                 }
             }
         }

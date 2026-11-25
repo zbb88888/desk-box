@@ -281,6 +281,7 @@ FAILED_STEP=$(grep '^FAIL' "$E2E_WORK/flow.out" | head -1)
 [ -z "$FAILED_STEP" ] || fail "G10 流程在这一步失败：$FAILED_STEP"
 step_ok daemon-connected && pass "G10 GUI 自动拉起的 daemon 已连接" || fail "G10 daemon 未连接"
 step_ok run && step_ok listed-running && pass "G10 Run New Sandbox：真实 VM 引导完成并出现在列表（$(step_detail run)）" || fail "G10 run 未完成"
+step_ok daemon-skew && pass "G10 版本偏差：App 与它拉起的 daemon 同一修订（$(step_detail daemon-skew)），没有提示条" || fail "G10 版本偏差：$(step_detail daemon-skew)"
 step_ok exec-quoted && pass "G10 Exec：带引号的命令行在 guest 内正确执行（/bin/sh -c 'echo flow-ok; id -u' → uid 65534）" || fail "G10 exec 失败：$(step_detail exec-quoted)"
 step_ok exec-bad-quoting-rejected && pass "G10 Exec：引号未闭合的命令行在本地被拒" || fail "G10 非法命令行未被拒"
 case "$(step_detail exec-cancel)" in

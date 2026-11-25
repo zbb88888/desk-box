@@ -42,6 +42,7 @@ SUITES=(
   "m42-broker-exec-patched:e2e-broker-exec-patched.sh:INV-08"
   "m46-control-loss:e2e-control-loss.sh:INV-08"
   "m46-runtime-race:e2e-runtime-race.sh:INV-08"
+  "m51-doctor:e2e-doctor.sh:INV-08"
   "m20-persistence:e2e-lifecycle-persistence.sh:INV-10"
   "m20b-fault-injection:e2e-fault-injection.sh:INV-08,INV-10"
   "m21-stats:e2e-resource-stats.sh:INV-08"

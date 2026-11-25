@@ -187,6 +187,10 @@ enum DaemonCLISpecs {
         usage: "dbx-poc ws-sync <sandbox-id> <directory> [--allow-unsafe-resync] [--domain id] [--daemon-sock p]",
         positionals: ["sandbox id", "workspace directory"], valueOptions: [sock, domain], flags: ["--allow-unsafe-resync"])
 
+    /// M51：版本偏差体检。
+    static let doctor = CLISpec(command: "doctor", usage: "dbx-poc doctor [--json] [--strict] [--daemon-sock p]",
+                                valueOptions: [sock], flags: ["--json", "--strict"])
+
     static let shutdown = CLISpec(command: "shutdown", usage: "dbx-poc shutdown [--daemon-sock p]", valueOptions: [sock])
     static let daemon = CLISpec(command: "daemon", usage: "dbx-poc daemon [--daemon-sock p]", valueOptions: [sock])
     static let sweep = CLISpec(command: "sweep", usage: "dbx-poc sweep [--cow-root d]", valueOptions: ["--cow-root"])
@@ -196,5 +200,5 @@ enum DaemonCLISpecs {
                 positionals: ["sandbox id"], valueOptions: [sock, domain])
     }
 
-    static let all: [CLISpec] = [run, ps, exec, execCancel, stop, restart, console, suspend, resume, rm, stats, wsSync, shutdown, daemon, sweep]
+    static let all: [CLISpec] = [run, ps, exec, execCancel, stop, restart, console, suspend, resume, rm, stats, wsSync, doctor, shutdown, daemon, sweep]
 }

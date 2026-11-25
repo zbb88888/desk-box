@@ -340,6 +340,16 @@ final class GUISelfTest: @unchecked Sendable {
         }
         step("daemon-connected", true)
 
+        // 1b) 版本偏差：这个 App 拉起的 daemon 是同一份构建——查到了修订号、没有提示条。
+        viewModel.refresh()
+        guard await waitUntil(8, { viewModel.daemonRevision != nil }) else {
+            return step("daemon-skew", false, "没有查到 daemon 的修订号")
+        }
+        guard viewModel.daemonRevision == DaemonSkewNote.clientRevision, viewModel.daemonSkewNote == nil else {
+            return step("daemon-skew", false, "daemon=\(String(describing: viewModel.daemonRevision)) app=\(DaemonSkewNote.clientRevision) note=\(viewModel.daemonSkewNote ?? "nil")")
+        }
+        step("daemon-skew", true, "revision \(DaemonSkewNote.clientRevision)")
+
         // 2) Run New Sandbox
         let manifest = UserDefaults.standard.string(forKey: "manifestPath") ?? ""
         let run = await submit(SandboxViewModel.runRequest(manifestPath: manifest), label: "run started")

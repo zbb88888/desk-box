@@ -38,6 +38,8 @@ struct DaemonResponse: Codable, Sendable {
     var stderr: String? = nil
     var notices: [String]? = nil
     var cancelled: Bool? = nil
+    /// M51：daemon 的构建修订号等（`info` 请求）。
+    var info: DaemonInfo? = nil
     var sandboxes: [SandboxInfo]? = nil
     var pid: Int32? = nil
 }

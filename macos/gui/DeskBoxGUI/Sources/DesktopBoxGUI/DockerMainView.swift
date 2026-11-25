@@ -114,6 +114,16 @@ struct DockerMainView: View {
 
     private var sandboxesPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // M51：daemon 比这个 App 旧（或新）时，在最上面说出来。
+            if let skew = viewModel.daemonSkewNote {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                    Text(skew).font(.caption).fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(8)
+                .background(Color.orange.opacity(0.12)).cornerRadius(6)
+                .padding(.horizontal)
+            }
             HStack {
                 Label("Sandboxes", systemImage: "shippingbox").font(.title3)
                 Spacer()

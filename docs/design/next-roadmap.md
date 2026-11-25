@@ -51,6 +51,7 @@
 | M48 ✅ | runtime 的全部状态访问都在队列上；ThreadSanitizer 跑真机套件 | INV-08 | M | 已完成：start / stop / destroy 拆段，`onQueueAsync` 删除；`tsan-e2e.sh` 在 7 个真机套件上 0 竞争报告；修 debug 构建 resume 时的未对齐 load。见 `m48-runtime-serialization-and-tsan.md` |
 | M49 ✅ | TSan 覆盖全部真机套件、GUI 进程与单元测试；accept 循环不再空转 | INV-08 | M | 已完成：0 竞争报告；查清并修掉 TSan 下单测偶发失败的真正原因（测试里的重复 close 导致跨用例抢连接）；监听 socket 失效时 daemon 停止而不是空转。见 `m49-tsan-coverage-and-accept-loop.md` |
 | M50 ✅ | Manifests 面板与菜单栏弹窗：逻辑移出视图 | —（产品面） | S | 已完成：面板的签名列此前永远是 `-`、不可用的 manifest 也给 Run；弹窗对任何状态都给 stop 且吞掉错误。现在两者都走可测试的模型并进了应用内自检。见 `m50-manifests-panel-and-menubar.md` |
+| M51 ✅ | 版本偏差可见化：`doctor`、daemon `info`、GUI 提示条 | INV-08（可运维性） | S | 已完成：daemon 较旧 / guest 资产缺哪些修复，由产品自己报告。见 `m51-version-skew-doctor.md` |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 

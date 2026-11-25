@@ -12,7 +12,7 @@ import Foundation
 /// - `DBX-DOMAIN-SESSION-MISMATCH: …`
 /// - `ptyOpen: sandbox already has an active pty session`
 enum DaemonRoute: String, CaseIterable, Sendable {
-    case run, ps, exec, execCancel, stop, rm
+    case run, ps, info, exec, execCancel, stop, rm
     case ptyOpen, ptyInput, ptyPoll, ptyClose
     case wsSync, consoleLog, stats, suspend, resume, restart, shutdown
 }
@@ -44,7 +44,7 @@ enum DaemonDecision {
             throw CLIError.usage("daemon draining: kind=\(request.kind) rejected (shutdown in progress)")
         }
         switch route {
-        case .ps, .shutdown:
+        case .ps, .info, .shutdown:
             break
         case .run:
             guard request.manifestPath != nil else { throw CLIError.usage("run: --manifestPath required") }
