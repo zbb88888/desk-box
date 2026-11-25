@@ -36,9 +36,9 @@
 > 再对产出的文件运行 `summarize --markdown` 并替换下表。`e2e-evidence.py check <文件>` 的退出码：
 > 0 = 可作为发布证据，3 = 无失败但不完整，1 = 失败或证据无效。
 
-证据文件：[`evidence/e2e-20261125T030402Z-99fb543.json`](evidence/e2e-20261125T030402Z-99fb543.json)
+证据文件：[`evidence/e2e-20261125T040326Z-310045f.json`](evidence/e2e-20261125T040326Z-310045f.json)
 
-证据：commit 99fb543 · 2026-11-25T03:04:02Z · macOS 27.2.1 (26B131) Mac14,6
+证据：commit 310045f · 2026-11-25T04:03:26Z · macOS 27.2.1 (26B131) Mac14,6
 
 | 不变量 | e2e 结果 | 相关套件 | 未验证的断言 |
 | --- | --- | --- | --- |

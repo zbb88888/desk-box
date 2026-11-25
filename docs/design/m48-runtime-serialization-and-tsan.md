@@ -46,7 +46,7 @@ lengthBytes.withUnsafeBytes { $0.load(as: UInt32.self) }
 | `swift test` | 428/428 |
 | `scripts/tsan-e2e.sh`（7 个真机套件，含 suspend / resume） | 竞争报告 0；先用变异确认过 TSan 能报出 M46 的那个竞争 |
 | 全量 `e2e-all.sh`（本机现有 guest，屏幕解锁） | 27 个套件 0 失败，卫生五项 clean，退出码 0（完整通过） |
-| 全量 `e2e-all.sh`（候选） | 27 个套件 0 失败，退出码 0 |
+| 全量 `e2e-all.sh`（候选） | 27 个套件 0 失败，卫生五项 clean，**退出码 3**：这一遍跑到一半屏幕又锁上了，后半段 6 项依赖 resume 的断言被跳过（前半段 3 个套件里的 resume 用例是在解锁状态下通过的）。候选本身自 M46 起没有变，M46 那一轮它在解锁状态下完整通过过 |
 
 ## 5. 诚实边界
 
