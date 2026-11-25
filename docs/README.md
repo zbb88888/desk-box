@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M48 runtime 串行化与 TSan](design/m48-runtime-serialization-and-tsan.md)：`onQueue` 成为访问沙箱状态的唯一入口；`scripts/tsan-e2e.sh` 用 ThreadSanitizer 跑真机套件（0 报告）。
 - [M46 故障夹具、描述符继承、runtime 竞争](design/m46-control-loss-fixture-fd-hygiene-runtime-race.md)：workload 的 stdin 曾是控制通道（已修）；`onQueue` 曾不在队列上导致 daemon 崩溃（已修）；控制面丢失有了常驻回归。
 - [M45 failed 沙箱与密钥覆盖保护](design/m45-failed-sandbox-and-key-overwrite.md)：控制面丢失后立刻显示 failed 并带原因、Restart 一步重建；`gen-*-key` 不再悄悄覆盖已有私钥。
 - [M44 证据里的跳过、终端重绘](design/m44-evidence-skips-terminal-redraw.md)：环境缺失的跳过计为不完整；终端按语义处理 `\r`；其余等待接入控制面丢失。

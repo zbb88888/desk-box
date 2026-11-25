@@ -310,14 +310,36 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func start(_ handle: SandboxHandle) async throws -> BootContext {
-        try await onQueueAsync {
+        // M48：分三段——队列上检查 → 等 VZ 启动（它自己回到队列）→ 队列上落状态。
+        // 此前整段跑在队列之外（闭包里要 await），对 Record 的读写与帧处理之间没有互斥。
+        let machine: VZVirtualMachine? = try await onQueue {
             let record = try self.require(handle)
             guard record.boot.bootID == handle.bootID else {
                 throw SandboxFailure(.bootstrapProofMismatch, "boot identity 不匹配")
             }
-            if record.started { return record.boot }
+            return record.started ? nil : record.machine
+        }
+        guard let machine else {
+            return try await onQueue { try self.require(handle).boot }
+        }
+        do {
+            try await self.startMachine(machine)
+        } catch {
+            return try await onQueue { () -> BootContext in
+                let failure = SandboxFailure(
+                    .platformCapabilityUnavailable,
+                    "VZ VM 启动失败：\(error.localizedDescription)"
+                )
+                if let record = try? self.require(handle) {
+                    record.lifecycle.forceFail(reason: .platformCapabilityUnavailable)
+                    self.recordAudit(record, action: .start, decision: .error(failure.reason, failure.message))
+                }
+                throw failure
+            }
+        }
+        return try await onQueue {
+            let record = try self.require(handle)
             do {
-                try await self.startMachine(record.machine)
                 record.started = true
                 fputs("[vz-start] sandbox=\(record.request.sandboxID.description) machine.state=\(record.machine.state.rawValue)\n", stderr)
                 fflush(stderr)
@@ -364,16 +386,22 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func stop(_ handle: SandboxHandle) async throws {
-        try await onQueueAsync {
+        // M48：队列上转入 stopping → 等 VZ 停机 → 队列上收尾（见 start 的说明）。
+        let machine: VZVirtualMachine? = try await onQueue {
             let record = try self.require(handle)
             guard self.machineCanStop(record.machine) else {
                 try? record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
-                return
+                return nil
             }
             if record.lifecycle.state != .stopping && record.lifecycle.state != .stopped {
                 try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
             }
-            try await self.stopMachine(record.machine)
+            return record.machine
+        }
+        guard let machine else { return }
+        try await self.stopMachine(machine)
+        try await onQueue {
+            let record = try self.require(handle)
             if record.lifecycle.state != .stopped {
                 try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
             }
@@ -665,18 +693,22 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func destroy(_ handle: SandboxHandle) async throws {
-        try await onQueueAsync {
+        // M48：队列上转入 stopping → 等 VZ 停机 → 队列上清理（见 start 的说明）。
+        let machineToStop: VZVirtualMachine? = try await onQueue {
+            let record = try self.require(handle)
+            guard record.lifecycle.state != .stopped else { return nil }
+            if record.lifecycle.state != .stopping {
+                try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
+            }
+            return self.machineCanStop(record.machine) ? record.machine : nil
+        }
+        if let machineToStop { try await self.stopMachine(machineToStop) }
+        try await onQueue {
             let record = try self.require(handle)
             if record.lifecycle.state != .stopped {
-                if record.lifecycle.state != .stopping {
-                    try record.lifecycle.transition(to: .stopping, reason: .lifecycleStopRequested)
-                }
-                if self.machineCanStop(record.machine) { try await self.stopMachine(record.machine) }
                 self.closeSocketOnQueue(record)
                 record.controlSocket = nil
-                if record.lifecycle.state != .stopped {
-                    try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
-                }
+                try record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
             }
             do {
                 try self.cow.removeClone(record.cowLease)
@@ -1704,6 +1736,8 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     /// 操作实际跑在 Swift 并发的全局线程池上，与队列上的帧处理并行读写同一个 Record。
     /// 表现是偶发的 daemon 崩溃（`record.ptyEvents.append` 与终端轮询的 filter / removeAll 撞在一起：
     /// EXC_BAD_ACCESS，全量 E2E 里实际发生过一次）。现在同步操作直接在队列上执行。
+    /// M48：这是**唯一**的入口——闭包是同步的，编译器不允许在里面 `await`。需要等 VZ 的操作
+    ///（start / stop / destroy）拆成「队列上准备 → await → 队列上收尾」几段。
     private func onQueue<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
@@ -1713,18 +1747,5 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         }
     }
 
-    /// 需要在操作内部 `await`（VZ 的启动 / 停止 / 暂停，它们自己会再回到队列上）的少数生命周期操作。
-    /// 这些操作**不在**队列上执行（在队列上等待一个「需要队列」的调用会死锁），因此它们对 Record 的读写
-    /// 与帧处理之间仍然没有互斥——只用于生命周期转换，那时没有请求在途。
-    private func onQueueAsync<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            queue.async {
-                Task {
-                    do { continuation.resume(returning: try await operation()) }
-                    catch { continuation.resume(throwing: error) }
-                }
-            }
-        }
-    }
 }
 

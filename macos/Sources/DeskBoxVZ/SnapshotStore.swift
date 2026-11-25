@@ -165,7 +165,10 @@ public struct SnapshotStore: Sendable {
         }
         guard data.count > 8 + 4 + 12 + 16 else { throw SnapshotError.malformed("文件过短") }
         let lengthBytes = data.subdata(in: 8..<12)
-        let metaLen = Int(lengthBytes.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian })
+        // M48：`load(as:)` 要求指针按类型对齐，而 4 字节的 Data 用的是内联存储，不保证 4 字节对齐。
+        // 未对齐的 load 是未定义行为：release 构建里碰巧能用，**debug 构建直接 trap**——debug 的 daemon
+        // 每次 resume 都会崩溃（TSan 构建跑 resume 用例时发现；单元测试从没读过快照，所以一直没撞上）。
+        let metaLen = Int(lengthBytes.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self).bigEndian })
         guard metaLen > 0, data.count > 12 + metaLen + 12 + 16 else {
             throw SnapshotError.malformed("metaLen 越界")
         }
