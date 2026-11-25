@@ -36,7 +36,7 @@ GUI 没有做签名验证：`signed` 只表示「带有签名」，验签仍然�
 - Manifests 面板的数据：对着真实的 guest 目录扫描，当前使用的 manifest 被识别为可运行并显示了签名密钥（`4 listed; manifest.json key=d75fa8c9ad434947 kernel=vmlinuz-virt`）；
 - 菜单栏弹窗：running 时提供 restart / stop / rm，经它 Stop 之后状态变为 stopped、只剩 rm；锁屏时沙箱停在 suspended，弹窗里是 resume / rm、没有 stop（两个分支分别在解锁 / 锁屏的宿主上走到）。
 
-全量 `e2e-all.sh`（本机现有 guest）与（候选）：见提交说明与证据文件。
+全量 `e2e-all.sh`（本机现有 guest，屏幕解锁）：27 个套件 0 失败，卫生五项 clean，退出码 0（完整通过）。候选上只重跑了 GUI 套件（本轮只改了 GUI）：69 项通过。
 
 顺带：M49 留下的「没有系统审计重复 close」——对全部产品与测试代码扫了一遍「同一个函数里既有 `defer { close(x) }` 又有显式 `close(x)`」的组合，只有 M49 已经修掉的那一处（现在由 `fd = -1` 保护）。
 
