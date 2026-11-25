@@ -40,6 +40,8 @@ SUITES=(
   "m41-exec-cancel-patched:e2e-exec-cancel-patched.sh:INV-08"
   "m42-broker-exec:e2e-broker-exec.sh:INV-08"
   "m42-broker-exec-patched:e2e-broker-exec-patched.sh:INV-08"
+  "m46-control-loss:e2e-control-loss.sh:INV-08"
+  "m46-runtime-race:e2e-runtime-race.sh:INV-08"
   "m20-persistence:e2e-lifecycle-persistence.sh:INV-10"
   "m20b-fault-injection:e2e-fault-injection.sh:INV-08,INV-10"
   "m21-stats:e2e-resource-stats.sh:INV-08"
@@ -72,6 +74,9 @@ snapshot() { # snapshot <prefix>
     ls "$HOME/Library/Saved Application State" "$HOME/Library/Caches" "$HOME/Library/HTTPStorages" 2>/dev/null | grep -i 'deskbox'
   } | sort > "$1.library"
   pgrep -f 'dbx-poc|DeskBoxGUI' | sort > "$1.procs"
+  # M46：被测进程的崩溃报告。套件全绿不代表没有崩溃（daemon 崩在一个「失败也算通过」的断言附近时
+  # 不会有任何套件变红）；这里把「运行期间新出现的崩溃报告」直接算作失败。
+  ls "$HOME/Library/Logs/DiagnosticReports" 2>/dev/null | grep -E '^(dbx-poc|DeskBoxGUI|DeskBoxE2E)' | sort > "$1.crashes"
 }
 
 # ---- 构建 + 签名一次 ----
@@ -145,6 +150,7 @@ for entry in "${SUITES[@]}"; do
   SUMMARY+=("$name|$rc|${result:-?}|$secs")
 done
 
+sleep 2      # 崩溃报告由系统异步写出，给它一点时间
 snapshot "$AUDIT/after"
 
 # ---- 卫生审计 ----
@@ -164,6 +170,7 @@ audit support "用户状态目录（Application Support）"
 audit tmp     "/tmp 项目相关条目"
 audit library "~/Library 下 deskbox 相关条目"
 audit procs   "dbx-poc / GUI 进程集合"
+audit crashes "被测进程的崩溃报告（~/Library/Logs/DiagnosticReports）"
 
 # ---- 证据文件（M36）----
 # 设置 E2E_EVIDENCE_DIR 时，把这次运行写成一份机器可读的证据：commit、宿主版本、每个套件的结果、

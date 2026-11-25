@@ -785,7 +785,9 @@ final class SandboxDaemon: @unchecked Sendable {
         } catch {
             let soft = SandboxStats(cpuUsageUsec: nil, memoryCurrentBytes: nil, memoryMaxBytes: nil,
                                     pidsCurrent: nil, pidsMax: nil,
-                                    statsError: error.localizedDescription)
+                                    // M46：`localizedDescription` 对 SandboxFailure 只会给出
+                                    // "The operation couldn’t be completed. (… error 1.)"——资源面板上显示的就是这句废话。
+                                    statsError: String(describing: error))
             return DaemonResponse(ok: true, sandboxId: sandboxId, state: "running", stats: soft)
         }
     }
@@ -920,6 +922,11 @@ final class SandboxDaemon: @unchecked Sendable {
         let sandboxId = session.id
         guard let workspacePath = request.workspaceDir else {
             throw CLIError.usage("wsSync: workspaceDir required")
+        }
+        // M46：控制面已经没了就直说。否则下面的版本查询失败会被当成「guest 资产较旧」，给出一个
+        // 与真实原因无关的 DBX-WS-RESYNC-UNSAFE。
+        if let lost = session.runtime.cachedControlLoss(of: session.handle) {
+            throw CLIError.usage(ControlLossPolicy.message(waitingFor: "workspace sync", detail: lost))
         }
         // M37：workload 运行之后的再次同步，只有在 guest 的接收端不跟随符号链接时才安全。
         if session.workloadStarted {

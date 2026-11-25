@@ -56,10 +56,10 @@ final class GUISelfTest: @unchecked Sendable {
     func attach(viewModel: SandboxViewModel, daemonManager: DaemonProcessManager) {
         self.viewModel = viewModel
         self.daemonManager = daemonManager
-        guard scenario == "flow", !flowStarted else { return }
+        guard scenario == "flow" || scenario == "failed", !flowStarted else { return }
         flowStarted = true
         Task { @MainActor in
-            await self.runFlow()
+            if self.scenario == "failed" { await self.runFailedFlow() } else { await self.runFlow() }
             self.fireCommandQ()
         }
     }
@@ -220,6 +220,76 @@ final class GUISelfTest: @unchecked Sendable {
     @MainActor
     private func state(of id: String) -> String {
         viewModel?.sandboxes.first { $0.sandboxId == id }?.state ?? "(absent)"
+    }
+
+    /// M46：沙箱失去控制面之后的界面表现（需要带故障注入的 guest 夹具）。
+    /// Run → 让 guest 的控制进程退出 → 行变成 failed 并带原因 → 只剩 Console / Restart / Rm →
+    /// 对它 Exec 得到可读的原因 → Restart 重建出一台可用的新沙箱 → Rm。
+    @MainActor
+    private func runFailedFlow() async {
+        guard let viewModel, let daemonManager else { return step("attach", false, "no view model") }
+        guard await waitUntil(20, { daemonManager.status == .connected }) else {
+            return step("daemon-connected", false, "status=\(daemonManager.status.rawValue)")
+        }
+        step("daemon-connected", true)
+        let manifest = UserDefaults.standard.string(forKey: "manifestPath") ?? ""
+        let run = await submit(SandboxViewModel.runRequest(manifestPath: manifest), label: "run started")
+        guard case .success(let created) = run, let id = created.sandboxId else { return step("run", false, "\(run)") }
+        step("run", true, id)
+
+        // 触发夹具里的故障：主循环下一轮退出。这条 exec 自己能正常返回。
+        _ = await exec(id, "/bin/sh -c 'touch /workspace/.dbx-test-die-idle; echo armed'")
+        guard viewModel.execOutput.contains("armed") else { return step("fault-armed", false, viewModel.execOutput) }
+        step("fault-armed", true)
+
+        // 不做任何操作：列表靠主界面自己的定时刷新变成 failed。
+        guard await waitUntil(12, { self.state(of: id) == "failed" }) else {
+            return step("row-becomes-failed", false, "state=\(state(of: id))（这套 guest 没有故障注入？）")
+        }
+        let row = viewModel.sandboxes.first { $0.sandboxId == id }
+        guard let detail = row?.stateDetail, detail.contains("DBX-GUEST-CONTROL-LOST") else {
+            return step("row-becomes-failed", false, "stateDetail=\(row?.stateDetail ?? "nil")")
+        }
+        step("row-becomes-failed", true, detail)
+
+        let actions = SandboxRowActions.available(forState: state(of: id))
+        guard actions == [.console, .restart, .rm],
+              let note = SandboxRowActions.stateNote(state: state(of: id), detail: row?.stateDetail),
+              note.contains("控制进程已退出") else {
+            return step("failed-row-actions", false, actions.map(\.rawValue).joined(separator: ","))
+        }
+        step("failed-row-actions", true, actions.map(\.rawValue).joined(separator: ","))
+
+        // 对它 Exec：可读的原因，daemon 状态不受影响。
+        _ = await exec(id, "/bin/echo hi")
+        guard viewModel.execOutput.contains("沙箱失去响应"), daemonManager.status == .connected else {
+            return step("exec-on-failed-explains", false, "daemon=\(daemonManager.status.rawValue) out=\(viewModel.execOutput)")
+        }
+        step("exec-on-failed-explains", true)
+
+        // Restart（行内按钮对应的请求）。
+        guard let restartRequest = SandboxRowActions.request(for: .restart, sandboxId: id) else {
+            return step("restart", false, "no request")
+        }
+        let restarted = await submit(restartRequest, label: "restart")
+        guard case .success(let rebuilt) = restarted, let newId = rebuilt.sandboxId, newId != id else {
+            return step("restart", false, "\(restarted)")
+        }
+        guard await waitUntil(8, { self.state(of: newId) == "running" && self.state(of: id) == "(absent)" }) else {
+            return step("restart", false, "new=\(state(of: newId)) old=\(state(of: id))")
+        }
+        step("restart", true, newId)
+        _ = await exec(newId, "/bin/echo rebuilt-ok")
+        guard viewModel.execOutput.contains("exit=0"), viewModel.execOutput.contains("rebuilt-ok") else {
+            return step("exec-after-restart", false, viewModel.execOutput)
+        }
+        step("exec-after-restart", true)
+
+        guard let rmRequest = SandboxRowActions.request(for: .rm, sandboxId: newId) else { return step("rm", false, "no request") }
+        let removed = await submit(rmRequest, label: "rm")
+        guard case .success = removed, state(of: newId) == "(absent)" else { return step("rm", false, "\(removed)") }
+        step("rm", true)
+        step("flow-complete", true)
     }
 
     /// Run → Exec → Suspend → Resume → Rm，每一步都经由视图模型里按钮所用的同一入口。

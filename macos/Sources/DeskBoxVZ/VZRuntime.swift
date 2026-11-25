@@ -310,7 +310,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func start(_ handle: SandboxHandle) async throws -> BootContext {
-        try await onQueue {
+        try await onQueueAsync {
             let record = try self.require(handle)
             guard record.boot.bootID == handle.bootID else {
                 throw SandboxFailure(.bootstrapProofMismatch, "boot identity 不匹配")
@@ -364,7 +364,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func stop(_ handle: SandboxHandle) async throws {
-        try await onQueue {
+        try await onQueueAsync {
             let record = try self.require(handle)
             guard self.machineCanStop(record.machine) else {
                 try? record.lifecycle.transition(to: .stopped, reason: .lifecycleStopped)
@@ -665,7 +665,7 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
     }
 
     public func destroy(_ handle: SandboxHandle) async throws {
-        try await onQueue {
+        try await onQueueAsync {
             let record = try self.require(handle)
             if record.lifecycle.state != .stopped {
                 if record.lifecycle.state != .stopping {
@@ -1697,7 +1697,26 @@ public final class VZRuntime: SandboxRuntime, @unchecked Sendable {
         return record
     }
 
-    private func onQueue<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    /// 在 runtime 的串行队列上执行一段**同步**操作。Record 的全部可变状态都只应在这个队列上读写
+    ///（控制通道收到的帧也是在它上面处理的）。
+    ///
+    /// M46：此前这个函数是 `queue.async { Task { operation() } }`——`Task {}` 并不继承 dispatch 队列，
+    /// 操作实际跑在 Swift 并发的全局线程池上，与队列上的帧处理并行读写同一个 Record。
+    /// 表现是偶发的 daemon 崩溃（`record.ptyEvents.append` 与终端轮询的 filter / removeAll 撞在一起：
+    /// EXC_BAD_ACCESS，全量 E2E 里实际发生过一次）。现在同步操作直接在队列上执行。
+    private func onQueue<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do { continuation.resume(returning: try operation()) }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    /// 需要在操作内部 `await`（VZ 的启动 / 停止 / 暂停，它们自己会再回到队列上）的少数生命周期操作。
+    /// 这些操作**不在**队列上执行（在队列上等待一个「需要队列」的调用会死锁），因此它们对 Record 的读写
+    /// 与帧处理之间仍然没有互斥——只用于生命周期转换，那时没有请求在途。
+    private func onQueueAsync<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 Task {

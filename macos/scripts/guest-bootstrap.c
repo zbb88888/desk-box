@@ -49,6 +49,30 @@
  * 此前是受理即答 "OK"，失败时 guest 里只留下一个空文件。 */
 #define DBX_BROKER_VERSION 3
 
+/* M46：exec / pty 的子进程不再继承 bootstrap 的文件描述符（见 close_fds_from）。旧 guest 不上报。 */
+#define DBX_CHILD_FDS_VERSION 1
+
+/* M46：**仅用于测试**的故障注入。只有用 -DDBX_TEST_FAULTS 编译的测试夹具才有（见
+ * scripts/build-patched-guest.sh 的 PATCHED_GUEST_CFLAGS）；正式构建不定义它，下面的代码不存在。
+ * 用途：让「guest 的控制进程死掉」这件事可以按需发生——新 guest 上不可信程序已经做不到这一点
+ *（M42 修掉了），而宿主对它的处理（M43 / M45）需要一个常驻的回归测试。
+ *   /workspace/.dbx-test-die-idle  存在 → 主循环下一轮退出（没有请求在途时死亡）
+ *   /workspace/.dbx-test-die-exec  存在 → exec 的等待循环里退出（请求在途时死亡）
+ * 夹具经 stats 上报 "testFaults":true，测试据此确认自己跑在夹具上，也据此确认正式资产**没有**这个开关。 */
+#ifdef DBX_TEST_FAULTS
+static void dbx_test_fault(const char *trigger) {
+    if (access(trigger, F_OK) != 0) return;
+    (void)unlink(trigger);
+    const char *msg = "Desk Box bootstrap: TEST FAULT — exiting on request\n";
+    (void)write(STDOUT_FILENO, msg, strlen(msg));
+    _exit(137);
+}
+#define DBX_TEST_FAULTS_JSON ",\"testFaults\":true"
+#else
+#define dbx_test_fault(trigger) ((void)0)
+#define DBX_TEST_FAULTS_JSON ""
+#endif
+
 static uint16_t be16(uint16_t x) { return (uint16_t)((x >> 8) | (x << 8)); }
 static uint32_t be32(uint32_t x) { return __builtin_bswap32(x); }
 static uint64_t be64(uint64_t x) { return __builtin_bswap64(x); }
@@ -569,8 +593,8 @@ static int collect_stats_json(char *out, size_t cap) {
     unsigned long long pids_total = cg_read_u64("/sys/fs/cgroup/pids.current", NULL, &pids_found);
 
     if (!cpu_found && !mem_found && !pids_found) {
-        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d,\"brokerVersion\":%d}",
-                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION, DBX_BROKER_VERSION);
+        int n = snprintf(out, cap, "{\"statsError\":\"cgroup2 采样不可读\",\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d,\"brokerVersion\":%d,\"childFdsVersion\":%d" DBX_TEST_FAULTS_JSON "}",
+                         DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION, DBX_BROKER_VERSION, DBX_CHILD_FDS_VERSION);
         return n > 0 ? n : -1;
     }
 
@@ -630,9 +654,9 @@ static int collect_stats_json(char *out, size_t cap) {
     int n = snprintf(out, cap,
                      "{\"cpuUsageUsec\":%s,\"memoryCurrentBytes\":%s,"
                      "\"memoryMaxBytes\":%s,\"pidsCurrent\":%s,\"pidsMax\":%s,"
-                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d,\"brokerVersion\":%d}",
+                     "\"activeExecGroups\":%d,\"workspaceSyncVersion\":%d,\"execOutputVersion\":%d,\"execCancelVersion\":%d,\"brokerVersion\":%d,\"childFdsVersion\":%d" DBX_TEST_FAULTS_JSON "}",
                      cpu_json, mem_json, mem_max_json, pids_json, pids_max_json, groups,
-                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION, DBX_BROKER_VERSION);
+                     DBX_WS_RECEIVER_VERSION, DBX_EXEC_OUTPUT_VERSION, DBX_EXEC_CANCEL_VERSION, DBX_BROKER_VERSION, DBX_CHILD_FDS_VERSION);
     return n > 0 ? n : -1;
 #else
     (void)out; (void)cap;
@@ -658,14 +682,33 @@ struct exec_child_ctx {
     char **envp;
 };
 
+/* M46：workload 进程不得继承 bootstrap 的文件描述符。
+ *
+ * 此前 exec / pty 的子进程原样继承了 bootstrap 打开的一切。bootstrap 的 fd 0 恰好就是**控制通道**
+ *（它启动时 stdin 是关着的，socket() 拿到了最小的空闲号），于是：
+ *   - workload 的 stdin 就是控制通道：任何读 stdin 的命令（`wc`、`cat`、`read`）会挂住，并且会把宿主
+ *     发给 bootstrap 的帧吃掉；
+ *   - `echo x >&0` 就能往控制通道里写垃圾——宿主收到坏记录后关闭连接，沙箱进入 failed；
+ *   - broker 的监听 socket 等其它描述符同样被带了进去。
+ * 现在：子进程在加固与 exec 之前关掉 3 号及以上的全部描述符；exec 的 stdin 换成 /dev/null。 */
+#ifndef __NR_close_range
+#define __NR_close_range 436
+#endif
+static void close_fds_from(int lowest) {
+    if (syscall(__NR_close_range, (unsigned)lowest, ~0U, 0U) == 0) return;
+    for (int fd = lowest; fd < 4096; fd++) (void)close(fd);     /* 内核太旧时的兜底 */
+}
 static int exec_child_main(void *argp) {
     struct exec_child_ctx *ctx = (struct exec_child_ctx *)argp;
     (void)signal(SIGPIPE, SIG_DFL);     /* bootstrap 自己忽略 SIGPIPE；workload 要保持默认行为 */
     (void)setpgid(0, 0);
     (void)dup2(ctx->out_w, STDOUT_FILENO);
     (void)dup2(ctx->err_w, STDERR_FILENO);
-    close(ctx->out_r); close(ctx->out_w);
-    close(ctx->err_r); close(ctx->err_w);
+    /* stdin：/dev/null（读到 EOF）。打不开就宁可没有 stdin，也不能留着继承来的那个。 */
+    int devnull = open("/dev/null", O_RDONLY);
+    if (devnull < 0) { (void)close(STDIN_FILENO); }
+    else if (devnull != STDIN_FILENO) { (void)dup2(devnull, STDIN_FILENO); }
+    close_fds_from(3);
     if (install_exec_hardening(ctx->timeout_seconds) != 0) _exit(126);
     if (ctx->envp) {
         extern char **environ;
@@ -910,6 +953,7 @@ static int run_exec_request(const char *request_json, char *response, size_t res
     int child_done = 0;
     int idle_rounds_after_exit = 0;
     for (;;) {
+        dbx_test_fault("/workspace/.dbx-test-die-exec");
         if (!child_done) {
             pid_t reaped = waitpid(pid, &status, WNOHANG);
             if (reaped == pid) {
@@ -1328,7 +1372,7 @@ static int pty_spawn(struct pty_session *s, char **argv, unsigned int rows, unsi
         dup2(slave, STDIN_FILENO);
         dup2(slave, STDOUT_FILENO);
         dup2(slave, STDERR_FILENO);
-        if (slave > 2) close(slave);
+        close_fds_from(3);      /* M46：包括 slave 本身，以及继承来的控制通道 / broker 监听 socket */
         if (install_exec_hardening(timeout_seconds) != 0) _exit(126);
         execvp(argv[0], argv);
         _exit(127);
@@ -1503,7 +1547,7 @@ static void broker_abort_all(const char *reason) {
 
 /* 接受一个 broker 客户端连接并处理它的一行请求。 */
 static void broker_accept_one(int ctl_fd, int record_mode, uint64_t *sequence) {
-    int cfd = accept(g_broker_listen_fd, NULL, NULL);
+    int cfd = accept4(g_broker_listen_fd, NULL, NULL, SOCK_CLOEXEC);
     if (cfd >= 0) {
         /* M42：客户端连上来却什么都不发时，不能让 bootstrap 永远卡在 recv 上（那样宿主的所有请求都得不到应答）。 */
         struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
@@ -1711,7 +1755,7 @@ int main(void) {
      * 使用同一 boot/nonce（bootID 不变，proof 绑定关系因此保持一致）。 */
 reconnect:
     record_mode = 0;
-    int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
+    int fd = socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC, 0);     /* M46：纵深——即便子进程忘了关，exec 也带不走 */
     if (fd < 0) {
         char msg[96]; int n = snprintf(msg, sizeof(msg), "Desk Box bootstrap: socket errno=%d\n", errno);
         write(STDOUT_FILENO, msg, (size_t)n); fsync(STDOUT_FILENO); return 5;
@@ -1768,7 +1812,7 @@ reconnect:
      */
     int broker_listen_fd = -1;
     {
-        int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        int lfd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         if (lfd >= 0) {
             struct sockaddr_un su;
             memset(&su, 0, sizeof(su));
@@ -1790,6 +1834,7 @@ reconnect:
     uint8_t incoming[CONTROL_FRAME_MAX + 1];    /* +1：payload 之后要补一个 NUL */
     pending_clear();
     for (;;) {
+        dbx_test_fault("/workspace/.dbx-test-die-idle");
         struct pollfd pfds[3];
         pfds[0].fd = fd;
         pfds[0].events = POLLIN;

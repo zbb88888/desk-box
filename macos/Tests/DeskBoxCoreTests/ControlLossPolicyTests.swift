@@ -17,6 +17,22 @@ final class ControlLossPolicyTests: XCTestCase {
         }
     }
 
+    func testStatsCapabilityFieldsFromNewerGuests() throws {
+        // 旧 guest 一个都不上报；测试夹具才有 testFaults。
+        let old = try JSONDecoder().decode(SandboxStats.self, from: Data(#"{"activeExecGroups":0}"#.utf8))
+        XCTAssertNil(old.childFdsVersion)
+        XCTAssertNil(old.testFaults)
+        XCTAssertNil(old.brokerVersion)
+        let fixture = try JSONDecoder().decode(SandboxStats.self, from: Data(
+            #"{"activeExecGroups":0,"workspaceSyncVersion":2,"execOutputVersion":2,"execCancelVersion":1,"brokerVersion":3,"childFdsVersion":1,"testFaults":true}"#.utf8))
+        XCTAssertEqual(fixture.childFdsVersion, 1)
+        XCTAssertEqual(fixture.testFaults, true)
+        XCTAssertEqual(fixture.brokerVersion, 3)
+        let release = try JSONDecoder().decode(SandboxStats.self, from: Data(
+            #"{"activeExecGroups":0,"brokerVersion":3,"childFdsVersion":1}"#.utf8))
+        XCTAssertNil(release.testFaults, "正式资产不上报 testFaults")
+    }
+
     func testMessageCarriesCodeOperationAndDetail() {
         let message = ControlLossPolicy.message(waitingFor: "exec", detail: "guest control socket closed")
         XCTAssertTrue(message.hasPrefix("DBX-GUEST-CONTROL-LOST: "), message)

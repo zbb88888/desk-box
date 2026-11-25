@@ -36,20 +36,41 @@ rm -rf "$STAGE"; mkdir -p "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
 
 # ---- libsodium（静态，目标平台）----
-curl --fail --silent --show-error --location --retry 3 -o "$STAGE/libsodium.tar.gz" "$SODIUM_URL"
-GOT=$(shasum -a 256 "$STAGE/libsodium.tar.gz" | awk '{print $1}')
-[ "$GOT" = "$SODIUM_SHA256" ] || { echo "libsodium 源码包摘要不符：$GOT（期望 $SODIUM_SHA256）" >&2; exit 1; }
-tar -xzf "$STAGE/libsodium.tar.gz" -C "$STAGE"
-(
-  cd "$STAGE"/libsodium-*/
-  ./configure --host=aarch64-linux-musl CC="$CC" --disable-shared --enable-static --prefix="$STAGE/sodium" >"$STAGE/sodium-configure.log" 2>&1
-  make -j"$(sysctl -n hw.ncpu)" install >"$STAGE/sodium-make.log" 2>&1
-) || { tail -15 "$STAGE"/sodium-*.log >&2; echo "libsodium 构建失败" >&2; exit 1; }
+# M46：编译好的 libsodium 缓存在 .build/（gitignored 的构建目录）里，按「版本 + 源码包摘要 + 编译器」区分。
+# 此前每次构建夹具都重新下载、重新编译——一次全量 E2E 要下载好几遍，官方站点一抖动整个套件就被跳过。
+# 缓存只在第一次（或换了编译器之后）需要网络。删除 .build/patched-guest-cache 即可强制重建。
+CC_ID=$("$CC" --version 2>/dev/null | head -1 | shasum -a 256 | cut -c1-12)
+SODIUM_CACHE="${PATCHED_GUEST_SODIUM_CACHE:-$ROOT/.build/patched-guest-cache}/libsodium-$SODIUM_VERSION-${SODIUM_SHA256:0:12}-$CC_ID"
+if [ -f "$SODIUM_CACHE/lib/libsodium.a" ] && [ -f "$SODIUM_CACHE/include/sodium.h" ]; then
+  SODIUM_PREFIX="$SODIUM_CACHE"
+else
+  curl --fail --silent --show-error --location --retry 5 --retry-all-errors -o "$STAGE/libsodium.tar.gz" "$SODIUM_URL"
+  GOT=$(shasum -a 256 "$STAGE/libsodium.tar.gz" | awk '{print $1}')
+  [ "$GOT" = "$SODIUM_SHA256" ] || { echo "libsodium 源码包摘要不符：$GOT（期望 $SODIUM_SHA256）" >&2; exit 1; }
+  tar -xzf "$STAGE/libsodium.tar.gz" -C "$STAGE"
+  (
+    cd "$STAGE"/libsodium-*/
+    ./configure --host=aarch64-linux-musl CC="$CC" --disable-shared --enable-static --prefix="$STAGE/sodium" >"$STAGE/sodium-configure.log" 2>&1
+    make -j"$(sysctl -n hw.ncpu)" install >"$STAGE/sodium-make.log" 2>&1
+  ) || { tail -15 "$STAGE"/sodium-*.log >&2; echo "libsodium 构建失败" >&2; exit 1; }
+  SODIUM_PREFIX="$STAGE/sodium"
+  # 放进缓存（原子：先拷到临时名再 rename；并发构建时后到的那个直接放弃）。只留头文件和静态库。
+  mkdir -p "$(dirname "$SODIUM_CACHE")"
+  TMP_CACHE="$SODIUM_CACHE.tmp.$$"
+  rm -rf "$TMP_CACHE"; mkdir -p "$TMP_CACHE/lib"
+  if cp -R "$STAGE/sodium/include" "$TMP_CACHE/include" && cp "$STAGE/sodium/lib/libsodium.a" "$TMP_CACHE/lib/"; then
+    mv "$TMP_CACHE" "$SODIUM_CACHE" 2>/dev/null || rm -rf "$TMP_CACHE"
+  else
+    rm -rf "$TMP_CACHE"
+  fi
+fi
 
 # ---- bootstrap ----
 # 与 build-alpine-guest.sh 相同的选项。警告全部打印出来（不同编译器版本的告警集合不同，所以不用 -Werror）。
-"$CC" -static -O2 -Wall -Wextra -I"$STAGE/sodium/include" -o "$STAGE/deskbox-bootstrap" \
-  "$ROOT/scripts/guest-bootstrap.c" "$STAGE/sodium/lib/libsodium.a" 2>"$STAGE/cc.log" \
+# PATCHED_GUEST_CFLAGS：额外的编译选项（M46：-DDBX_TEST_FAULTS 打开仅用于测试的故障注入）。
+# shellcheck disable=SC2086
+"$CC" -static -O2 -Wall -Wextra ${PATCHED_GUEST_CFLAGS:-} -I"$SODIUM_PREFIX/include" -o "$STAGE/deskbox-bootstrap" \
+  "$ROOT/scripts/guest-bootstrap.c" "$SODIUM_PREFIX/lib/libsodium.a" 2>"$STAGE/cc.log" \
   || { cat "$STAGE/cc.log" >&2; echo "bootstrap 编译失败" >&2; exit 1; }
 WARNINGS=$(grep -c 'warning:' "$STAGE/cc.log" || true)
 [ "$WARNINGS" = 0 ] || { echo "bootstrap 编译有 $WARNINGS 条警告：" >&2; grep -A3 'warning:' "$STAGE/cc.log" | head -40 >&2; }
@@ -101,5 +122,11 @@ PY
 cp -c "$SRC/vmlinuz-virt" "$OUT/vmlinuz-virt" 2>/dev/null || cp "$SRC/vmlinuz-virt" "$OUT/vmlinuz-virt"
 cp -c "$SRC/root-disk.raw" "$OUT/root-disk.raw" 2>/dev/null || cp "$SRC/root-disk.raw" "$OUT/root-disk.raw"
 "$BIN" make-manifest --kernel "$OUT/vmlinuz-virt" --initrd "$OUT/initrd-deskbox.img" \
-  --root-disk "$OUT/root-disk.raw" --output "$OUT/manifest.json" >/dev/null
+  --root-disk "$OUT/root-disk.raw" --output "$OUT/manifest.unsigned.json" >/dev/null
+# PATCHED_GUEST_SIGN_KEY：给出开发签名私钥时签名（GUI 自检走的是不带 --allow-unsigned-manifest 的正常路径）。
+if [ -n "${PATCHED_GUEST_SIGN_KEY:-}" ] && [ -f "$PATCHED_GUEST_SIGN_KEY" ]; then
+  "$BIN" sign-manifest --manifest "$OUT/manifest.unsigned.json" --key "$PATCHED_GUEST_SIGN_KEY" --output "$OUT/manifest.json" >/dev/null
+else
+  cp "$OUT/manifest.unsigned.json" "$OUT/manifest.json"
+fi
 echo "patched guest at $OUT（未签名 manifest：run 时需 --allow-unsigned-manifest）"

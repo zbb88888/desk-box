@@ -121,6 +121,11 @@ public struct SandboxStats: Sendable, Codable, Equatable {
     /// M42：guest 的 broker 入口版本（nil → 1：exec 期间不受理 broker 请求，且 broker 客户端提前退出
     /// 会连带杀掉 guest 的控制面；2 起两者都已修复）。
     public var brokerVersion: Int? = nil
+    /// M46：这是一套带**测试用故障注入**的 guest 夹具（`-DDBX_TEST_FAULTS`）。正式资产不上报这个字段。
+    public var testFaults: Bool? = nil
+    /// M46：exec / pty 的子进程是否不再继承 bootstrap 的文件描述符（nil = 旧 guest：workload 的 fd 0
+    /// 就是控制通道，可以读走宿主的帧、也可以往里写垃圾让沙箱 failed）。
+    public var childFdsVersion: Int? = nil
 
     public init(cpuUsageUsec: UInt64?, memoryCurrentBytes: UInt64?, memoryMaxBytes: UInt64?,
                 pidsCurrent: Int?, pidsMax: Int?, activeExecGroups: Int? = nil,

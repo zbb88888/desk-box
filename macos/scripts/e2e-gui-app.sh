@@ -316,6 +316,49 @@ assert_quit "G10 流程结束后的 ⌘Q" "$R7"
 LEFT=$(find "$DBX_SUPPORT_ROOT/cows" -type f ! -name 'registry.json' ! -name 'registry.lock' 2>/dev/null | tr '\n' ' ')
 [ -z "$LEFT" ] && pass "G10 cow-root 零残留" || fail "G10 cow-root 残留：$LEFT"
 
+# ================= G12：失去控制面的沙箱在界面上的表现（M46；需要带故障注入的 guest 夹具） =================
+# 夹具要签名（GUI 走的是不带 --allow-unsigned-manifest 的正常路径）：用本机的开发密钥。
+FAULT_MANIFEST=""
+if [ -f "$E2E_ROOT/guest/dev-sign-key.local" ]; then
+  FAULT_MANIFEST=$(
+    export E2E_PATCHED_GUEST_DIR="${E2E_PATCHED_GUEST_DIR:-$E2E_WORK/patched-guest}"
+    . "$E2E_ROOT/scripts/lib/patched-guest.sh"
+    patched_guest_prepare gui faults >"$E2E_WORK/fault-fixture.log" 2>&1
+    printf '%s' "${PATCHED_MANIFEST:-}"
+  )
+fi
+if [ -n "$FAULT_MANIFEST" ] && [ -f "$FAULT_MANIFEST" ] && "$BIN" validate-assets "$FAULT_MANIFEST" >/dev/null 2>&1; then
+  R9="$E2E_WORK/report-9.json"
+  SAVED_MANIFEST="$MANIFEST"; MANIFEST="$FAULT_MANIFEST"
+  launch_gui "$R9" 120 YES failed
+  MANIFEST="$SAVED_MANIFEST"
+  GUI9=$GUI_PID
+  for _ in $(seq 1 80); do "$BIN" ps >/dev/null 2>&1 && break; sleep 0.1; done
+  SPAWNED9=$(pgrep -f "$APP/Contents/MacOS/dbx-poc daemon" | head -1)
+  [ -n "$SPAWNED9" ] && { E2E_DAEMON_PIDS="$E2E_DAEMON_PIDS $SPAWNED9"; E2E_DAEMON_SOCKS="$E2E_DAEMON_SOCKS $DEFAULT_SOCK"; }
+  wait_gui_exit "$GUI9" 140
+  [ -s "$R9" ] || fail "G12 自检报告未生成：$(head -c 300 "$R9.stdout" 2>/dev/null)"
+  python3 - "$R9" >"$E2E_WORK/flow.out" 2>&1 <<'PY'
+import json, sys
+for s in json.load(open(sys.argv[1])).get("flow", []):
+    print("%s\t%s\t%s" % ("PASS" if s["ok"] else "FAIL", s["name"], s.get("detail", "")))
+PY
+  step_ok row-becomes-failed && pass "G12 guest 的控制进程退出后，列表里那一行靠定时刷新变成 failed 并带原因（$(step_detail row-becomes-failed | cut -c1-48)…）" \
+    || fail "G12 行状态：$(grep 'row-becomes-failed\|fault-armed\|run' "$E2E_WORK/flow.out" | tail -1)"
+  step_ok failed-row-actions && pass "G12 failed 的行只提供 $(step_detail failed-row-actions)，并有说明文字" || fail "G12 行内操作：$(step_detail failed-row-actions)"
+  step_ok exec-on-failed-explains && pass "G12 对 failed 的沙箱 Exec：界面显示「沙箱失去响应」，daemon 状态不变" || fail "G12 Exec 说明：$(step_detail exec-on-failed-explains)"
+  step_ok restart && step_ok exec-after-restart && pass "G12 Restart：重建出一台新沙箱（$(step_detail restart | cut -c1-8)…），Exec 正常" \
+    || fail "G12 Restart：$(step_detail restart) $(step_detail exec-after-restart)"
+  step_ok rm && step_ok flow-complete && pass "G12 流程完整走完" || fail "G12 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
+  assert_quit "G12 流程结束后的 ⌘Q" "$R9"
+  [ "$("$BIN" ps 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && pass "G12 daemon 上没有遗留沙箱" || fail "G12 遗留沙箱：$("$BIN" ps 2>&1 | head -2)"
+  "$BIN" shutdown >/dev/null 2>&1 && e2e_wait_exit "${SPAWNED9:-0}" 100 && pass "G12 daemon 正常 shutdown" || fail "G12 daemon shutdown 失败"
+  LEFT=$(find "$DBX_SUPPORT_ROOT/cows" -type f ! -name 'registry.json' ! -name 'registry.lock' 2>/dev/null | tr '\n' ' ')
+  [ -z "$LEFT" ] && pass "G12 cow-root 零残留" || fail "G12 cow-root 残留：$LEFT"
+else
+  skip "G12 failed 沙箱的界面流程：需要带故障注入的 guest 夹具（交叉编译器 + 本机开发签名密钥）：$(tail -1 "$E2E_WORK/fault-fixture.log" 2>/dev/null | cut -c1-120)"
+fi
+
 # ================= G11：应用级模态面板打开时的 quit AppleEvent =================
 R8="$E2E_WORK/report-8.json"
 launch_gui "$R8" 5 NO modal appleevent

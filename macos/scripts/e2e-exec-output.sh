@@ -113,6 +113,48 @@ else
   [ "$MS" -lt 8500 ] && pass "L3 在超时 + 宽限之内返回（${MS}ms；超时 4s）" || fail "L3 用时 ${MS}ms"
 fi
 
+# ---------- M46：workload 不继承 bootstrap 的文件描述符 ----------
+FV=$("$BIN" stats --daemon-sock "$SOCK" "$ID" --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin).get('childFdsVersion') or 0)" 2>/dev/null || echo 0)
+x 8 'for f in /proc/self/fd/*; do printf "%s=%s\n" "${f##*/}" "$(readlink "$f" 2>/dev/null)"; done'
+FDS=$(grep -v '/proc/' "$O" | tr '\n' ' ')
+if [ "$FV" -ge 1 ]; then
+  ! grep -q 'socket:' "$O" && pass "H1 exec 出来的进程没有继承任何 socket（$FDS）" || fail "H1 继承了 socket：$FDS"
+  grep -q '^0=/dev/null$' "$O" && pass "H1 stdin 是 /dev/null" || fail "H1 stdin：$(grep '^0=' "$O")"
+  # 3 号是 shell 展开 /proc/self/fd/* 时自己临时打开的目录句柄（readlink 时已经关了，目标为空）。
+  EXTRA=$(grep -v '/proc/' "$O" | grep -vE '^[012]=' | grep -vE '^[0-9]+=$' | tr '\n' ' ')
+  [ -z "$EXTRA" ] && pass "H1 除 0 / 1 / 2 之外没有任何打开的描述符" || fail "H1 多出的描述符：$EXTRA"
+  x 6 'wc -c'
+  [ "$RC" = 0 ] && [ "$(tr -d ' \n' < "$O")" = 0 ] && [ "$MS" -lt 2000 ] \
+    && pass "H2 读 stdin 的命令（wc -c）立刻读到 EOF（${MS}ms；此前挂在控制通道上直到超时）" || fail "H2 rc=$RC ${MS}ms out=[$(cat "$O")] err=[$(cat "$E")]"
+  x 6 'echo garbage-into-control-channel >&0; echo "write-rc=$?"'
+  x 6 'echo still-here'
+  [ "$RC" = 0 ] && [ "$(cat "$O")" = still-here ] && [ "$("$BIN" ps --daemon-sock "$SOCK" 2>/dev/null | awk -v id="$ID" '$1==id {print $2}')" = running ] \
+    && pass "H3 往 fd 0 写东西不再能破坏控制通道：沙箱仍是 running，之后 exec 正常（此前一行命令就让沙箱 failed）" || fail "H3 rc=$RC err=[$(cat "$E")]"
+  SESS=$(python3 "$E2E_ROOT/scripts/lib/pty_client.py" "$SOCK" spawn "$ID" 'for f in /proc/self/fd/*; do printf "FD%s=%s;" "${f##*/}" "$(readlink "$f" 2>/dev/null)"; done; echo fd-list-$((1+1))-end')
+  python3 - "$SOCK" "$SESS" >"$E2E_WORK/ptyfds.out" 2>&1 <<'PY'
+import json, socket, sys, time
+def req(d):
+    s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.settimeout(30)
+    s.sendall((json.dumps(d) + "\n").encode()); b = b""
+    while not b.endswith(b"\n"):
+        c = s.recv(65536)
+        if not c: break
+        b += c
+    return json.loads(b.decode() or "{}")
+out = ""; t0 = time.time()
+while time.time() - t0 < 8 and "fd-list-2-end" not in out:      # 回显的命令行里是 $((1+1))，只有真正的输出里才有 2
+    r = req({"kind": "ptyPoll", "ptySessionId": sys.argv[2], "waitMillis": 300})
+    if r.get("outputHex"): out += bytes.fromhex(r["outputHex"]).decode(errors="replace")
+req({"kind": "ptyClose", "ptySessionId": sys.argv[2]})
+lines = [l for l in out.splitlines() if l.startswith("FD0=")]
+print(lines[-1] if lines else "NO-OUTPUT:" + out[-200:].replace("\n", " "))
+PY
+  grep -q '^FD0=/dev/pts/' "$E2E_WORK/ptyfds.out" && ! grep -q 'socket:' "$E2E_WORK/ptyfds.out" \
+    && pass "H4 终端里的进程同样没有继承任何 socket（$(cut -c1-70 "$E2E_WORK/ptyfds.out")…）" || fail "H4 $(cat "$E2E_WORK/ptyfds.out")"
+else
+  log "KNOWN-DEFECT（旧 guest）H1：exec 出来的进程继承了 bootstrap 的描述符：$FDS（fd 0 是控制通道：读 stdin 的命令会挂住，往 fd 0 写会让沙箱 failed）"
+fi
+
 # ---------- 收尾（两个版本） ----------
 x 10 'echo still-alive'
 [ "$RC" = 0 ] && [ "$(cat "$O")" = still-alive ] && pass "X9 之后 guest 仍然响应" || fail "X9 rc=$RC out=[$(cat "$O")] err=[$(cat "$E")]"
