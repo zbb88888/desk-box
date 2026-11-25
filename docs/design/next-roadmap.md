@@ -47,7 +47,7 @@
 | M44 ✅ | 证据把环境缺失的跳过计为不完整；终端 `\r` 重绘；其余等待接入控制面丢失 | INV-08（证据质量） | S | 已完成，未改 guest、未碰 resume 路径。见 `m44-evidence-skips-terminal-redraw.md` |
 | M45 ✅ | failed 沙箱：立刻可见、带原因、一步重建；生成密钥不覆盖已有私钥 | INV-08 / INV-09 | S | 已完成，未改 guest。见 `m45-failed-sandbox-and-key-overwrite.md` |
 | M46 ✅ | 控制面丢失的常驻回归（故障夹具）；workload 不继承 bootstrap 描述符；runtime 数据竞争 | INV-08 | L | 已完成：发现并修复「workload 的 stdin 就是控制通道」与「onQueue 并不在队列上」（daemon 实际崩溃）；崩溃报告纳入卫生审计。候选已重建。见 `m46-control-loss-fixture-fd-hygiene-runtime-race.md` |
-| M47 | resume 路径的回归验证（需解锁）+ 安装候选 | INV-08 / INV-10 | S | M42 / M43 / M45 / M46 共四处未经 resume 验证的改动；解锁后跑全量 E2E（现有 guest 与候选各一遍），再决定是否安装候选 |
+| M47 | 安装候选（`macos/guest` 与 App bundle 里的那份） | INV-06 / INV-08 | S | resume 已在两种 guest 上验证（M46 §5.1）；剩下的只是用户确认后执行 `install-guest-candidate.sh ./guest-candidate`，bundle 需停 daemon 后重新打包 |
 | M48 | runtime 的剩余竞争 | INV-08 | M | start / stop / destroy 仍不在队列上；考虑 actor 化或给 Record 加锁；尝试 TSan |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
