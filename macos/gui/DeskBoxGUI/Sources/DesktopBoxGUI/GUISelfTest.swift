@@ -548,6 +548,39 @@ final class GUISelfTest: @unchecked Sendable {
             step("resume-host-locked-presented", true, shown.logLine)
         }
 
+        // 5b) Manifests 面板的数据：当前使用的 manifest 被识别为可运行，并显示签名密钥。
+        let manifestURL = URL(fileURLWithPath: manifest)
+        let catalog = ManifestCatalog.scan(directory: manifestURL.deletingLastPathComponent())
+        guard let entry = catalog.first(where: { $0.name == manifestURL.lastPathComponent }),
+              entry.isRunnable, entry.status == .ready, let keyID = entry.keyID, !keyID.isEmpty, entry.kernel != nil else {
+            return step("manifests-panel", false, catalog.map { "\($0.name)=\($0.statusText)" }.joined(separator: " "))
+        }
+        step("manifests-panel", true, "\(catalog.count) listed; \(entry.name) key=\(keyID) kernel=\(entry.kernel ?? "-")")
+
+        // 5c) 菜单栏弹窗的操作：按状态启用；running 时经它 Stop，之后只剩 Rm。
+        let menuState = state(of: id)
+        let menuActions = MenuBarSandboxActions.available(forState: menuState)
+        if menuState == "running" {
+            guard menuActions == [.restart, .stop, .rm] || Set(menuActions) == Set([.stop, .restart, .rm]),
+                  let stopRequest = SandboxRowActions.request(for: .stop, sandboxId: id) else {
+                return step("menubar-actions", false, "state=\(menuState) actions=\(menuActions.map(\.rawValue))")
+            }
+            let stopped = await submit(stopRequest, label: "stop")
+            guard case .success = stopped, await waitUntil(5, { self.state(of: id) == "stopped" }) else {
+                return step("menubar-actions", false, "stop: \(stopped) state=\(state(of: id))")
+            }
+            guard MenuBarSandboxActions.available(forState: state(of: id)) == [.rm] else {
+                return step("menubar-actions", false, "stopped 之后的操作：\(MenuBarSandboxActions.available(forState: state(of: id)).map(\.rawValue))")
+            }
+            step("menubar-actions", true, "running→stop→stopped; then rm only")
+        } else {
+            // 锁屏时沙箱停在 suspended：弹窗里不该有 stop。
+            guard menuState == "suspended", menuActions == [.resume, .rm] else {
+                return step("menubar-actions", false, "state=\(menuState) actions=\(menuActions.map(\.rawValue))")
+            }
+            step("menubar-actions", true, "suspended: resume,rm (no stop)")
+        }
+
         // 6) Rm
         guard let rmRequest = SandboxRowActions.request(for: .rm, sandboxId: id) else { return step("rm", false) }
         let removed = await submit(rmRequest, label: "rm")

@@ -254,8 +254,10 @@ struct MenuBarStatusView: View {
                         HStack(spacing: 8) {
                             Text(sb.state).font(.caption2).foregroundColor(.secondary)
                             Spacer()
-                            Button("stop") { send("stop", id: sb.sandboxId) }.buttonStyle(.link)
-                            Button("rm") { send("rm", id: sb.sandboxId) }.buttonStyle(.link)
+                            // M50：按状态启用（与主列表同一份规则）。
+                            ForEach(MenuBarSandboxActions.available(forState: sb.state)) { action in
+                                Button(action.label.lowercased()) { perform(action, id: sb.sandboxId) }.buttonStyle(.link)
+                            }
                         }
                     }
                     .padding(.vertical, 2)
@@ -273,17 +275,10 @@ struct MenuBarStatusView: View {
         .onAppear { viewModel.refresh() }
     }
 
-    private func send(_ kind: String, id: String) {
-        // Swift 6 严格并发：MainActor 隔离的属性不能在 Sendable 闭包里直接捕获。
-        // 先把 client 取到局部常量（DaemonSocketClient 自身是线程安全的），
-        // 刷新再回主线程。
-        let client = viewModel.client
-        DispatchQueue.global().async {
-            var req = DaemonRequest(kind: kind)
-            req.sandboxId = id
-            req.force = true
-            _ = try? client.send(req, timeoutSec: 10)
-            Task { @MainActor in viewModel.refresh() }
-        }
+    private func perform(_ action: SandboxAction, id: String) {
+        // M50：走主界面同一个入口（SandboxViewModel.submit）——错误会被显示和记录，完成后刷新列表。
+        // 此前这里直接往 socket 发请求并吞掉错误，被 daemon 拒绝时界面上什么都不发生。
+        guard let request = SandboxRowActions.request(for: action, sandboxId: id) else { return }
+        viewModel.submit(request, label: action.label.lowercased(), daemonManager: daemonManager)
     }
 }

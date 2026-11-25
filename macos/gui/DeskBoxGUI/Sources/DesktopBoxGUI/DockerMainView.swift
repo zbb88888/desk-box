@@ -282,15 +282,7 @@ struct ManifestsPanel: View {
     let manifestDir: URL
     let isDaemonOn: Bool
     let onRun: (String) -> Void
-    @State private var manifests: [ManifestRow] = []
-
-    struct ManifestRow: Identifiable {
-        let id = UUID()
-        let name: String
-        let path: String
-        let sizeKB: Int
-        let digestShort: String
-    }
+    @State private var manifests: [ManifestCatalogRow] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -302,11 +294,18 @@ struct ManifestsPanel: View {
             }
             .padding(.horizontal)
             Table(manifests) {
-                TableColumn("Name") { m in Text(m.name) }.width(min: 220)
-                TableColumn("SizeKB") { m in Text("\(m.sizeKB)") }.width(70)
-                TableColumn("Digest") { m in Text(m.digestShort).font(.system(.caption, design: .monospaced)) }.width(min: 140)
+                TableColumn("Name") { m in Text(m.name) }.width(min: 200)
+                TableColumn("Kernel") { m in Text(m.kernel ?? "-").font(.caption) }.width(min: 110)
+                TableColumn("SizeKB") { m in Text("\(m.sizeBytes / 1024)") }.width(60)
+                // M50：签名密钥的 keyID（此前这一列读的是不存在的字段，永远是 "-"）。
+                TableColumn("Key") { m in Text(m.signatureText).font(.system(.caption, design: .monospaced)) }.width(min: 130)
+                TableColumn("Status") { m in
+                    Text(m.statusText).font(.caption)
+                        .foregroundColor(m.status == .ready ? .secondary : .orange)
+                        .help(m.statusText)
+                }.width(min: 120)
                 TableColumn("Run") { m in
-                    Button("Run") { onRun(m.path) }.disabled(!isDaemonOn)
+                    Button("Run") { onRun(m.path) }.disabled(!isDaemonOn || !m.isRunnable)
                 }.width(60)
             }
             .frame(minHeight: 240)
@@ -316,22 +315,8 @@ struct ManifestsPanel: View {
     }
 
     private func rescan() {
-        var rows: [ManifestRow] = []
-        if let items = try? FileManager.default.contentsOfDirectory(atPath: manifestDir.path) {
-            for name in items where name.hasPrefix("manifest") && name.hasSuffix(".json") && !name.contains("unsigned") {
-                let path = manifestDir.appendingPathComponent(name).path
-                let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int) ?? 0
-                var digest = "-"
-                if let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let sig = obj["signature"] as? [String: Any],
-                   let payload = sig["payloadDigest"] as? String ?? sig["payloadSha256"] as? String {
-                    digest = String(payload.prefix(16))
-                }
-                rows.append(ManifestRow(name: name, path: path, sizeKB: size / 1024, digestShort: digest))
-            }
-        }
-        manifests = rows.sorted { $0.name < $1.name }
+        // M50：逻辑在 ManifestCatalog（可单元测试）。
+        manifests = ManifestCatalog.scan(directory: manifestDir)
     }
 }
 

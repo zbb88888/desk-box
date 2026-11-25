@@ -315,6 +315,8 @@ elif step_ok resume-host-locked-presented; then
 else
   fail "G10 resume 步骤缺失"
 fi
+step_ok manifests-panel && pass "G10 Manifests 面板：当前 manifest 被识别为可运行并显示签名密钥（$(step_detail manifests-panel)）" || fail "G10 Manifests 面板：$(step_detail manifests-panel)"
+step_ok menubar-actions && pass "G10 菜单栏弹窗的操作按状态启用（$(step_detail menubar-actions)）" || fail "G10 菜单栏弹窗：$(step_detail menubar-actions)"
 step_ok rm && step_ok flow-complete && pass "G10 Rm：沙箱从列表消失，流程完整走完" || fail "G10 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
 assert_quit "G10 流程结束后的 ⌘Q" "$R7"
 [ "$("$BIN" ps 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && pass "G10 daemon 上没有遗留沙箱" || fail "G10 遗留沙箱：$("$BIN" ps 2>&1 | head -2)"
