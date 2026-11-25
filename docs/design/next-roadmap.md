@@ -49,7 +49,7 @@
 | M46 ✅ | 控制面丢失的常驻回归（故障夹具）；workload 不继承 bootstrap 描述符；runtime 数据竞争 | INV-08 | L | 已完成：发现并修复「workload 的 stdin 就是控制通道」与「onQueue 并不在队列上」（daemon 实际崩溃）；崩溃报告纳入卫生审计。候选已重建。见 `m46-control-loss-fixture-fd-hygiene-runtime-race.md` |
 | M47 | 安装候选（`macos/guest` 与 App bundle 里的那份） | INV-06 / INV-08 | S | resume 已在两种 guest 上验证（M46 §5.1）；剩下的只是用户确认后执行 `install-guest-candidate.sh ./guest-candidate`，bundle 需停 daemon 后重新打包 |
 | M48 ✅ | runtime 的全部状态访问都在队列上；ThreadSanitizer 跑真机套件 | INV-08 | M | 已完成：start / stop / destroy 拆段，`onQueueAsync` 删除；`tsan-e2e.sh` 在 7 个真机套件上 0 竞争报告；修 debug 构建 resume 时的未对齐 load。见 `m48-runtime-serialization-and-tsan.md` |
-| M49 | TSan 覆盖面扩大 | INV-08 | S | broker / workspace 同步套件、GUI 进程 |
+| M49 ✅ | TSan 覆盖全部真机套件、GUI 进程与单元测试；accept 循环不再空转 | INV-08 | M | 已完成：0 竞争报告；查清并修掉 TSan 下单测偶发失败的真正原因（测试里的重复 close 导致跨用例抢连接）；监听 socket 失效时 daemon 停止而不是空转。见 `m49-tsan-coverage-and-accept-loop.md` |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 

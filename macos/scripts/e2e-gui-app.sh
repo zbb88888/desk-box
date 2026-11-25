@@ -65,9 +65,15 @@ e2e_extra_cleanup() {
 }
 
 # ---------- 组装临时 .app ----------
-( swift build -c release --product DeskBoxGUI >"$E2E_WORK/gui-build.log" 2>&1 ) || { tail -5 "$E2E_WORK/gui-build.log"; die "GUI 构建失败"; }
+# E2E_GUI_PREBUILT：直接用一个已构建好的 GUI 二进制（M49：scripts/tsan-e2e.sh 用它换上 ThreadSanitizer 构建）。
 mkdir -p "$APP/Contents/MacOS"
-cp "$E2E_ROOT/.build/release/DeskBoxGUI" "$APP/Contents/MacOS/DeskBoxGUI"
+if [ -n "${E2E_GUI_PREBUILT:-}" ]; then
+  [ -x "$E2E_GUI_PREBUILT" ] || die "E2E_GUI_PREBUILT 不存在：$E2E_GUI_PREBUILT"
+  cp "$E2E_GUI_PREBUILT" "$APP/Contents/MacOS/DeskBoxGUI"
+else
+  ( swift build -c release --product DeskBoxGUI >"$E2E_WORK/gui-build.log" 2>&1 ) || { tail -5 "$E2E_WORK/gui-build.log"; die "GUI 构建失败"; }
+  cp "$E2E_ROOT/.build/release/DeskBoxGUI" "$APP/Contents/MacOS/DeskBoxGUI"
+fi
 cp "$BIN" "$APP/Contents/MacOS/dbx-poc"          # 保留签名：GUI 拉起的 daemon 用它
 python3 - "$E2E_ROOT/gui/DeskBoxGUI/Resources/Info.plist" "$APP/Contents/Info.plist" "$BID" <<'PY'
 import plistlib, sys

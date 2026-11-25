@@ -218,15 +218,57 @@ final class SandboxDaemon: @unchecked Sendable {
         }
         print("daemon ready pid=\(ProcessInfo.processInfo.processIdentifier) sock=\(self.sockPath)")
         fflush(stdout)
-        self.serverFD = serverFD
+        stateQueue.sync { self.serverFD = serverFD }
+        // M49：accept 循环用 poll（250ms）等待，每一轮都检查停机标志。
+        //
+        // 此前循环阻塞在 accept() 上，停机靠「shutdown 的处理线程连一下自己的 socket」把它唤醒；accept 失败时
+        // 则是 `continue`。两个问题：
+        //   1. 停机的正确性依赖那条唤醒连接一定被**这个**循环收到；
+        //   2. 监听 socket 一旦失效（描述符被关掉 / 不再是 socket），accept 每次立刻失败，循环以 100% CPU 空转，
+        //      daemon 既不服务也不退出。
+        // 现在：监听 socket 非阻塞 + poll；失效的监听 socket 是致命错误（记日志、退出循环）；
+        // 其它 accept 失败（描述符耗尽等）退避 50ms 再试。
+        let listenFlags = fcntl(serverFD, F_GETFL, 0)
+        if listenFlags >= 0 { _ = fcntl(serverFD, F_SETFL, listenFlags | O_NONBLOCK) }
         while true {
-            let clientFD = accept(serverFD, nil, nil)
-            let stopping = stateQueue.sync { self.shouldStop }
-            if stopping {
-                if clientFD >= 0 { Darwin.close(clientFD) }
+            var pfd = pollfd(fd: serverFD, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&pfd, 1, Self.acceptPollMillis)
+            if stateQueue.sync(execute: { self.shouldStop }) { break }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                fputs("daemon: poll on the listening socket failed (errno=\(errno)); stopping\n", stderr)
                 break
             }
-            if clientFD < 0 { continue }
+            if ready == 0 { continue }
+            switch AcceptLoopPolicy.action(revents: pfd.revents) {
+            case .listenerDead:
+                fputs("daemon: the listening socket is no longer valid (revents=\(pfd.revents)); stopping\n", stderr)
+                stateQueue.sync { self.shouldStop = true }
+            case .accept, .wait:
+                break
+            }
+            if stateQueue.sync(execute: { self.shouldStop }) { break }
+            let clientFD = accept(serverFD, nil, nil)
+            if clientFD < 0 {
+                switch AcceptLoopPolicy.action(acceptErrno: errno) {
+                case .listenerDead:
+                    fputs("daemon: accept failed on the listening socket (errno=\(errno)); stopping\n", stderr)
+                    stateQueue.sync { self.shouldStop = true }
+                case .wait:
+                    usleep(50_000)      // EMFILE / ENFILE / ENOMEM：别空转
+                case .accept:
+                    break               // 连接在 poll 与 accept 之间消失（EAGAIN / ECONNABORTED / EINTR）
+                }
+                if stateQueue.sync(execute: { self.shouldStop }) { break }
+                continue
+            }
+            // macOS 上 accept 出来的 socket 会继承监听 socket 的 O_NONBLOCK；处理线程用的是带超时的阻塞读写。
+            let clientFlags = fcntl(clientFD, F_GETFL, 0)
+            if clientFlags >= 0 { _ = fcntl(clientFD, F_SETFL, clientFlags & ~O_NONBLOCK) }
+            if stateQueue.sync(execute: { self.shouldStop }) {
+                Darwin.close(clientFD)
+                break
+            }
             // M35：对端必须是 daemon 自己的用户（或 root）。不回任何内容，直接断开。
             guard DaemonPeerPolicy.admits(fd: clientFD) else {
                 fputs("daemon: rejected connection from uid=\(DaemonPeerPolicy.peerUID(of: clientFD).map(String.init) ?? "unknown")\n", stderr)
@@ -242,11 +284,20 @@ final class SandboxDaemon: @unchecked Sendable {
         }
         // 在途响应写完再退出（有界等待：不让一个卡住的客户端拖死停机）。
         _ = handlerGroup.wait(timeout: .now() + 5)
-        Darwin.close(serverFD)
-        self.serverFD = -1
+        // 监听 socket 如果已经失效（被别处关掉），这里再 close 一次会关掉**别人**后来拿到的同编号描述符。
+        var listenerStat = stat()
+        if fstat(serverFD, &listenerStat) == 0, (listenerStat.st_mode & S_IFMT) == S_IFSOCK { Darwin.close(serverFD) }
+        stateQueue.sync { self.serverFD = -1 }
         // M24c：daemon 退出时清掉 socket 残留（GUI 侧 stale-sock workaround 的根因）。
         unlink(self.sockPath)
     }
+
+    /// accept 循环检查停机标志的间隔。
+    static let acceptPollMillis: Int32 = 250
+    /// 测试用：当前监听 socket 的描述符（未在监听时为 -1）。
+    var listeningDescriptorForTesting: Int32 { stateQueue.sync { serverFD } }
+    /// 测试用：关掉停机时的唤醒连接，验证停机不依赖它。
+    var wakeAcceptLoopOnShutdown = true
 
     /// 唤醒阻塞在 accept 的主循环（shutdown 响应写完后调用）。
     private func wakeAcceptLoop() {
@@ -304,8 +355,8 @@ final class SandboxDaemon: @unchecked Sendable {
             }
         }
         // M24c：shutdown 响应写完后才唤醒 accept 循环（保证客户端收到 ack 再退出）。
-        if requestKind == "shutdown" && response.ok {
-            self.wakeAcceptLoop()
+        if requestKind == "shutdown" && response.ok && wakeAcceptLoopOnShutdown {
+            self.wakeAcceptLoop()       // 只是让退出快一点；正确性不依赖它（见 serveLoop 的说明）
         }
     }
 
