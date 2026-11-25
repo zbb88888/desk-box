@@ -101,7 +101,8 @@ log "压力 ${SECONDS_OF_STRESS}s：$RESULT"
 kill -0 "$DAEMON_PID" 2>/dev/null && pass "R1 压力期间 daemon 没有崩溃（进程仍在）" || fail "R1 daemon 进程已经不在了：$(tail -3 "$DAEMON_LOG" | tr '\n' ' ' | head -c 300)"
 sleep 2
 [ "$(crash_reports)" = "$CRASHES_BEFORE" ] && pass "R1 没有新的 dbx-poc 崩溃报告" || fail "R1 出现了新的崩溃报告：$(ls -t "$HOME/Library/Logs/DiagnosticReports" | grep '^dbx-poc' | head -1)"
-[ "$(val polls)" -ge 500 ] 2>/dev/null && [ "$(val poll_bytes)" -ge 100000 ] 2>/dev/null \
+# 轮询次数随机器负载变化很大（每次轮询取回的输出越多，次数越少）；真正说明「撞上了」的是取回的字节数。
+[ "$(val polls)" -ge 50 ] 2>/dev/null && [ "$(val poll_bytes)" -ge 1000000 ] 2>/dev/null \
   && pass "R2 对照：压力确实打上去了（$(val polls) 次轮询，取回 $(val poll_bytes) 字节终端输出，$(val execs) 条 exec）" || fail "R2 压力不足：$RESULT"
 [ "$(val poll_errors)" = 0 ] && [ "$(val transport_errors)" = 0 ] && pass "R2 轮询全部成功，没有连接层错误" || fail "R2 poll_errors=$(val poll_errors) transport_errors=$(val transport_errors)"
 [ "$(val exec_errors)" = 0 ] && [ "$(val execs)" -ge 20 ] 2>/dev/null && pass "R2 并发的 $(val execs) 条 exec 输出逐条正确" || fail "R2 exec_errors=$(val exec_errors) execs=$(val execs)"
