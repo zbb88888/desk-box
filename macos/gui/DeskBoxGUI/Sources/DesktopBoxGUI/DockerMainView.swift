@@ -53,6 +53,16 @@ struct DockerMainView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 520)
+        // M53：不可撤销的操作先确认。
+        .alert(viewModel.pendingConfirmation?.title ?? "",
+               isPresented: Binding(get: { viewModel.pendingConfirmation != nil },
+                                    set: { if !$0 { viewModel.cancelPending() } }),
+               presenting: viewModel.pendingConfirmation) { prompt in
+            Button(prompt.confirmLabel, role: .destructive) { viewModel.confirmPending(daemonManager: daemonManager) }
+            Button("取消", role: .cancel) { viewModel.cancelPending() }
+        } message: { prompt in
+            Text(prompt.message)
+        }
         .onAppear {
             if manifestPath.isEmpty {
                 manifestPath = resolvedManifestPath()
@@ -142,7 +152,7 @@ struct DockerMainView: View {
                     run(manifestPath: manifestPath)
                 }
                 .disabled(daemonManager.status != .connected)
-                Button("Shutdown Daemon") { daemonManager.stopDaemon(); viewModel.refresh() }
+                Button("Shutdown Daemon") { viewModel.requestShutdown(daemonManager: daemonManager) }
                     .disabled(daemonManager.status != .connected)
                 Button("Settings") { settingsPresented = true }
                 Button("Open Display") {
@@ -190,6 +200,8 @@ struct DockerMainView: View {
                         ForEach(SandboxRowActions.available(forState: sb.state)) { action in
                             Button(action.label) { perform(action, on: sb.sandboxId) }
                                 .foregroundColor(action.isDestructive ? .red : nil)
+                                // M53：Rm 与其它按钮隔开一点，少一些点错的机会。
+                                .padding(.leading, action.isDestructive ? 10 : 0)
                         }
                     }
                 }
@@ -261,8 +273,8 @@ struct DockerMainView: View {
         case .console: consoleSandboxId = id
         case .exec: execSandboxId = id
         default:
-            guard let request = SandboxRowActions.request(for: action, sandboxId: id) else { return }
-            send(request, toast: "\(action.rawValue) \(id)")
+            // M53：Rm / Restart / Stop 先确认（viewModel.request 只登记，由上面的 alert 执行）。
+            viewModel.request(action, sandboxId: id, daemonManager: daemonManager)
         }
     }
 

@@ -624,13 +624,47 @@ final class GUISelfTest: @unchecked Sendable {
             step("menubar-actions", true, "suspended: resume,rm (no stop)")
         }
 
-        // 6) Rm
-        guard let rmRequest = SandboxRowActions.request(for: .rm, sandboxId: id) else { return step("rm", false) }
-        let removed = await submit(rmRequest, label: "rm")
-        guard case .success = removed, state(of: id) == "(absent)" else {
+        // 6) Rm（M53：走按钮的入口——先确认）。
+        //    Suspend 这类可以撤销的操作不需要确认。
+        guard ActionConfirmation.prompt(for: .suspend, sandboxId: id, state: "running") == nil else {
+            return step("confirm-rm-asks-first", false, "suspend 不该要求确认")
+        }
+        let stateBeforeRm = state(of: id)
+        guard !viewModel.request(.rm, sandboxId: id, daemonManager: daemonManager),
+              let prompt = viewModel.pendingConfirmation, prompt.target == .sandbox(action: .rm, sandboxId: id) else {
+            return step("confirm-rm-asks-first", false, "没有进入等待确认：\(String(describing: viewModel.pendingConfirmation))")
+        }
+        // 等够一轮定时刷新：没确认之前什么都没有发生。
+        try? await Task.sleep(for: .milliseconds(3500))
+        let sheetShown = NSApp.windows.contains { $0.attachedSheet != nil }
+        guard state(of: id) == stateBeforeRm, viewModel.pendingConfirmation != nil else {
+            return step("confirm-rm-asks-first", false, "确认之前状态变了：\(stateBeforeRm) → \(state(of: id))")
+        }
+        step("confirm-rm-asks-first", true, "\(prompt.title) / \(prompt.confirmLabel)")
+        step("confirm-dialog-on-screen", sheetShown, sheetShown ? "主窗口上挂着确认对话框" : "没有找到挂在窗口上的对话框")
+        // 取消：沙箱还在，对话框收起。
+        viewModel.cancelPending()
+        viewModel.refresh()
+        try? await Task.sleep(for: .milliseconds(1200))
+        guard viewModel.pendingConfirmation == nil, state(of: id) == stateBeforeRm else {
+            return step("confirm-rm-cancel", false, "取消之后：state=\(state(of: id)) pending=\(String(describing: viewModel.pendingConfirmation))")
+        }
+        step("confirm-rm-cancel", true, "state=\(stateBeforeRm)")
+        // 再点一次并确认：这次真的移除。
+        viewModel.request(.rm, sandboxId: id, daemonManager: daemonManager)
+        let removed: Result<DaemonResponse, Error> = await withCheckedContinuation { continuation in
+            viewModel.confirmPending(daemonManager: daemonManager) { continuation.resume(returning: $0) }
+        }
+        guard case .success = removed, state(of: id) == "(absent)", viewModel.pendingConfirmation == nil else {
             return step("rm", false, "\(removed) state=\(state(of: id))")
         }
         step("rm", true)
+        // 没有沙箱时 Shutdown Daemon 不需要确认；有沙箱时需要（这里只核对判定，不真的关）。
+        guard ActionConfirmation.shutdownPrompt(sandboxCount: viewModel.sandboxes.count) == nil,
+              ActionConfirmation.shutdownPrompt(sandboxCount: 2) != nil else {
+            return step("confirm-shutdown-rule", false, "sandboxes=\(viewModel.sandboxes.count)")
+        }
+        step("confirm-shutdown-rule", true)
         step("flow-complete", true)
     }
 

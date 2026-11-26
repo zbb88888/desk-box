@@ -59,6 +59,8 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
     /// 一次性 exec 的输出（移入 viewModel：exec 必须离主线程，@State 不便跨线程回写）。
     @Published var execOutput: String = ""
     /// M51：正在运行的 daemon 与这个 App 的修订不一致时的说明（nil = 一致，或还没查）。
+    /// M53：等用户确认的操作（nil = 没有）。
+    @Published var pendingConfirmation: ConfirmationPrompt?
     @Published var daemonSkewNote: String?
     /// 最近一次查到的 daemon 修订号（nil = 没查到 / daemon 不认识版本查询）。
     @Published var daemonRevision: Int?
@@ -103,6 +105,51 @@ final class SandboxViewModel: ObservableObject, @unchecked Sendable {
             }
         }
     }
+
+    // MARK: - M53：不可撤销的操作先确认
+
+    /// 行内操作的统一入口（主列表与菜单栏弹窗共用）。需要确认的操作只登记，不发请求。
+    /// - Returns: true = 已直接提交；false = 在等确认（或这是一个纯界面动作）。
+    @discardableResult
+    func request(_ action: SandboxAction, sandboxId: String, daemonManager: DaemonProcessManager?) -> Bool {
+        let state = sandboxes.first { $0.sandboxId == sandboxId }?.state ?? ""
+        if let prompt = ActionConfirmation.prompt(for: action, sandboxId: sandboxId, state: state) {
+            pendingConfirmation = prompt
+            return false
+        }
+        guard let request = SandboxRowActions.request(for: action, sandboxId: sandboxId) else { return false }
+        submit(request, label: "\(action.rawValue) \(sandboxId)", daemonManager: daemonManager)
+        return true
+    }
+
+    /// 「Shutdown Daemon」。
+    @discardableResult
+    func requestShutdown(daemonManager: DaemonProcessManager) -> Bool {
+        if let prompt = ActionConfirmation.shutdownPrompt(sandboxCount: sandboxes.count) {
+            pendingConfirmation = prompt
+            return false
+        }
+        daemonManager.stopDaemon()
+        refresh()
+        return true
+    }
+
+    /// 用户确认了：执行登记的那一个操作。
+    func confirmPending(daemonManager: DaemonProcessManager?,
+                        completion: (@MainActor @Sendable (Result<DaemonResponse, Error>) -> Void)? = nil) {
+        guard let prompt = pendingConfirmation else { return }
+        pendingConfirmation = nil
+        switch prompt.target {
+        case .sandbox(let action, let sandboxId):
+            guard let request = SandboxRowActions.request(for: action, sandboxId: sandboxId) else { return }
+            submit(request, label: "\(action.rawValue) \(sandboxId)", daemonManager: daemonManager, completion: completion)
+        case .shutdownDaemon:
+            daemonManager?.stopDaemon()
+            refresh()
+        }
+    }
+
+    func cancelPending() { pendingConfirmation = nil }
 
     // MARK: - M51：daemon 是否比这个 App 旧
 
@@ -313,7 +360,10 @@ struct MenuBarStatusView: View {
     private func perform(_ action: SandboxAction, id: String) {
         // M50：走主界面同一个入口（SandboxViewModel.submit）——错误会被显示和记录，完成后刷新列表。
         // 此前这里直接往 socket 发请求并吞掉错误，被 daemon 拒绝时界面上什么都不发生。
-        guard let request = SandboxRowActions.request(for: action, sandboxId: id) else { return }
-        viewModel.submit(request, label: action.label.lowercased(), daemonManager: daemonManager)
+        // M53：需要确认的操作由主窗口弹出确认（弹窗在失去焦点时会关闭，放不住一个对话框）。
+        if !viewModel.request(action, sandboxId: id, daemonManager: daemonManager) {
+            NSApp.activate(ignoringOtherApps: true)
+            if let window = NSApp.windows.first(where: { $0.canBecomeMain }) { window.makeKeyAndOrderFront(nil) }
+        }
     }
 }

@@ -326,6 +326,10 @@ else
 fi
 step_ok manifests-panel && pass "G10 Manifests 面板：当前 manifest 被识别为可运行并显示签名密钥（$(step_detail manifests-panel)）" || fail "G10 Manifests 面板：$(step_detail manifests-panel)"
 step_ok menubar-actions && pass "G10 菜单栏弹窗的操作按状态启用（$(step_detail menubar-actions)）" || fail "G10 菜单栏弹窗：$(step_detail menubar-actions)"
+step_ok confirm-rm-asks-first && pass "G10 Rm 先确认（$(step_detail confirm-rm-asks-first)）：确认之前等过一轮定时刷新，沙箱状态没有变" || fail "G10 Rm 确认：$(step_detail confirm-rm-asks-first)"
+step_ok confirm-dialog-on-screen && pass "G10 确认对话框真的挂在主窗口上（不只是模型字段）" || fail "G10 确认对话框：$(step_detail confirm-dialog-on-screen)"
+step_ok confirm-rm-cancel && pass "G10 取消：沙箱还在（$(step_detail confirm-rm-cancel)），对话框收起" || fail "G10 取消：$(step_detail confirm-rm-cancel)"
+step_ok confirm-shutdown-rule && pass "G10 Shutdown Daemon：没有沙箱时直接执行，有沙箱时先确认" || fail "G10 shutdown 确认规则：$(step_detail confirm-shutdown-rule)"
 step_ok rm && step_ok flow-complete && pass "G10 Rm：沙箱从列表消失，流程完整走完" || fail "G10 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
 assert_quit "G10 流程结束后的 ⌘Q" "$R7"
 [ "$("$BIN" ps 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && pass "G10 daemon 上没有遗留沙箱" || fail "G10 遗留沙箱：$("$BIN" ps 2>&1 | head -2)"

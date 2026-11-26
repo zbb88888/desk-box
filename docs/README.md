@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M53 不可撤销的操作先确认](design/m53-confirm-destructive-actions.md)：GUI 的 Rm / Restart / Stop / Shutdown Daemon 此前一点即执行。
 - [M52 GUI 里的版本偏差与修订号守卫](design/m52-skew-in-gui-and-revision-guard.md)：Stats 面板列出 guest 资产缺什么；旧 daemon 提示有了应用内自检；请求集合钉在修订号上。
 - [M51 版本偏差与 doctor](design/m51-version-skew-doctor.md)：`dbx-poc doctor` 报告正在运行的 daemon 与各沙箱的 guest 资产相对当前代码缺哪些修复；GUI 在 daemon 较旧时提示。
 - [M50 Manifests 面板与菜单栏弹窗](design/m50-manifests-panel-and-menubar.md)：逻辑移出视图并进入应用内自检；修掉「签名列永远是 -」与「弹窗吞掉错误」。
