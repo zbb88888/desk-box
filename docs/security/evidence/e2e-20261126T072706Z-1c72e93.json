@@ -1,0 +1,557 @@
+{
+  "binarySha256": "74d69689414f58eae7137b94cf1b092d6b95c1085c28cd480048b225c5ecece8",
+  "commit": "1c72e93",
+  "commitDirty": false,
+  "dirtyFiles": 0,
+  "entrypoint": "macos/scripts/e2e-all.sh",
+  "generatedAtUtc": "2026-11-26T07:27:06Z",
+  "guestManifestSha256": "1d2e650ee23d25b12e376cce9f4a2eee0b3eb832ae8060cb40ce7f5270fa315c",
+  "host": {
+    "arch": "arm64",
+    "model": "Mac14,6",
+    "osBuild": "26B131",
+    "osVersion": "27.2.1"
+  },
+  "hostSessionLocked": {
+    "atEnd": false,
+    "atStart": false
+  },
+  "hygiene": {
+    "crashes": "clean",
+    "library": "clean",
+    "procs": "clean",
+    "support": "clean",
+    "tmp": "clean"
+  },
+  "invariants": {
+    "INV-01": {
+      "status": "pass",
+      "suites": [
+        "m12-lifecycle"
+      ],
+      "unverified": []
+    },
+    "INV-02": {
+      "status": "pass",
+      "suites": [
+        "m27-cli-instance",
+        "m23-domains"
+      ],
+      "unverified": []
+    },
+    "INV-03": {
+      "status": "pass",
+      "suites": [
+        "m35-permissions",
+        "m19-canary"
+      ],
+      "unverified": []
+    },
+    "INV-04": {
+      "status": "pass",
+      "suites": [
+        "m19-network"
+      ],
+      "unverified": []
+    },
+    "INV-05": {
+      "status": "pass",
+      "suites": [
+        "m37-workspace",
+        "m37-workspace-patched"
+      ],
+      "unverified": []
+    },
+    "INV-06": {
+      "status": "pass",
+      "suites": [
+        "m18-kernel"
+      ],
+      "unverified": []
+    },
+    "INV-07": {
+      "status": "not-covered",
+      "suites": [],
+      "unverified": []
+    },
+    "INV-08": {
+      "status": "pass",
+      "suites": [
+        "m12-lifecycle",
+        "m24-concurrency",
+        "m26-boot-cancel",
+        "m27-cli-instance",
+        "m37-workspace",
+        "m37-workspace-patched",
+        "m39-exec-output",
+        "m39-exec-output-patched",
+        "m41-exec-cancel",
+        "m41-exec-cancel-patched",
+        "m42-broker-exec",
+        "m42-broker-exec-patched",
+        "m46-control-loss",
+        "m46-runtime-race",
+        "m51-doctor",
+        "m20b-fault-injection",
+        "m21-stats",
+        "m18-kernel",
+        "m17-gui-buttons"
+      ],
+      "unverified": []
+    },
+    "INV-09": {
+      "status": "pass",
+      "suites": [
+        "m34-release-cli",
+        "m38-guest-install"
+      ],
+      "unverified": []
+    },
+    "INV-10": {
+      "status": "pass",
+      "suites": [
+        "m34-release-cli",
+        "m24-concurrency",
+        "m27-cli-instance",
+        "m35-permissions",
+        "m20-persistence",
+        "m20b-fault-injection"
+      ],
+      "unverified": []
+    }
+  },
+  "partial": false,
+  "releaseBlockers": [],
+  "schema": "deskbox-e2e-evidence/v1",
+  "suites": [
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [],
+      "lockSkipped": [],
+      "name": "selftest",
+      "notApplicable": [],
+      "pass": 52,
+      "script": "e2e-harness-selftest.sh",
+      "seconds": 5,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-09",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m34-release-cli",
+      "notApplicable": [],
+      "pass": 56,
+      "script": "e2e-release-cli.sh",
+      "seconds": 1,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-01",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m12-lifecycle",
+      "notApplicable": [],
+      "pass": 20,
+      "script": "e2e-sandbox-lifecycle.sh",
+      "seconds": 18,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m24-concurrency",
+      "notApplicable": [],
+      "pass": 35,
+      "script": "e2e-daemon-concurrency.sh",
+      "seconds": 38,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m26-boot-cancel",
+      "notApplicable": [],
+      "pass": 48,
+      "script": "e2e-boot-and-cancel.sh",
+      "seconds": 68,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-02",
+        "INV-08",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m27-cli-instance",
+      "notApplicable": [],
+      "pass": 55,
+      "script": "e2e-cli-and-instance.sh",
+      "seconds": 14,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-09"
+      ],
+      "lockSkipped": [],
+      "name": "m38-guest-install",
+      "notApplicable": [],
+      "pass": 21,
+      "script": "e2e-guest-install.sh",
+      "seconds": 2,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-03",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m35-permissions",
+      "notApplicable": [],
+      "pass": 26,
+      "script": "e2e-state-permissions.sh",
+      "seconds": 15,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-05",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m37-workspace",
+      "notApplicable": [],
+      "pass": 45,
+      "script": "e2e-workspace-sync.sh",
+      "seconds": 20,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-05",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m37-workspace-patched",
+      "notApplicable": [],
+      "pass": 58,
+      "script": "e2e-workspace-sync-patched.sh",
+      "seconds": 32,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m39-exec-output",
+      "notApplicable": [],
+      "pass": 11,
+      "script": "e2e-exec-output.sh",
+      "seconds": 11,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m39-exec-output-patched",
+      "notApplicable": [],
+      "pass": 28,
+      "script": "e2e-exec-output-patched.sh",
+      "seconds": 12,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m41-exec-cancel",
+      "notApplicable": [],
+      "pass": 15,
+      "script": "e2e-exec-cancel.sh",
+      "seconds": 34,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m41-exec-cancel-patched",
+      "notApplicable": [],
+      "pass": 28,
+      "script": "e2e-exec-cancel-patched.sh",
+      "seconds": 26,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m42-broker-exec",
+      "notApplicable": [],
+      "pass": 11,
+      "script": "e2e-broker-exec.sh",
+      "seconds": 24,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m42-broker-exec-patched",
+      "notApplicable": [],
+      "pass": 15,
+      "script": "e2e-broker-exec-patched.sh",
+      "seconds": 12,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m46-control-loss",
+      "notApplicable": [],
+      "pass": 25,
+      "script": "e2e-control-loss.sh",
+      "seconds": 38,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m46-runtime-race",
+      "notApplicable": [],
+      "pass": 6,
+      "script": "e2e-runtime-race.sh",
+      "seconds": 34,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m51-doctor",
+      "notApplicable": [],
+      "pass": 17,
+      "script": "e2e-doctor.sh",
+      "seconds": 13,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m20-persistence",
+      "notApplicable": [],
+      "pass": 28,
+      "script": "e2e-lifecycle-persistence.sh",
+      "seconds": 16,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08",
+        "INV-10"
+      ],
+      "lockSkipped": [],
+      "name": "m20b-fault-injection",
+      "notApplicable": [],
+      "pass": 6,
+      "script": "e2e-fault-injection.sh",
+      "seconds": 23,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m21-stats",
+      "notApplicable": [],
+      "pass": 7,
+      "script": "e2e-resource-stats.sh",
+      "seconds": 9,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-06",
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m18-kernel",
+      "notApplicable": [],
+      "pass": 12,
+      "script": "e2e-kernel-hardening.sh",
+      "seconds": 7,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-02"
+      ],
+      "lockSkipped": [],
+      "name": "m23-domains",
+      "notApplicable": [],
+      "pass": 21,
+      "script": "e2e-credential-domains.sh",
+      "seconds": 34,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-08"
+      ],
+      "lockSkipped": [],
+      "name": "m17-gui-buttons",
+      "notApplicable": [
+        "GUI 进程检查 [NOT-APPLICABLE：隔离模式不依赖 GUI；E2E_GUI_LIVE=1 时检查]"
+      ],
+      "pass": 19,
+      "script": "e2e-gui-buttons.sh",
+      "seconds": 19,
+      "skip": 1
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [],
+      "lockSkipped": [],
+      "name": "m30-gui-app",
+      "notApplicable": [],
+      "pass": 80,
+      "script": "e2e-gui-app.sh",
+      "seconds": 110,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-03"
+      ],
+      "lockSkipped": [],
+      "name": "m19-canary",
+      "notApplicable": [],
+      "pass": 6,
+      "script": "security-corpus-canary.sh",
+      "seconds": 17,
+      "skip": 0
+    },
+    {
+      "envSkipped": [],
+      "exitCode": 0,
+      "fail": 0,
+      "invariants": [
+        "INV-04"
+      ],
+      "lockSkipped": [],
+      "name": "m19-network",
+      "notApplicable": [],
+      "pass": 5,
+      "script": "security-corpus-network.sh",
+      "seconds": 6,
+      "skip": 0
+    }
+  ],
+  "verdict": "complete"
+}
