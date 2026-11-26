@@ -4,6 +4,28 @@ import DeskBoxCore
 /// GUI 有自己的一套线上类型（与 DeskBoxCore 里的同名类型不是同一个），所以别处不整体 import DeskBoxCore；
 /// 需要共用的类型在这里起别名。
 typealias DaemonInfo = DeskBoxCore.DaemonInfo
+typealias GuestFinding = DeskBoxCore.GuestFinding
+
+/// M52：Stats 面板里「这台沙箱的 guest 资产缺什么」。
+enum GuestFindingsNote {
+    /// nil = 这次采样没有拿到 guest 的应答（软失败），无从判断；空数组 = guest 是最新的。
+    static func findings(for stats: SandboxStats) -> [GuestFinding]? {
+        if stats.statsError != nil, stats.cpuUsageUsec == nil, stats.memoryCurrentBytes == nil { return nil }
+        return GuestCapabilityReport.findings(for: GuestCapabilities(
+            workspaceSyncVersion: stats.workspaceSyncVersion, execOutputVersion: stats.execOutputVersion,
+            execCancelVersion: stats.execCancelVersion, brokerVersion: stats.brokerVersion,
+            childFdsVersion: stats.childFdsVersion, testFaults: stats.testFaults))
+    }
+
+    static func needsAttention(_ findings: [GuestFinding]) -> Bool { GuestCapabilityReport.needsAttention(findings) }
+
+    /// 面板上的标题行。
+    static func headline(_ findings: [GuestFinding]) -> String {
+        let serious = findings.filter { $0.severity == .isolation }.count
+        if serious > 0 { return "这台沙箱的 guest 资产较旧：缺 \(findings.count) 项修复，其中 \(serious) 项涉及隔离" }
+        return "这台沙箱的 guest 资产较旧：缺 \(findings.count) 项"
+    }
+}
 
 /// M51：把 `info` 请求的结果变成界面顶部的提示（纯函数）。
 enum DaemonSkewNote {

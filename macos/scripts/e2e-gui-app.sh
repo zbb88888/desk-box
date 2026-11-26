@@ -296,6 +296,14 @@ step_ok pty-roundtrip-2 && pass "G10 Terminal：关闭后再次打开仍可用�
 step_ok pty-carriage-return && pass "G10 终端：\\r 行内重绘按语义显示（step-A\\rstep-B\\rstep-C → 只剩 step-C）" || fail "G10 终端 \\r 重绘：$(step_detail pty-carriage-return)"
 step_ok console && pass "G10 Console：guest serial 内容可读（$(step_detail console)）" || fail "G10 console：$(step_detail console)"
 step_ok stats && pass "G10 Stats：两次采样后有内存与 CPU%（$(step_detail stats)）" || fail "G10 stats：$(step_detail stats)"
+case "$(step_detail workspace-resync)" in
+  allowed) EXPECT_FINDING=absent ;;
+  *)       EXPECT_FINDING=present ;;
+esac
+HAS_FINDING=absent; step_detail guest-findings | grep -q 'workspace-receiver' && HAS_FINDING=present
+step_ok guest-findings && [ "$HAS_FINDING" = "$EXPECT_FINDING" ] \
+  && pass "G10 Stats：给出这台沙箱的 guest 资产缺什么（$(step_detail guest-findings | cut -c1-90)），与再次同步的实际表现一致" \
+  || fail "G10 guest 发现：[$(step_detail guest-findings)]，但再次同步是 [$(step_detail workspace-resync | cut -c1-20)]"
 step_ok stats-error-visible && pass "G10 Stats：沙箱不存在时错误可见、旧数字被清掉（$(step_detail stats-error-visible)）" || fail "G10 stats 错误不可见：$(step_detail stats-error-visible)"
 step_ok workspace-sync && step_ok workspace-sync-content \
   && pass "G10 Workspace 同步（在运行任何程序之前）：宿主文件出现在 guest 的 /workspace（$(step_detail workspace-sync)）" \
@@ -367,6 +375,31 @@ PY
 else
   skip "G12 failed 沙箱的界面流程：需要带故障注入的 guest 夹具（交叉编译器 + 本机开发签名密钥）：$(tail -1 "$E2E_WORK/fault-fixture.log" 2>/dev/null | cut -c1-120)"
 fi
+
+# ================= G13（M52）：socket 上是一个早于 M51 的 daemon =================
+R10="$E2E_WORK/report-10.json"; FAKE_LOG="$E2E_WORK/fake-daemon.kinds"
+rm -f "$DEFAULT_SOCK"
+python3 "$E2E_ROOT/scripts/lib/fake-old-daemon.py" "$DEFAULT_SOCK" "$FAKE_LOG" >"$E2E_WORK/fake-daemon.log" 2>&1 &
+FAKE_PID=$!
+E2E_DAEMON_PIDS="$E2E_DAEMON_PIDS $FAKE_PID"
+for _ in $(seq 1 50); do [ -S "$DEFAULT_SOCK" ] && break; sleep 0.1; done
+launch_gui "$R10" 60 NO skew
+wait_gui_exit "$GUI_PID" 80
+[ -s "$R10" ] || fail "G13 自检报告未生成：$(head -c 300 "$R10.stdout" 2>/dev/null)"
+python3 - "$R10" >"$E2E_WORK/flow.out" 2>&1 <<'PY'
+import json, sys
+for s in json.load(open(sys.argv[1])).get("flow", []):
+    print("%s\t%s\t%s" % ("PASS" if s["ok"] else "FAIL", s["name"], s.get("detail", "")))
+PY
+step_ok skew-note && pass "G13 daemon 不认识版本查询：主界面给出「daemon 较旧」的提示（$(step_detail skew-note | cut -c1-60)…）" || fail "G13 没有提示：$(cat "$E2E_WORK/flow.out" | tr '\n' '|' | cut -c1-300)"
+step_ok skew-note-stable && pass "G13 两轮定时刷新之后提示仍在，列表刷新没有报错" || fail "G13 提示不稳定：$(step_detail skew-note-stable)"
+N_INFO=$(grep -c '^info$' "$FAKE_LOG" 2>/dev/null || true); N_PS=$(grep -c '^ps$' "$FAKE_LOG" 2>/dev/null || true)
+[ "$N_INFO" = 1 ] && [ "$N_PS" -ge 3 ] && pass "G13 版本只问了 1 次（同期 ps $N_PS 次）：不会让旧 daemon 每 3 秒记一行拒绝" || fail "G13 info 请求 $N_INFO 次、ps $N_PS 次"
+OTHER=$(grep -vE '^(ps|info)$' "$FAKE_LOG" 2>/dev/null | sort -u | tr '\n' ' ')
+[ -z "$OTHER" ] && pass "G13 App 没有向这个不是它拉起的 daemon 发任何其它请求（退出时也没有 shutdown）" || fail "G13 发出了其它请求：$OTHER"
+assert_quit "G13 提示显示时的 ⌘Q" "$R10"
+kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
+rm -f "$DEFAULT_SOCK"
 
 # ================= G11：应用级模态面板打开时的 quit AppleEvent =================
 R8="$E2E_WORK/report-8.json"

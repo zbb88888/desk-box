@@ -58,10 +58,12 @@ final class GUISelfTest: @unchecked Sendable {
     func attach(viewModel: SandboxViewModel, daemonManager: DaemonProcessManager) {
         self.viewModel = viewModel
         self.daemonManager = daemonManager
-        guard scenario == "flow" || scenario == "failed", !flowStarted else { return }
+        guard scenario == "flow" || scenario == "failed" || scenario == "skew", !flowStarted else { return }
         flowStarted = true
         Task { @MainActor in
-            if self.scenario == "failed" { await self.runFailedFlow() } else { await self.runFlow() }
+            if self.scenario == "failed" { await self.runFailedFlow() }
+            else if self.scenario == "skew" { await self.runSkewFlow() }
+            else { await self.runFlow() }
             self.fireCommandQ()
         }
     }
@@ -261,6 +263,34 @@ final class GUISelfTest: @unchecked Sendable {
     /// M46：沙箱失去控制面之后的界面表现（需要带故障注入的 guest 夹具）。
     /// Run → 让 guest 的控制进程退出 → 行变成 failed 并带原因 → 只剩 Console / Restart / Rm →
     /// 对它 Exec 得到可读的原因 → Restart 重建出一台可用的新沙箱 → Rm。
+    /// M52：socket 上是一个早于 M51 的 daemon（测试里是假服务）。
+    /// 界面给出「daemon 较旧」的提示；之后的定时刷新不再重复询问。
+    @MainActor
+    private func runSkewFlow() async {
+        guard let viewModel, let daemonManager else { return step("attach", false, "no view model") }
+        daemonManager.refresh()
+        guard await waitUntil(10, { daemonManager.status == .connected }) else {
+            return step("daemon-connected", false, "status=\(daemonManager.status.rawValue)")
+        }
+        step("daemon-connected", true)
+        viewModel.refresh()
+        guard await waitUntil(8, { viewModel.daemonSkewNote != nil }) else {
+            return step("skew-note", false, "没有提示；revision=\(String(describing: viewModel.daemonRevision)) error=\(viewModel.errorText ?? "nil")")
+        }
+        let note = viewModel.daemonSkewNote ?? ""
+        guard note.contains("不认识版本查询"), note.contains("重启 daemon"), note.contains("崩溃"), viewModel.daemonRevision == nil else {
+            return step("skew-note", false, note)
+        }
+        step("skew-note", true, note)
+        // 主界面每 3 秒刷新一次：等过两轮，提示还在（由脚本核对这段时间里只问过一次）。
+        try? await Task.sleep(for: .seconds(7))
+        guard viewModel.daemonSkewNote == note, viewModel.errorText == nil else {
+            return step("skew-note-stable", false, "note=\(viewModel.daemonSkewNote ?? "nil") error=\(viewModel.errorText ?? "nil")")
+        }
+        step("skew-note-stable", true)
+        step("flow-complete", true)
+    }
+
     @MainActor
     private func runFailedFlow() async {
         guard let viewModel, let daemonManager else { return step("attach", false, "no view model") }
@@ -482,9 +512,12 @@ final class GUISelfTest: @unchecked Sendable {
             return step("stats", false, "err=\(stats.statsError ?? "nil") mem=\(String(describing: stats.memCurrent)) cpu=\(String(describing: stats.cpuPercent))")
         }
         step("stats", true, "mem=\(mem) cpu=\(String(format: "%.1f", cpu))%")
+        // M52：同一次采样里带出了 guest 资产缺什么。
+        guard let findings = stats.guestFindings else { return step("guest-findings", false, "采样成功却没有结论") }
+        step("guest-findings", true, findings.isEmpty ? "none" : findings.map(\.id).joined(separator: ","))
         stats.select("00000000-0000-0000-0000-000000000000")
         await sample(stats)
-        guard stats.statsError != nil, stats.memCurrent == nil, stats.cpuPercent == nil, stats.history.isEmpty else {
+        guard stats.statsError != nil, stats.memCurrent == nil, stats.cpuPercent == nil, stats.history.isEmpty, stats.guestFindings == nil else {
             return step("stats-error-visible", false, "err=\(stats.statsError ?? "nil") mem=\(String(describing: stats.memCurrent))")
         }
         step("stats-error-visible", true, stats.statsError ?? "")

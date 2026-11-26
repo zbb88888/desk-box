@@ -53,6 +53,13 @@ struct SandboxStats: Codable, Sendable {
     var pidsMax: Int? = nil
     var activeExecGroups: Int? = nil
     var statsError: String? = nil
+    // M52：guest 上报的能力字段（旧 guest 不上报）。
+    var workspaceSyncVersion: Int? = nil
+    var execOutputVersion: Int? = nil
+    var execCancelVersion: Int? = nil
+    var brokerVersion: Int? = nil
+    var childFdsVersion: Int? = nil
+    var testFaults: Bool? = nil
 }
 
 struct SandboxInfo: Codable, Identifiable, Sendable {

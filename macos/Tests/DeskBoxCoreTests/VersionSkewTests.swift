@@ -72,6 +72,14 @@ final class VersionSkewTests: XCTestCase {
         XCTAssertFalse(GuestCapabilityReport.needsAttention(findings))
     }
 
+    func testCapabilitiesOverloadAgreesWithStats() throws {
+        XCTAssertEqual(GuestCapabilityReport.findings(for: GuestCapabilities()).count, 6)
+        XCTAssertEqual(GuestCapabilityReport.findings(for: GuestCapabilities(workspaceSyncVersion: 2, execOutputVersion: 2, execCancelVersion: 1, brokerVersion: 3, childFdsVersion: 1)), [])
+        let s = try stats(#"{"workspaceSyncVersion":2,"brokerVersion":2}"#)
+        XCTAssertEqual(GuestCapabilityReport.findings(for: s),
+                       GuestCapabilityReport.findings(for: GuestCapabilities(workspaceSyncVersion: 2, brokerVersion: 2)))
+    }
+
     func testFaultFixtureIsCalledOut() throws {
         let fixture = try stats(#"{"workspaceSyncVersion":2,"execOutputVersion":2,"execCancelVersion":1,"brokerVersion":3,"childFdsVersion":1,"testFaults":true}"#)
         let findings = GuestCapabilityReport.findings(for: fixture)

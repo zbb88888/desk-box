@@ -95,6 +95,22 @@ final class DoctorTests: XCTestCase {
         XCTAssertThrowsError(try CLIArgs.parse(["extra"], spec: DaemonCLISpecs.doctor))
     }
 
+    /// M52：修订号是手工维护的。这里把「daemon 认识哪些请求」钉在修订号上——
+    /// 加了 / 删了请求却没有动 BuildRevision.current，这条测试会失败并告诉你该做什么。
+    /// （只能发现协议层面的变化；行为变了而请求集合没变的情况发现不了。）
+    func testRequestKindsArePinnedToTheBuildRevision() {
+        let pinnedRevision = 51
+        let pinnedKinds = "consoleLog,exec,execCancel,info,ps,ptyClose,ptyInput,ptyOpen,ptyPoll,restart,resume,rm,run,shutdown,stats,stop,suspend,wsSync"
+        let kinds = DaemonRoute.allCases.map(\.rawValue).sorted().joined(separator: ",")
+        if kinds != pinnedKinds {
+            XCTAssertNotEqual(BuildRevision.current, pinnedRevision,
+                              "daemon 的请求集合变了（\(kinds)）但 BuildRevision.current 还是 \(pinnedRevision)：把它加一，并更新这里的两个常量")
+            XCTFail("请求集合变了：更新这条测试里的 pinnedKinds / pinnedRevision（当前修订 \(BuildRevision.current)）")
+        } else {
+            XCTAssertGreaterThanOrEqual(BuildRevision.current, pinnedRevision)
+        }
+    }
+
     func testRealDaemonAnswersInfo() throws {
         let dir = URL(fileURLWithPath: "/tmp/dbxi-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -103,9 +103,35 @@ public struct GuestFinding: Sendable, Equatable, Codable {
     }
 }
 
+/// guest 经 stats 上报的能力字段（M52：与线上类型解耦——GUI 有自己的一套线上类型）。
+public struct GuestCapabilities: Sendable, Equatable {
+    public var workspaceSyncVersion: Int?
+    public var execOutputVersion: Int?
+    public var execCancelVersion: Int?
+    public var brokerVersion: Int?
+    public var childFdsVersion: Int?
+    public var testFaults: Bool?
+
+    public init(workspaceSyncVersion: Int? = nil, execOutputVersion: Int? = nil, execCancelVersion: Int? = nil,
+                brokerVersion: Int? = nil, childFdsVersion: Int? = nil, testFaults: Bool? = nil) {
+        self.workspaceSyncVersion = workspaceSyncVersion
+        self.execOutputVersion = execOutputVersion
+        self.execCancelVersion = execCancelVersion
+        self.brokerVersion = brokerVersion
+        self.childFdsVersion = childFdsVersion
+        self.testFaults = testFaults
+    }
+}
+
 public enum GuestCapabilityReport {
     /// 由 guest 经 stats 上报的能力字段推断它缺什么。旧 guest 不上报的字段按「没有」处理。
     public static func findings(for stats: SandboxStats) -> [GuestFinding] {
+        findings(for: GuestCapabilities(workspaceSyncVersion: stats.workspaceSyncVersion, execOutputVersion: stats.execOutputVersion,
+                                        execCancelVersion: stats.execCancelVersion, brokerVersion: stats.brokerVersion,
+                                        childFdsVersion: stats.childFdsVersion, testFaults: stats.testFaults))
+    }
+
+    public static func findings(for stats: GuestCapabilities) -> [GuestFinding] {
         var findings: [GuestFinding] = []
         if (stats.childFdsVersion ?? 0) < 1 {
             findings.append(.init(id: "child-fds", severity: .isolation,

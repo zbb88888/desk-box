@@ -94,29 +94,7 @@ fi
 
 # ---------- D5：旧 daemon（不认识版本查询） ----------
 OLD_SOCK="$E2E_WORK/old.sock"
-python3 - "$OLD_SOCK" >"$E2E_WORK/old-daemon.log" 2>&1 <<'PY' &
-import json, os, socket, sys
-path = sys.argv[1]
-srv = socket.socket(socket.AF_UNIX); srv.bind(path); os.chmod(path, 0o600); srv.listen(8)
-while True:
-    conn, _ = srv.accept()
-    try:
-        data = b""
-        while not data.endswith(b"\n"):
-            chunk = conn.recv(65536)
-            if not chunk: break
-            data += chunk
-        if not data: continue
-        kind = json.loads(data.decode()).get("kind", "?")
-        if kind == "ps":
-            reply = {"ok": True, "sandboxes": []}
-        else:
-            # 旧 daemon 对不认识的请求的固定措辞。
-            reply = {"ok": False, "error": "request rejected (kind=%s): unknown kind=%s" % (kind, kind)}
-        conn.sendall((json.dumps(reply) + "\n").encode())
-    finally:
-        conn.close()
-PY
+python3 "$E2E_ROOT/scripts/lib/fake-old-daemon.py" "$OLD_SOCK" >"$E2E_WORK/old-daemon.log" 2>&1 &
 FAKE_PID=$!
 E2E_DAEMON_PIDS="$E2E_DAEMON_PIDS $FAKE_PID"
 for _ in $(seq 1 50); do [ -S "$OLD_SOCK" ] && break; sleep 0.1; done

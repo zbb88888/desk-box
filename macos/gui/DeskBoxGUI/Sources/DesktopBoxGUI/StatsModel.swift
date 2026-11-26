@@ -36,6 +36,8 @@ final class StatsModel: ObservableObject, @unchecked Sendable {
     @Published private(set) var activeGroups: Int?
     @Published private(set) var statsError: String?
     @Published private(set) var history: [Double] = []
+    /// M52：这台沙箱的 guest 资产缺什么（nil = 还不知道；空 = 最新）。
+    @Published private(set) var guestFindings: [GuestFinding]?
 
     static let historyLimit = 60
 
@@ -57,6 +59,7 @@ final class StatsModel: ObservableObject, @unchecked Sendable {
         pidsCurrent = nil; pidsMax = nil; activeGroups = nil
         statsError = nil
         history = []
+        guestFindings = nil
     }
 
     /// 采一次样（主线程调用；I/O 在后台）。
@@ -97,6 +100,8 @@ final class StatsModel: ObservableObject, @unchecked Sendable {
                 return
             }
             statsError = stats.statsError
+            // 软失败时保留上一次的结论：guest 资产不会在沙箱活着的时候变。
+            if let findings = GuestFindingsNote.findings(for: stats), findings != guestFindings { guestFindings = findings }
             memCurrent = stats.memoryCurrentBytes
             memMax = stats.memoryMaxBytes
             pidsCurrent = stats.pidsCurrent

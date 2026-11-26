@@ -55,6 +55,21 @@ struct StatsPanel: View {
                     Text(err).font(.caption).foregroundColor(.orange)
                         .padding(.horizontal)
                 }
+                // M52：guest 资产缺什么（与 `dbx-poc doctor` 同一套判定）。
+                if let findings = model.guestFindings, !findings.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label(GuestFindingsNote.headline(findings), systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundColor(GuestFindingsNote.needsAttention(findings) ? .orange : .secondary)
+                        ForEach(findings, id: \.id) { finding in
+                            Text("· [\(finding.severity.rawValue)] \(finding.summary)")
+                                .font(.caption2).foregroundColor(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text("重建 guest 资产后新建沙箱即可（已有的沙箱不会变）。").font(.caption2).foregroundColor(.secondary)
+                    }
+                    .padding(8).background(Color.orange.opacity(0.08)).cornerRadius(6)
+                    .padding(.horizontal)
+                }
                 Spacer()
             }
         }
