@@ -58,11 +58,12 @@ final class GUISelfTest: @unchecked Sendable {
     func attach(viewModel: SandboxViewModel, daemonManager: DaemonProcessManager) {
         self.viewModel = viewModel
         self.daemonManager = daemonManager
-        guard scenario == "flow" || scenario == "failed" || scenario == "skew", !flowStarted else { return }
+        guard ["flow", "failed", "skew", "confirm"].contains(scenario), !flowStarted else { return }
         flowStarted = true
         Task { @MainActor in
             if self.scenario == "failed" { await self.runFailedFlow() }
             else if self.scenario == "skew" { await self.runSkewFlow() }
+            else if self.scenario == "confirm" { await self.runConfirmQuitFlow() }
             else { await self.runFlow() }
             self.fireCommandQ()
         }
@@ -139,7 +140,7 @@ final class GUISelfTest: @unchecked Sendable {
         quitFired = true
         var target: NSWindow? = nil
         if scenario == "display" { target = focusDisplayView() }
-        if scenario == "sheet" { target = NSApp.windows.first { $0.sheetParent != nil } }
+        if scenario == "sheet" || scenario == "confirm" { target = NSApp.windows.first { $0.sheetParent != nil } }
         let sheetOpen = AppQuit.anySheetAttached
         writeReport(extra: ["phase": "before-cmd-q", "sheetAttachedBeforeQuit": sheetOpen, "quitVia": quitVia,
                             "appModalBeforeQuit": NSApp.modalWindow != nil, "modalDiagnostics": modalDiagnostics, "modalKind": modalKind])
@@ -263,6 +264,48 @@ final class GUISelfTest: @unchecked Sendable {
     /// M46：沙箱失去控制面之后的界面表现（需要带故障注入的 guest 夹具）。
     /// Run → 让 guest 的控制进程退出 → 行变成 failed 并带原因 → 只剩 Console / Restart / Rm →
     /// 对它 Exec 得到可读的原因 → Restart 重建出一台可用的新沙箱 → Rm。
+    // MARK: - M54：确认对话框里的真实按钮
+
+    /// 当前挂在某个窗口上的对话框里的按钮。
+    @MainActor
+    private func sheetButtons() -> [NSButton] {
+        guard let root = NSApp.windows.compactMap(\.attachedSheet).first?.contentView else { return [] }
+        var found: [NSButton] = []
+        func walk(_ view: NSView) {
+            if let button = view as? NSButton { found.append(button) }
+            view.subviews.forEach(walk)
+        }
+        walk(root)
+        return found
+    }
+
+    /// 点对话框里标题为 `title` 的按钮（`performClick`：走按钮自己的 target/action，与鼠标点击同一条路）。
+    @MainActor
+    private func clickSheetButton(_ title: String) -> Bool {
+        guard let button = sheetButtons().first(where: { $0.title == title }), button.isEnabled else { return false }
+        button.performClick(nil)
+        return true
+    }
+
+    /// M54：确认对话框开着的时候 ⌘Q——App 要能退出，而且**不能**顺手执行那个待确认的操作。
+    @MainActor
+    private func runConfirmQuitFlow() async {
+        guard let viewModel else { return step("attach", false, "no view model") }
+        let id = "5E1F7E57-0000-4000-8000-000000000000"
+        guard !viewModel.request(.rm, sandboxId: id, daemonManager: daemonManager), viewModel.pendingConfirmation != nil else {
+            return step("confirm-pending", false, "没有进入等待确认")
+        }
+        step("confirm-pending", true)
+        guard await waitUntil(6, { !self.sheetButtons().isEmpty }) else {
+            return step("confirm-dialog-on-screen", false, "对话框没有出现")
+        }
+        step("confirm-dialog-on-screen", true)
+        let titles = sheetButtons().map(\.title)
+        step("confirm-dialog-buttons", titles.contains("移除") && titles.contains("取消"), titles.joined(separator: ","))
+        step("flow-complete", true)
+        // 返回后由 attach 里的包装发 ⌘Q；此时对话框仍然开着。
+    }
+
     /// M52：socket 上是一个早于 M51 的 daemon（测试里是假服务）。
     /// 界面给出「daemon 较旧」的提示；之后的定时刷新不再重复询问。
     @MainActor
@@ -608,10 +651,17 @@ final class GUISelfTest: @unchecked Sendable {
                   let stopRequest = SandboxRowActions.request(for: .stop, sandboxId: id) else {
                 return step("menubar-actions", false, "state=\(menuState) actions=\(menuActions.map(\.rawValue))")
             }
-            let stopped = await submit(stopRequest, label: "stop")
-            guard case .success = stopped, await waitUntil(5, { self.state(of: id) == "stopped" }) else {
-                return step("menubar-actions", false, "stop: \(stopped) state=\(state(of: id))")
+            // M54：Stop 走按钮的入口——先确认，再点对话框里的「停止」。
+            _ = stopRequest
+            guard !viewModel.request(.stop, sandboxId: id, daemonManager: daemonManager),
+                  await waitUntil(6, { self.sheetButtons().contains { $0.title == "停止" } }) else {
+                return step("confirm-stop", false, "没有出现带「停止」按钮的对话框：\(sheetButtons().map(\.title))")
             }
+            guard state(of: id) == "running", clickSheetButton("停止"),
+                  await waitUntil(8, { self.state(of: id) == "stopped" }) else {
+                return step("confirm-stop", false, "点「停止」之后 state=\(state(of: id))")
+            }
+            step("confirm-stop", true, "点对话框里的「停止」→ stopped")
             guard MenuBarSandboxActions.available(forState: state(of: id)) == [.rm] else {
                 return step("menubar-actions", false, "stopped 之后的操作：\(MenuBarSandboxActions.available(forState: state(of: id)).map(\.rawValue))")
             }
@@ -642,8 +692,15 @@ final class GUISelfTest: @unchecked Sendable {
         }
         step("confirm-rm-asks-first", true, "\(prompt.title) / \(prompt.confirmLabel)")
         step("confirm-dialog-on-screen", sheetShown, sheetShown ? "主窗口上挂着确认对话框" : "没有找到挂在窗口上的对话框")
-        // 取消：沙箱还在，对话框收起。
-        viewModel.cancelPending()
+        let titles = sheetButtons().map(\.title)
+        guard titles.contains("移除"), titles.contains("取消") else {
+            return step("confirm-dialog-buttons", false, "按钮：\(titles)")
+        }
+        step("confirm-dialog-buttons", true, titles.joined(separator: ","))
+        // 取消（M54：点对话框里真实的按钮）：沙箱还在，对话框收起。
+        guard clickSheetButton("取消"), await waitUntil(5, { viewModel.pendingConfirmation == nil && self.sheetButtons().isEmpty }) else {
+            return step("confirm-rm-cancel", false, "点「取消」之后 pending=\(String(describing: viewModel.pendingConfirmation))")
+        }
         viewModel.refresh()
         try? await Task.sleep(for: .milliseconds(1200))
         guard viewModel.pendingConfirmation == nil, state(of: id) == stateBeforeRm else {
@@ -652,11 +709,9 @@ final class GUISelfTest: @unchecked Sendable {
         step("confirm-rm-cancel", true, "state=\(stateBeforeRm)")
         // 再点一次并确认：这次真的移除。
         viewModel.request(.rm, sandboxId: id, daemonManager: daemonManager)
-        let removed: Result<DaemonResponse, Error> = await withCheckedContinuation { continuation in
-            viewModel.confirmPending(daemonManager: daemonManager) { continuation.resume(returning: $0) }
-        }
-        guard case .success = removed, state(of: id) == "(absent)", viewModel.pendingConfirmation == nil else {
-            return step("rm", false, "\(removed) state=\(state(of: id))")
+        guard await waitUntil(6, { self.sheetButtons().contains { $0.title == "移除" } }), clickSheetButton("移除"),
+              await waitUntil(10, { self.state(of: id) == "(absent)" }), viewModel.pendingConfirmation == nil else {
+            return step("rm", false, "点「移除」之后 state=\(state(of: id)) buttons=\(sheetButtons().map(\.title))")
         }
         step("rm", true)
         // 没有沙箱时 Shutdown Daemon 不需要确认；有沙箱时需要（这里只核对判定，不真的关）。

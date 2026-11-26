@@ -328,9 +328,15 @@ step_ok manifests-panel && pass "G10 Manifests 面板：当前 manifest 被识�
 step_ok menubar-actions && pass "G10 菜单栏弹窗的操作按状态启用（$(step_detail menubar-actions)）" || fail "G10 菜单栏弹窗：$(step_detail menubar-actions)"
 step_ok confirm-rm-asks-first && pass "G10 Rm 先确认（$(step_detail confirm-rm-asks-first)）：确认之前等过一轮定时刷新，沙箱状态没有变" || fail "G10 Rm 确认：$(step_detail confirm-rm-asks-first)"
 step_ok confirm-dialog-on-screen && pass "G10 确认对话框真的挂在主窗口上（不只是模型字段）" || fail "G10 确认对话框：$(step_detail confirm-dialog-on-screen)"
-step_ok confirm-rm-cancel && pass "G10 取消：沙箱还在（$(step_detail confirm-rm-cancel)），对话框收起" || fail "G10 取消：$(step_detail confirm-rm-cancel)"
+step_ok confirm-dialog-buttons && pass "G10 对话框里的按钮是「$(step_detail confirm-dialog-buttons)」（确认按钮说的是要做的事）" || fail "G10 对话框按钮：$(step_detail confirm-dialog-buttons)"
+if grep -q 'confirm-stop' "$E2E_WORK/flow.out"; then
+  step_ok confirm-stop && pass "G10 Stop 先确认：$(step_detail confirm-stop)" || fail "G10 Stop 确认：$(step_detail confirm-stop)"
+else
+  skip_locked "G10 Stop 的确认（沙箱停在 suspended，没有 Stop 可点）" 2>/dev/null || skip "G10 Stop 的确认（沙箱停在 suspended，没有 Stop 可点）"
+fi
+step_ok confirm-rm-cancel && pass "G10 点对话框里的「取消」：沙箱还在（$(step_detail confirm-rm-cancel)），对话框收起" || fail "G10 取消：$(step_detail confirm-rm-cancel)"
 step_ok confirm-shutdown-rule && pass "G10 Shutdown Daemon：没有沙箱时直接执行，有沙箱时先确认" || fail "G10 shutdown 确认规则：$(step_detail confirm-shutdown-rule)"
-step_ok rm && step_ok flow-complete && pass "G10 Rm：沙箱从列表消失，流程完整走完" || fail "G10 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
+step_ok rm && step_ok flow-complete && pass "G10 Rm：点对话框里的「移除」后沙箱从列表消失，流程完整走完" || fail "G10 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
 assert_quit "G10 流程结束后的 ⌘Q" "$R7"
 [ "$("$BIN" ps 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && pass "G10 daemon 上没有遗留沙箱" || fail "G10 遗留沙箱：$("$BIN" ps 2>&1 | head -2)"
 "$BIN" shutdown >/dev/null 2>&1 && e2e_wait_exit "${SPAWNED7:-0}" 100 && pass "G10 daemon 正常 shutdown" || fail "G10 daemon shutdown 失败"
@@ -402,6 +408,30 @@ N_INFO=$(grep -c '^info$' "$FAKE_LOG" 2>/dev/null || true); N_PS=$(grep -c '^ps$
 OTHER=$(grep -vE '^(ps|info)$' "$FAKE_LOG" 2>/dev/null | sort -u | tr '\n' ' ')
 [ -z "$OTHER" ] && pass "G13 App 没有向这个不是它拉起的 daemon 发任何其它请求（退出时也没有 shutdown）" || fail "G13 发出了其它请求：$OTHER"
 assert_quit "G13 提示显示时的 ⌘Q" "$R10"
+kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
+rm -f "$DEFAULT_SOCK"
+
+# ================= G14（M54）：确认对话框开着时 ⌘Q =================
+R11="$E2E_WORK/report-11.json"; FAKE_LOG2="$E2E_WORK/fake-daemon-2.kinds"
+rm -f "$DEFAULT_SOCK"
+python3 "$E2E_ROOT/scripts/lib/fake-old-daemon.py" "$DEFAULT_SOCK" "$FAKE_LOG2" >"$E2E_WORK/fake-daemon-2.log" 2>&1 &
+FAKE_PID=$!
+E2E_DAEMON_PIDS="$E2E_DAEMON_PIDS $FAKE_PID"
+for _ in $(seq 1 50); do [ -S "$DEFAULT_SOCK" ] && break; sleep 0.1; done
+launch_gui "$R11" 60 NO confirm
+wait_gui_exit "$GUI_PID" 80
+[ -s "$R11" ] || fail "G14 自检报告未生成：$(head -c 300 "$R11.stdout" 2>/dev/null)"
+python3 - "$R11" >"$E2E_WORK/flow.out" 2>&1 <<'PY'
+import json, sys
+for s in json.load(open(sys.argv[1])).get("flow", []):
+    print("%s\t%s\t%s" % ("PASS" if s["ok"] else "FAIL", s["name"], s.get("detail", "")))
+PY
+step_ok confirm-dialog-on-screen && step_ok confirm-dialog-buttons && [ "$(field "$R11" sheetAttachedBeforeQuit)" = True ] \
+  && pass "G14 对照：发 ⌘Q 时「移除沙箱」的确认对话框开着（按钮：$(step_detail confirm-dialog-buttons)）" || fail "G14 场景无效：$(tr '\n' '|' < "$E2E_WORK/flow.out" | cut -c1-200) sheet=$(field "$R11" sheetAttachedBeforeQuit)"
+assert_quit "G14 确认对话框开着时的 ⌘Q" "$R11"
+sleep 1
+BAD=$(grep -vE '^(ps|info)$' "$FAKE_LOG2" 2>/dev/null | sort -u | tr '\n' ' ')
+[ -s "$FAKE_LOG2" ] && [ -z "$BAD" ] && pass "G14 退出没有顺手执行待确认的操作：daemon 只收到过 ps / info（没有 rm）" || fail "G14 daemon 收到了：[$BAD]（日志 $(wc -l < "$FAKE_LOG2" 2>/dev/null) 行）"
 kill "$FAKE_PID" 2>/dev/null; wait "$FAKE_PID" 2>/dev/null
 rm -f "$DEFAULT_SOCK"
 

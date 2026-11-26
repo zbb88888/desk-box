@@ -54,6 +54,7 @@
 | M51 ✅ | 版本偏差可见化：`doctor`、daemon `info`、GUI 提示条 | INV-08（可运维性） | S | 已完成：daemon 较旧 / guest 资产缺哪些修复，由产品自己报告。见 `m51-version-skew-doctor.md` |
 | M52 ✅ | M51 的缺口：Stats 面板显示 guest 发现、旧 daemon 提示的应用内自检、修订号守卫 | INV-08（可运维性） | S | 已完成。见 `m52-skew-in-gui-and-revision-guard.md` |
 | M53 ✅ | GUI：Rm / Restart / Stop / Shutdown Daemon 先确认 | INV-08（可运维性） | S | 已完成。见 `m53-confirm-destructive-actions.md` |
+| M54 ✅ | 自检点确认对话框里真实的按钮；对话框开着时 ⌘Q | INV-08 | S | 已完成。见 `m54-real-dialog-buttons-and-quit.md` |
 | M39 | 真实点击与剩余界面 | —（产品面） | M | 评估需要辅助功能授权的真实点击测试（需你确认）；Manifests 面板、菜单栏弹窗；终端对 `\r` 重绘的处理 |
 | M22b | 真机公证 | —（发布面） | S | 阻塞于 Developer ID 证书 |
 
