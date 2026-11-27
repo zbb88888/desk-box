@@ -44,6 +44,7 @@
 - [M17 Menubar Polish](design/m17-menubar-polish.md)：菜单栏沙箱动作、@AppStorage 偏好、daemon autostart。
 - [M18 Guest 内核纵深](design/m18-guest-kernel-hardening.md)：Landlock 路径白名单 + seccomp-bpf deny-list，fail-closed 串联 exec 硬化。
 - [M19 安全证据 corpus](design/m19-security-corpora.md)：INV-03/04/05/06 四套 corpus + 证据 JSON + CI job。
+- [M55 确认对话框的端到端验证](design/m55-confirmations-end-to-end.md)：Restart / Shutdown Daemon 的确认走真机流程；回车不执行不可撤销的操作，Esc 取消。
 - [M54 真实的对话框按钮与 ⌘Q](design/m54-real-dialog-buttons-and-quit.md)：自检点对话框里真实的按钮（不需要辅助功能授权）；确认对话框开着时 ⌘Q 能退出且不执行待确认的操作。
 - [M53 不可撤销的操作先确认](design/m53-confirm-destructive-actions.md)：GUI 的 Rm / Restart / Stop / Shutdown Daemon 此前一点即执行。
 - [M52 GUI 里的版本偏差与修订号守卫](design/m52-skew-in-gui-and-revision-guard.md)：Stats 面板列出 guest 资产缺什么；旧 daemon 提示有了应用内自检；请求集合钉在修订号上。

@@ -144,6 +144,7 @@ def build(audit_dir, out_path):
             "exitCode": int(rc), "pass": int(p), "fail": int(f), "skip": int(sk), "seconds": int(secs),
             "lockSkipped": read_lines("%s/%s.locked" % (audit_dir, name)),
             "envSkipped": read_lines("%s/%s.envskip" % (audit_dir, name)),
+            "failures": read_lines("%s/%s.failures" % (audit_dir, name)),
             "notApplicable": read_lines("%s/%s.na" % (audit_dir, name)),
         })
     hygiene = {}

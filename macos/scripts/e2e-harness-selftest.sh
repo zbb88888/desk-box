@@ -225,6 +225,15 @@ mkev "$SCRATCH/ev-markdown.json" "pass"
 python3 "$EVPY" summarize --markdown "$SCRATCH/ev-markdown.json" | grep -q '^| INV-01 |' \
   && pass "证据：summarize --markdown 输出表格" || fail "证据：markdown 输出异常"
 
+# M55：build 把失败的断言逐条写进证据（偶发失败事后还能看到是哪一条）。
+AUD="$SCRATCH/audit-build"; mkdir -p "$AUD"
+printf 'generatedAtUtc\t2026-01-01T00:00:00Z\ncommit\tabc1234\n' > "$AUD/meta.tsv"
+printf 'demo\te2e-demo.sh\tINV-08\t1\t3\t2\t0\t9\n' > "$AUD/suites.tsv"
+printf 'G1 第一条失败\nG2 第二条失败\n' > "$AUD/demo.failures"
+python3 "$EVPY" build "$AUD" "$SCRATCH/ev-built.json" >/dev/null 2>&1
+[ "$(python3 -c "import json,sys;print('|'.join(json.load(open(sys.argv[1]))['suites'][0]['failures']))" "$SCRATCH/ev-built.json" 2>/dev/null)" = "G1 第一条失败|G2 第二条失败" ] \
+  && pass "证据：失败的断言逐条记录（failures）" || fail "证据：failures 字段缺失：$(head -c 300 "$SCRATCH/ev-built.json" 2>/dev/null)"
+
 LEFT=$(ls -d /tmp/dbx-st-* 2>/dev/null | tr '\n' ' ')
 [ -z "$LEFT" ] && pass "无 /tmp/dbx-st-* 残留" || { fail "残留：$LEFT"; rm -rf /tmp/dbx-st-*; }
 

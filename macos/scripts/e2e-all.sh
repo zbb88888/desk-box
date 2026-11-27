@@ -125,6 +125,8 @@ for entry in "${SUITES[@]}"; do
   else
     printf 'FAIL %-28s %3ds (exit=%d)\n' "${result:-?}" "$secs" "$rc"
     grep -aE 'FAIL:|FATAL|LEAK' "$AUDIT/$name.out" | head -12 | sed 's/^/        /'
+    # M55：失败的断言逐条写进证据文件——偶发失败事后还能看到是哪一条（此前只留下计数）。
+    grep -aE 'FAIL:|FATAL|LEAK' "$AUDIT/$name.out" | head -40 | sed -E 's/^\[[^]]*\] //' | cut -c1-600 > "$AUDIT/$name.failures"
     TOTAL_FAIL=$((TOTAL_FAIL+1))
   fi
   n_locked=$(grep -ac 'HOST-LOCKED：' "$AUDIT/$name.out" || true)

@@ -287,6 +287,17 @@ final class GUISelfTest: @unchecked Sendable {
         return true
     }
 
+    /// M55：把一个按键发给挂着的对话框（先按快捷键处理，不行再按普通按键事件）。
+    @MainActor
+    private func pressKey(_ characters: String, keyCode: UInt16) {
+        guard let sheet = NSApp.windows.compactMap(\.attachedSheet).first,
+              let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                           timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: sheet.windowNumber,
+                                           context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                           isARepeat: false, keyCode: keyCode) else { return }
+        if !sheet.performKeyEquivalent(with: event) { sheet.sendEvent(event) }
+    }
+
     /// M54：确认对话框开着的时候 ⌘Q——App 要能退出，而且**不能**顺手执行那个待确认的操作。
     @MainActor
     private func runConfirmQuitFlow() async {
@@ -302,6 +313,29 @@ final class GUISelfTest: @unchecked Sendable {
         step("confirm-dialog-on-screen", true)
         let titles = sheetButtons().map(\.title)
         step("confirm-dialog-buttons", titles.contains("移除") && titles.contains("取消"), titles.joined(separator: ","))
+
+        // M55：键盘。回车不能是「移除」（不可撤销的操作不该是默认按钮）；Esc 取消。
+        func keys(_ title: String) -> String {
+            let key = sheetButtons().first { $0.title == title }?.keyEquivalent ?? "?"
+            return key == "\r" ? "return" : key == "\u{1b}" ? "escape" : key.isEmpty ? "none" : key
+        }
+        let removeKey = keys("移除"), cancelKey = keys("取消")
+        step("confirm-return-is-not-destructive", removeKey != "return", "移除=\(removeKey) 取消=\(cancelKey)")
+        // 回车：发给对话框，等一会儿，看有没有发生移除（由脚本核对 daemon 收到的请求）。
+        pressKey("\r", keyCode: 36)
+        try? await Task.sleep(for: .milliseconds(800))
+        let afterReturn = viewModel.pendingConfirmation == nil ? "对话框收起" : "对话框仍在"
+        step("confirm-return-pressed", true, afterReturn)
+        if viewModel.pendingConfirmation == nil { viewModel.request(.rm, sandboxId: id, daemonManager: daemonManager) }
+        guard await waitUntil(6, { !self.sheetButtons().isEmpty }) else { return step("confirm-escape-cancels", false, "对话框没有再出现") }
+        pressKey("\u{1b}", keyCode: 53)
+        guard await waitUntil(5, { viewModel.pendingConfirmation == nil && self.sheetButtons().isEmpty }) else {
+            return step("confirm-escape-cancels", false, "Esc 之后对话框仍在")
+        }
+        step("confirm-escape-cancels", true)
+        // 重新打开，留给 ⌘Q。
+        viewModel.request(.rm, sandboxId: id, daemonManager: daemonManager)
+        guard await waitUntil(6, { !self.sheetButtons().isEmpty }) else { return step("confirm-reopened", false, "对话框没有再出现") }
         step("flow-complete", true)
         // 返回后由 attach 里的包装发 ⌘Q；此时对话框仍然开着。
     }
@@ -377,15 +411,14 @@ final class GUISelfTest: @unchecked Sendable {
         step("exec-on-failed-explains", true)
 
         // Restart（行内按钮对应的请求）。
-        guard let restartRequest = SandboxRowActions.request(for: .restart, sandboxId: id) else {
-            return step("restart", false, "no request")
+        // M55：走按钮的入口——先确认，再点对话框里的「重建」。
+        guard !viewModel.request(.restart, sandboxId: id, daemonManager: daemonManager),
+              await waitUntil(6, { self.sheetButtons().contains { $0.title == "重建" } }), clickSheetButton("重建") else {
+            return step("restart", false, "没有出现带「重建」按钮的对话框：\(sheetButtons().map(\.title))")
         }
-        let restarted = await submit(restartRequest, label: "restart")
-        guard case .success(let rebuilt) = restarted, let newId = rebuilt.sandboxId, newId != id else {
-            return step("restart", false, "\(restarted)")
-        }
-        guard await waitUntil(8, { self.state(of: newId) == "running" && self.state(of: id) == "(absent)" }) else {
-            return step("restart", false, "new=\(state(of: newId)) old=\(state(of: id))")
+        guard await waitUntil(100, { self.state(of: id) == "(absent)" && viewModel.sandboxes.contains { $0.state == "running" } }),
+              let newId = viewModel.sandboxes.first(where: { $0.state == "running" })?.sandboxId, newId != id else {
+            return step("restart", false, "old=\(state(of: id)) list=\(viewModel.sandboxes.map { "\($0.sandboxId.prefix(8)):\($0.state)" })")
         }
         step("restart", true, newId)
         _ = await exec(newId, "/bin/echo rebuilt-ok")
@@ -394,10 +427,27 @@ final class GUISelfTest: @unchecked Sendable {
         }
         step("exec-after-restart", true)
 
-        guard let rmRequest = SandboxRowActions.request(for: .rm, sandboxId: newId) else { return step("rm", false, "no request") }
-        let removed = await submit(rmRequest, label: "rm")
-        guard case .success = removed, state(of: newId) == "(absent)" else { return step("rm", false, "\(removed)") }
-        step("rm", true)
+        // M55：名下还有一台沙箱时 Shutdown Daemon——先确认。点「取消」：daemon 与沙箱都还在。
+        guard !viewModel.requestShutdown(daemonManager: daemonManager),
+              await waitUntil(6, { self.sheetButtons().contains { $0.title == "关闭 daemon" } }) else {
+            return step("confirm-shutdown-cancel", false, "没有出现确认：\(sheetButtons().map(\.title))")
+        }
+        let shutdownMessage = viewModel.pendingConfirmation?.message ?? ""
+        guard clickSheetButton("取消"), await waitUntil(5, { viewModel.pendingConfirmation == nil && self.sheetButtons().isEmpty }) else {
+            return step("confirm-shutdown-cancel", false, "点「取消」之后对话框仍在")
+        }
+        _ = await exec(newId, "/bin/echo still-here")
+        guard viewModel.execOutput.contains("still-here"), daemonManager.status == .connected, state(of: newId) == "running" else {
+            return step("confirm-shutdown-cancel", false, "取消之后：daemon=\(daemonManager.status.rawValue) sandbox=\(state(of: newId))")
+        }
+        step("confirm-shutdown-cancel", true, shutdownMessage)
+        // 再点一次并确认：daemon 退出（它名下的沙箱随之结束）。
+        viewModel.requestShutdown(daemonManager: daemonManager)
+        guard await waitUntil(6, { self.sheetButtons().contains { $0.title == "关闭 daemon" } }), clickSheetButton("关闭 daemon"),
+              await waitUntil(15, { daemonManager.status == .stopped && !viewModel.client.probing() }) else {
+            return step("confirm-shutdown", false, "点「关闭 daemon」之后 daemon=\(daemonManager.status.rawValue)")
+        }
+        step("confirm-shutdown", true)
         step("flow-complete", true)
     }
 

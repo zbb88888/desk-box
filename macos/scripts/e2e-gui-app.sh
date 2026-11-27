@@ -376,10 +376,10 @@ PY
   step_ok exec-on-failed-explains && pass "G12 对 failed 的沙箱 Exec：界面显示「沙箱失去响应」，daemon 状态不变" || fail "G12 Exec 说明：$(step_detail exec-on-failed-explains)"
   step_ok restart && step_ok exec-after-restart && pass "G12 Restart：重建出一台新沙箱（$(step_detail restart | cut -c1-8)…），Exec 正常" \
     || fail "G12 Restart：$(step_detail restart) $(step_detail exec-after-restart)"
-  step_ok rm && step_ok flow-complete && pass "G12 流程完整走完" || fail "G12 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)）"
+  step_ok confirm-shutdown-cancel && pass "G12 名下有沙箱时 Shutdown Daemon 先确认（$(step_detail confirm-shutdown-cancel | cut -c1-40)…）；点「取消」后 daemon 与沙箱都还在" || fail "G12 shutdown 取消：$(step_detail confirm-shutdown-cancel)"
+  step_ok confirm-shutdown && step_ok flow-complete && pass "G12 点「关闭 daemon」：界面显示 daemon 已停止，流程完整走完" || fail "G12 流程未走完（最后一步：$(tail -1 "$E2E_WORK/flow.out" | cut -f2)：$(tail -1 "$E2E_WORK/flow.out" | cut -f3 | cut -c1-160)）"
   assert_quit "G12 流程结束后的 ⌘Q" "$R9"
-  [ "$("$BIN" ps 2>/dev/null | wc -l | tr -d ' ')" = 0 ] && pass "G12 daemon 上没有遗留沙箱" || fail "G12 遗留沙箱：$("$BIN" ps 2>&1 | head -2)"
-  "$BIN" shutdown >/dev/null 2>&1 && e2e_wait_exit "${SPAWNED9:-0}" 100 && pass "G12 daemon 正常 shutdown" || fail "G12 daemon shutdown 失败"
+  e2e_wait_exit "${SPAWNED9:-0}" 100 && pass "G12 daemon 进程已退出（由界面上的 Shutdown Daemon 关闭）" || fail "G12 daemon 进程仍在"
   LEFT=$(find "$DBX_SUPPORT_ROOT/cows" -type f ! -name 'registry.json' ! -name 'registry.lock' 2>/dev/null | tr '\n' ' ')
   [ -z "$LEFT" ] && pass "G12 cow-root 零残留" || fail "G12 cow-root 残留：$LEFT"
 else
@@ -428,6 +428,8 @@ for s in json.load(open(sys.argv[1])).get("flow", []):
 PY
 step_ok confirm-dialog-on-screen && step_ok confirm-dialog-buttons && [ "$(field "$R11" sheetAttachedBeforeQuit)" = True ] \
   && pass "G14 对照：发 ⌘Q 时「移除沙箱」的确认对话框开着（按钮：$(step_detail confirm-dialog-buttons)）" || fail "G14 场景无效：$(tr '\n' '|' < "$E2E_WORK/flow.out" | cut -c1-200) sheet=$(field "$R11" sheetAttachedBeforeQuit)"
+step_ok confirm-return-is-not-destructive && pass "G14 回车不是「移除」（$(step_detail confirm-return-is-not-destructive)）" || fail "G14 回车会执行不可撤销的操作：$(step_detail confirm-return-is-not-destructive)"
+step_ok confirm-escape-cancels && pass "G14 Esc 取消对话框（按回车之后：$(step_detail confirm-return-pressed)）" || fail "G14 Esc：$(step_detail confirm-escape-cancels)"
 assert_quit "G14 确认对话框开着时的 ⌘Q" "$R11"
 sleep 1
 BAD=$(grep -vE '^(ps|info)$' "$FAKE_LOG2" 2>/dev/null | sort -u | tr '\n' ' ')
